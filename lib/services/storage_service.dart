@@ -31,7 +31,10 @@ class StorageService {
   static const String _localBackupKey = 'app_state_local_backup';
   static const String _latestBackupAtKey = 'app_state_latest_backup_at_utc';
   static const String _localBackupHistoryKey = 'app_state_local_backup_history';
-  static const int _maxBackupSnapshots = 5;
+  static const String _recentBackupType = 'recent';
+  static const String _dailyBackupType = 'daily';
+  static const int _maxRecentBackupSnapshots = 12;
+  static const int _maxDailyBackupSnapshots = 30;
 
   static bool get isOutlookConfigured => OneDriveSyncService.isConfigured;
 
@@ -68,6 +71,16 @@ class StorageService {
       return remoteState;
     }
     if (remoteState == null) {
+      return localState;
+    }
+
+    final localIsBlank = _isEffectivelyBlankState(localState);
+    final remoteIsBlank = _isEffectivelyBlankState(remoteState);
+
+    if (localIsBlank && !remoteIsBlank) {
+      return remoteState;
+    }
+    if (remoteIsBlank && !localIsBlank) {
       return localState;
     }
 
@@ -115,6 +128,35 @@ class StorageService {
     }
 
     return remoteState;
+  }
+
+  static bool _isEffectivelyBlankState(Map<String, dynamic> state) {
+    final tasks = _normalizeTaskMaps(state['tasks']);
+    if (tasks.isNotEmpty) {
+      return false;
+    }
+
+    final notes = (state['notes'] ?? '').toString().trim();
+    if (notes.isNotEmpty) {
+      return false;
+    }
+
+    final noteEntries = _normalizeNoteEntries(state['note_entries']);
+    if (noteEntries.isNotEmpty) {
+      return false;
+    }
+
+    final inboxEntries = _normalizeInboxEntries(state['inbox_entries']);
+    if (inboxEntries.isNotEmpty) {
+      return false;
+    }
+
+    final dailyCheckins = state['daily_checkins_by_date'];
+    if (dailyCheckins is Map && dailyCheckins.isNotEmpty) {
+      return false;
+    }
+
+    return true;
   }
 
   static bool _looksLikeFallbackState(Map<String, dynamic> state) {
@@ -825,11 +867,34 @@ class StorageService {
   ) async {
     final state = await _buildStateMapFromPrefs(prefs);
     final timestamp = DateTime.now().toUtc().toIso8601String();
-    final newEntry = {'timestamp': timestamp, 'state': state};
+    final existingHistory = await loadBackupHistory();
+    final newEntries = <Map<String, dynamic>>[
+      _buildBackupEntry(
+        timestamp: timestamp,
+        state: state,
+        backupType: _recentBackupType,
+      ),
+    ];
+
+    final currentDayKey = _backupDayKey(timestamp);
+    final hasDailyForCurrentDay = existingHistory.any((entry) {
+      final entryType = _normalizeBackupType(entry['backup_type']);
+      return entryType == _dailyBackupType &&
+          _backupDayKey(entry['timestamp']?.toString()) == currentDayKey;
+    });
+    if (!hasDailyForCurrentDay) {
+      newEntries.add(
+        _buildBackupEntry(
+          timestamp: timestamp,
+          state: state,
+          backupType: _dailyBackupType,
+        ),
+      );
+    }
 
     final history = _normalizeBackupHistory([
-      newEntry,
-      ...await loadBackupHistory(),
+      ...newEntries,
+      ...existingHistory,
     ]);
 
     await prefs.setString(_localBackupKey, jsonEncode(state));
@@ -859,8 +924,14 @@ class StorageService {
   ) {
     final normalized = history
         .whereType<Map<String, dynamic>>()
-        .map((entry) => Map<String, dynamic>.from(entry))
-        .where((entry) => entry['state'] is Map)
+        .map((entry) {
+          final normalizedEntry = Map<String, dynamic>.from(entry);
+          normalizedEntry['backup_type'] = _normalizeBackupType(
+            normalizedEntry['backup_type'],
+          );
+          return normalizedEntry;
+        })
+        .where((entry) => entry['state'] is Map && entry['timestamp'] != null)
         .toList();
 
     normalized.sort((a, b) {
@@ -872,7 +943,11 @@ class StorageService {
     final unique = <Map<String, dynamic>>[];
     final seen = <String>{};
     for (final entry in normalized) {
-      final signature = entry['timestamp']?.toString() ?? '';
+      final timestamp = entry['timestamp']?.toString() ?? '';
+      final backupType = _normalizeBackupType(entry['backup_type']);
+      final signature = backupType == _dailyBackupType
+          ? '$backupType:${_backupDayKey(timestamp)}'
+          : '$backupType:$timestamp';
       if (signature.isEmpty || seen.contains(signature)) {
         continue;
       }
@@ -880,11 +955,66 @@ class StorageService {
       unique.add(entry);
     }
 
-    if (unique.length > _maxBackupSnapshots) {
-      unique.removeRange(_maxBackupSnapshots, unique.length);
-    }
+    final recentEntries = unique
+        .where(
+          (entry) =>
+              _normalizeBackupType(entry['backup_type']) == _recentBackupType,
+        )
+        .take(_maxRecentBackupSnapshots)
+        .toList();
+    final dailyEntries = unique
+        .where(
+          (entry) =>
+              _normalizeBackupType(entry['backup_type']) == _dailyBackupType,
+        )
+        .take(_maxDailyBackupSnapshots)
+        .toList();
 
-    return unique;
+    return [...recentEntries, ...dailyEntries]..sort((a, b) {
+      final aTimestamp = (a['timestamp'] ?? '').toString();
+      final bTimestamp = (b['timestamp'] ?? '').toString();
+      return bTimestamp.compareTo(aTimestamp);
+    });
+  }
+
+  static Map<String, dynamic> _buildBackupEntry({
+    required String timestamp,
+    required Map<String, dynamic> state,
+    required String backupType,
+  }) {
+    return {'timestamp': timestamp, 'backup_type': backupType, 'state': state};
+  }
+
+  static String _normalizeBackupType(dynamic value) {
+    final raw = value?.toString().trim().toLowerCase();
+    if (raw == _dailyBackupType) {
+      return _dailyBackupType;
+    }
+    return _recentBackupType;
+  }
+
+  static String _backupDayKey(String? timestamp) {
+    final raw = (timestamp ?? '').trim();
+    if (raw.length >= 10) {
+      return raw.substring(0, 10);
+    }
+    return raw;
+  }
+
+  static bool _backupHistoryHasRicherState(
+    List<Map<String, dynamic>> history,
+    Map<String, dynamic> baseline,
+  ) {
+    final baselineRichness = _stateRichness(baseline);
+    return history.any((entry) {
+      final state = entry['state'];
+      if (state is! Map) {
+        return false;
+      }
+      final candidate = Map<String, dynamic>.from(state);
+      return !_isEffectivelyBlankState(candidate) &&
+          _stateRichness(candidate) > baselineRichness;
+    });
   }
 
   static List<Task> _defaultTasks() {
@@ -924,6 +1054,17 @@ class StorageService {
         }
       }
 
+      final localHistory = _decodeBackupHistory(
+        prefs.getString(_localBackupHistoryKey),
+      );
+      if (_isEffectivelyBlankState(localState) &&
+          _backupHistoryHasRicherState(localHistory, localState)) {
+        if (remoteState != null) {
+          await _applyStateMapToPrefs(prefs, remoteState);
+        }
+        return true;
+      }
+
       if (remoteState == null) {
         return await FirebaseSyncService.uploadState(localState);
       }
@@ -961,6 +1102,13 @@ class StorageService {
     try {
       final prefs = await SharedPreferences.getInstance();
       final state = await _buildStateMapFromPrefs(prefs);
+      final localHistory = _decodeBackupHistory(
+        prefs.getString(_localBackupHistoryKey),
+      );
+      if (_isEffectivelyBlankState(state) &&
+          _backupHistoryHasRicherState(localHistory, state)) {
+        return;
+      }
       await FirebaseSyncService.uploadState(state);
     } catch (_) {
       // Keep local storage reliable even when cloud sync fails.
@@ -992,9 +1140,7 @@ class StorageService {
     final dopamineCrashAdditionalSymptomOptionsRaw = prefs.getString(
       _dopamineCrashAdditionalSymptomOptionsKey,
     );
-    final updatedAt =
-        prefs.getString(_updatedAtKey) ??
-        DateTime.now().toUtc().toIso8601String();
+    final updatedAt = prefs.getString(_updatedAtKey) ?? '';
     final sourceDevice = prefs.getString(_sourceDeviceKey) ?? 'adhd_assistant';
 
     final List<dynamic> tasksJson = tasksRaw == null

@@ -11,6 +11,8 @@ class TaskListView extends StatelessWidget {
     required this.taskTabs,
     required this.buildTaskListContent,
     required this.hasAnyExpandedTask,
+    required this.taskSortLabel,
+    required this.onSelectTaskSortMode,
     required this.onToggleExpandAll,
   });
 
@@ -22,6 +24,8 @@ class TaskListView extends StatelessWidget {
   final List<Widget> taskTabs;
   final Widget Function() buildTaskListContent;
   final bool hasAnyExpandedTask;
+  final String taskSortLabel;
+  final ValueChanged<String> onSelectTaskSortMode;
   final Future<void> Function() onToggleExpandAll;
 
   @override
@@ -61,6 +65,36 @@ class TaskListView extends StatelessWidget {
                           controller: taskTabsScrollController,
                           scrollDirection: Axis.horizontal,
                           child: Row(children: taskTabs),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    PopupMenuButton<String>(
+                      tooltip: 'Sort task list',
+                      onSelected: onSelectTaskSortMode,
+                      itemBuilder: (context) => const [
+                        PopupMenuItem<String>(
+                          value: 'manual',
+                          child: Text('Standard order'),
+                        ),
+                        PopupMenuItem<String>(
+                          value: 'dueDate',
+                          child: Text('Sort by due date'),
+                        ),
+                        PopupMenuItem<String>(
+                          value: 'priority',
+                          child: Text('Sort by priority'),
+                        ),
+                      ],
+                      child: OutlinedButton.icon(
+                        onPressed: null,
+                        icon: const Icon(Icons.sort, size: 16),
+                        label: Text(
+                          taskSortLabel,
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
                         ),
                       ),
                     ),

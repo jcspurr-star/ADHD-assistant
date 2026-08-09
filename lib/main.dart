@@ -100,6 +100,8 @@ class ADHDApp extends StatelessWidget {
 
 enum FirebaseSyncBadgeState { checking, connected, failing, disabled }
 
+enum TaskListSortMode { manual, dueDate, priority }
+
 class ADHDHomePage extends StatefulWidget {
   const ADHDHomePage({super.key});
 
@@ -194,6 +196,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
 
   bool isGenerating = false;
   bool compactView = true;
+  TaskListSortMode selectedTaskSortMode = TaskListSortMode.manual;
   int selectedMainSectionIndex = 0;
   int? pendingTaskScrollIndex;
   int priorityCardCount = 3;
@@ -385,17 +388,36 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           await StorageService.loadPriorityCardCount();
       final loadedOutlookLookAheadDays =
           await StorageService.loadOutlookLookAheadDays();
-      final resolvedContextTodayOptions =
-          loadedContextTodayOptions ?? List<String>.from(dailyContextOptions);
-      final resolvedOtherMedicationOptions =
-          loadedOtherMedicationOptions ??
-          List<String>.from(otherMedicationOptions);
-      final resolvedDopamineCrashSymptomOptions =
-          loadedDopamineCrashSymptomOptions ??
-          List<String>.from(dopamineCrashSymptomOptions);
-      final resolvedDopamineCrashAdditionalSymptomOptions =
-          loadedDopamineCrashAdditionalSymptomOptions ??
-          List<String>.from(dopamineCrashAdditionalSymptomOptions);
+      List<String> resolveOptionList(
+        List<String>? loaded,
+        List<String> fallback,
+      ) {
+        final cleaned = (loaded ?? const <String>[])
+            .map((entry) => entry.trim())
+            .where((entry) => entry.isNotEmpty)
+            .toList();
+        if (cleaned.isNotEmpty) {
+          return cleaned;
+        }
+        return List<String>.from(fallback);
+      }
+
+      final resolvedContextTodayOptions = resolveOptionList(
+        loadedContextTodayOptions,
+        dailyContextOptions,
+      );
+      final resolvedOtherMedicationOptions = resolveOptionList(
+        loadedOtherMedicationOptions,
+        otherMedicationOptions,
+      );
+      final resolvedDopamineCrashSymptomOptions = resolveOptionList(
+        loadedDopamineCrashSymptomOptions,
+        dopamineCrashSymptomOptions,
+      );
+      final resolvedDopamineCrashAdditionalSymptomOptions = resolveOptionList(
+        loadedDopamineCrashAdditionalSymptomOptions,
+        dopamineCrashAdditionalSymptomOptions,
+      );
       final resolvedPriorityCardCount =
           loadedPriorityCardCount ?? getDefaultPriorityCardCountForPlatform();
       final resolvedOutlookLookAheadDays = loadedOutlookLookAheadDays ?? 1;
@@ -426,30 +448,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       });
       syncNoteControllers();
 
-      if (loadedPriorityCardCount == null) {
-        await StorageService.savePriorityCardCount(resolvedPriorityCardCount);
-      }
-      if (loadedOutlookLookAheadDays == null) {
-        await StorageService.saveOutlookLookAheadDays(
-          resolvedOutlookLookAheadDays,
-        );
-      }
-      if (loadedContextTodayOptions == null) {
-        await StorageService.saveContextTodayOptions(dailyContextOptions);
-      }
-      if (loadedOtherMedicationOptions == null) {
-        await StorageService.saveOtherMedicationOptions(otherMedicationOptions);
-      }
-      if (loadedDopamineCrashSymptomOptions == null) {
-        await StorageService.saveDopamineCrashSymptomOptions(
-          dopamineCrashSymptomOptions,
-        );
-      }
-      if (loadedDopamineCrashAdditionalSymptomOptions == null) {
-        await StorageService.saveDopamineCrashAdditionalSymptomOptions(
-          dopamineCrashAdditionalSymptomOptions,
-        );
-      }
       _refreshUpcomingOutlookEvents();
       unawaited(_refreshFirebaseSyncStatus());
     } catch (error, stackTrace) {
@@ -751,16 +749,82 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   }
 
   List<int> getVisibleTaskIndices() {
-    if (selectedTaskCategory == 'All tasks') {
-      return List<int>.generate(tasks.length, (index) => index);
+    final visibleIndices = selectedTaskCategory == 'All tasks'
+        ? List<int>.generate(tasks.length, (index) => index)
+        : tasks
+              .asMap()
+              .entries
+              .where((entry) => entry.value.category == selectedTaskCategory)
+              .map((entry) => entry.key)
+              .toList();
+
+    switch (selectedTaskSortMode) {
+      case TaskListSortMode.manual:
+        return visibleIndices;
+      case TaskListSortMode.dueDate:
+        visibleIndices.sort(compareTaskByDueDate);
+        return visibleIndices;
+      case TaskListSortMode.priority:
+        visibleIndices.sort(compareTaskByPriority);
+        return visibleIndices;
+    }
+  }
+
+  int compareTaskByDueDate(int a, int b) {
+    final aDue = DateTime.tryParse(tasks[a].dueDate ?? '');
+    final bDue = DateTime.tryParse(tasks[b].dueDate ?? '');
+
+    if (aDue == null && bDue == null) {
+      return a.compareTo(b);
+    }
+    if (aDue == null) {
+      return 1;
+    }
+    if (bDue == null) {
+      return -1;
     }
 
-    return tasks
-        .asMap()
-        .entries
-        .where((entry) => entry.value.category == selectedTaskCategory)
-        .map((entry) => entry.key)
-        .toList();
+    final dueCompare = aDue.compareTo(bDue);
+    if (dueCompare != 0) {
+      return dueCompare;
+    }
+
+    return compareTaskByPriority(a, b);
+  }
+
+  int compareTaskByPriority(int a, int b) {
+    final priorityA = RecommendationService.getPriorityScore(tasks[a].priority);
+    final priorityB = RecommendationService.getPriorityScore(tasks[b].priority);
+    final priorityCompare = priorityB.compareTo(priorityA);
+    if (priorityCompare != 0) {
+      return priorityCompare;
+    }
+
+    final aDue = DateTime.tryParse(tasks[a].dueDate ?? '');
+    final bDue = DateTime.tryParse(tasks[b].dueDate ?? '');
+    if (aDue != null && bDue != null) {
+      final dueCompare = aDue.compareTo(bDue);
+      if (dueCompare != 0) {
+        return dueCompare;
+      }
+    } else if (aDue != null) {
+      return -1;
+    } else if (bDue != null) {
+      return 1;
+    }
+
+    return a.compareTo(b);
+  }
+
+  String getTaskSortLabel() {
+    switch (selectedTaskSortMode) {
+      case TaskListSortMode.manual:
+        return 'Standard order';
+      case TaskListSortMode.dueDate:
+        return 'Due date';
+      case TaskListSortMode.priority:
+        return 'Priority';
+    }
   }
 
   void reorderVisibleTasks(
@@ -2110,9 +2174,9 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     final task = tasks[index];
     String cleanLine(String text) {
       return text
-        .trim()
-        .replaceAll(RegExp(r'^[-*\d\.\)\s]+'), '')
-        .replaceAll(RegExp(r'\s+'), ' ');
+          .trim()
+          .replaceAll(RegExp(r'^[-*\d\.\)\s]+'), '')
+          .replaceAll(RegExp(r'\s+'), ' ');
     }
 
     String cap(String value, int maxChars) {
@@ -2130,21 +2194,23 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       final wordEnd = window.lastIndexOf(' ');
       final fallback = (wordEnd > 0 ? window.substring(0, wordEnd) : window)
           .trimRight();
-      if (fallback.endsWith('.') || fallback.endsWith('!') || fallback.endsWith('?')) {
+      if (fallback.endsWith('.') ||
+          fallback.endsWith('!') ||
+          fallback.endsWith('?')) {
         return fallback;
       }
       return '$fallback.';
     }
 
     final suggestions = task.aiSubtasks
-      .map((subtask) => cleanLine(subtask.text))
+        .map((subtask) => cleanLine(subtask.text))
         .where((text) => text.isNotEmpty)
         .toList();
 
     final fallbackStep = cleanLine(getStarterStepSourceText(index));
     final tinyStepRaw = suggestions.isNotEmpty
         ? suggestions.first
-      : (fallbackStep.isNotEmpty ? fallbackStep : cleanLine(task.task));
+        : (fallbackStep.isNotEmpty ? fallbackStep : cleanLine(task.task));
     final tinyStep = cap(tinyStepRaw, 70);
 
     final setupItems = suggestions
@@ -2158,10 +2224,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       setupItems.add('Do one tiny action');
     }
 
-    final setupChecklist = cap(
-      'Setup: ${setupItems.take(2).join('; ')}.',
-      100,
-    );
+    final setupChecklist = cap('Setup: ${setupItems.take(2).join('; ')}.', 100);
     final ifStuck = cap(
       'If stuck: 2-minute timer, do "$tinyStep", then stop.',
       100,
@@ -2179,9 +2242,9 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       return;
     }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Starter script generated.')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Starter script generated.')));
   }
 
   Future<void> addSubtaskFromInput(int taskIndex) async {
@@ -4563,6 +4626,108 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             );
           }
 
+          Widget buildTaskListItem(BuildContext context, int visibleIndex) {
+            final taskIndex = visibleTaskIndices[visibleIndex];
+            final task = tasks[taskIndex];
+            final baseAccentColor = getPriorityColor(task.priority);
+            final accentColor = baseAccentColor.withAlpha(
+              task.done ? 110 : 180,
+            );
+            final cardColor = task.done ? Colors.grey.shade100 : Colors.white;
+            final borderColor = task.done
+                ? Colors.grey.shade300
+                : accentColor.withAlpha(150);
+
+            return Card(
+              key: ValueKey('${taskIndex}_${task.task}'),
+              margin: const EdgeInsets.symmetric(vertical: 8),
+              elevation: 0,
+              color: cardColor,
+              clipBehavior: Clip.antiAlias,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: BorderSide(color: borderColor, width: 1),
+              ),
+              child: Stack(
+                children: [
+                  Positioned(
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    child: Container(width: 5, color: accentColor),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 5),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          TaskTile(
+                            task: task,
+                            dueDateText: formatDueDate(task.dueDate),
+                            progress: RecommendationService.getTaskProgress(
+                              task,
+                            ),
+                            compactView: compactView || !task.expanded,
+                            categories: categories,
+                            category: task.category,
+                            priority: task.priority,
+                            isGenerating: isGenerating,
+                            onToggle: (value) {
+                              toggleTask(taskIndex, value);
+                            },
+                            reorderableIndex: taskIndex,
+                            onPriorityChanged: (value) {
+                              if (value == null) return;
+                              setState(() {
+                                tasks[taskIndex].priority = value;
+                              });
+                              saveTasks();
+                            },
+                            onDueDate: () {
+                              setDueDate(taskIndex);
+                            },
+                            onCategoryChanged: (value) {
+                              if (value == null) return;
+                              setState(() {
+                                tasks[taskIndex].category = value;
+                              });
+                              saveTasks();
+                            },
+                            onToggleExpanded: () {
+                              toggleExpanded(taskIndex);
+                            },
+                            onEdit: () {
+                              editTask(taskIndex);
+                            },
+                            onDelete: () {
+                              showDeleteConfirmation(taskIndex);
+                            },
+                          ),
+                          if (!compactView && task.expanded)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 8, right: 8),
+                              child: buildTaskPanels(taskIndex),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }
+
+          if (selectedTaskSortMode != TaskListSortMode.manual) {
+            return ListView.builder(
+              controller: taskListScrollController,
+              padding: EdgeInsets.zero,
+              itemCount: visibleTaskIndices.length,
+              itemBuilder: buildTaskListItem,
+            );
+          }
+
           return ReorderableListView.builder(
             scrollController: taskListScrollController,
             padding: EdgeInsets.zero,
@@ -4575,101 +4740,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
 
               await saveTasks();
             },
-            itemBuilder: (context, visibleIndex) {
-              final taskIndex = visibleTaskIndices[visibleIndex];
-              final task = tasks[taskIndex];
-              final baseAccentColor = getPriorityColor(task.priority);
-              final accentColor = baseAccentColor.withAlpha(
-                task.done ? 110 : 180,
-              );
-              final cardColor = task.done ? Colors.grey.shade100 : Colors.white;
-              final borderColor = task.done
-                  ? Colors.grey.shade300
-                  : accentColor.withAlpha(150);
-
-              return Card(
-                key: ValueKey('${taskIndex}_${task.task}'),
-                margin: const EdgeInsets.symmetric(vertical: 8),
-                elevation: 0,
-                color: cardColor,
-                clipBehavior: Clip.antiAlias,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  side: BorderSide(color: borderColor, width: 1),
-                ),
-                child: Stack(
-                  children: [
-                    Positioned(
-                      left: 0,
-                      top: 0,
-                      bottom: 0,
-                      child: Container(width: 5, color: accentColor),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.only(left: 5),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 6),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            TaskTile(
-                              task: task,
-                              dueDateText: formatDueDate(task.dueDate),
-                              progress: RecommendationService.getTaskProgress(
-                                task,
-                              ),
-                              compactView: compactView || !task.expanded,
-                              categories: categories,
-                              category: task.category,
-                              priority: task.priority,
-                              isGenerating: isGenerating,
-                              onToggle: (value) {
-                                toggleTask(taskIndex, value);
-                              },
-                              reorderableIndex: taskIndex,
-                              onPriorityChanged: (value) {
-                                if (value == null) return;
-                                setState(() {
-                                  tasks[taskIndex].priority = value;
-                                });
-                                saveTasks();
-                              },
-                              onDueDate: () {
-                                setDueDate(taskIndex);
-                              },
-                              onCategoryChanged: (value) {
-                                if (value == null) return;
-                                setState(() {
-                                  tasks[taskIndex].category = value;
-                                });
-                                saveTasks();
-                              },
-                              onToggleExpanded: () {
-                                toggleExpanded(taskIndex);
-                              },
-                              onEdit: () {
-                                editTask(taskIndex);
-                              },
-                              onDelete: () {
-                                showDeleteConfirmation(taskIndex);
-                              },
-                            ),
-                            if (!compactView && task.expanded)
-                              Padding(
-                                padding: const EdgeInsets.only(
-                                  left: 8,
-                                  right: 8,
-                                ),
-                                child: buildTaskPanels(taskIndex),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            },
+            itemBuilder: buildTaskListItem,
           );
         }
 
@@ -4699,6 +4770,16 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                 taskTabs: taskTabs.map(buildTaskTab).toList(),
                 buildTaskListContent: buildTaskList,
                 hasAnyExpandedTask: hasAnyExpandedTask,
+                taskSortLabel: getTaskSortLabel(),
+                onSelectTaskSortMode: (mode) {
+                  setState(() {
+                    selectedTaskSortMode = switch (mode) {
+                      'dueDate' => TaskListSortMode.dueDate,
+                      'priority' => TaskListSortMode.priority,
+                      _ => TaskListSortMode.manual,
+                    };
+                  });
+                },
                 onToggleExpandAll: () async {
                   if (hasAnyExpandedTask) {
                     await collapseAllTaskTiles();

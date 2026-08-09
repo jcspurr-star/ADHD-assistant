@@ -223,103 +223,131 @@ class _SettingsPageState extends State<SettingsPage> {
     required VoidCallback onSaveEdit,
     required VoidCallback onCancelEdit,
     required void Function(int index) onRemove,
+    bool initiallyExpanded = false,
   }) {
-    return buildSectionCard(
-      title: title,
-      description: description,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    return Material(
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Colors.grey.shade300),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: ExpansionTile(
+        initiallyExpanded: initiallyExpanded,
+        maintainState: true,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+        subtitle: Text(
+          '$description (${options.length})',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 12),
+        ),
         children: [
-          ListView.separated(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: options.length + 1,
-            separatorBuilder: (context, index) => const Divider(height: 16),
-            itemBuilder: (context, index) {
-              if (index < options.length) {
-                final isEditing = editingIndex == index;
-                return Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 4,
-                    vertical: 4,
-                  ),
-                  decoration: isEditing
-                      ? BoxDecoration(
-                          color: Colors.blue.shade50,
-                          borderRadius: BorderRadius.circular(12),
-                        )
-                      : null,
-                  child: ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                    title: isEditing
-                        ? TextField(
-                            controller: editController,
-                            textInputAction: TextInputAction.done,
-                            onSubmitted: (_) => onSaveEdit(),
-                            decoration: const InputDecoration(
-                              labelText: 'Edit option',
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                            ),
+          if (options.isEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                'No options yet.',
+                style: TextStyle(color: Colors.grey.shade600),
+              ),
+            )
+          else
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 240),
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: options.length,
+                separatorBuilder: (context, index) => const Divider(height: 8),
+                itemBuilder: (context, index) {
+                  final isEditing = editingIndex == index;
+                  return Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 2,
+                      vertical: 2,
+                    ),
+                    decoration: isEditing
+                        ? BoxDecoration(
+                            color: Colors.blue.shade50,
+                            borderRadius: BorderRadius.circular(10),
                           )
-                        : Text(options[index]),
-                    trailing: isEditing
-                        ? Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.check),
-                                onPressed: onSaveEdit,
-                                tooltip: 'Save option',
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.close),
-                                onPressed: onCancelEdit,
-                                tooltip: 'Cancel edit',
-                              ),
-                            ],
-                          )
-                        : Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.edit),
-                                onPressed: () => onStartEdit(index),
-                                tooltip: 'Edit option',
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete_outline),
-                                onPressed: () => onRemove(index),
-                                tooltip: 'Remove option',
-                              ),
-                            ],
-                          ),
-                  ),
-                );
-              }
-
-              return Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: addController,
-                        textInputAction: TextInputAction.done,
-                        onSubmitted: (_) => onAdd(),
-                        decoration: const InputDecoration(
-                          labelText: 'New option',
-                          border: OutlineInputBorder(),
-                          isDense: true,
+                        : null,
+                    child: Material(
+                      color: Colors.transparent,
+                      child: ListTile(
+                        dense: true,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 6,
                         ),
+                        title: isEditing
+                            ? TextField(
+                                controller: editController,
+                                textInputAction: TextInputAction.done,
+                                onSubmitted: (_) => onSaveEdit(),
+                                decoration: const InputDecoration(
+                                  labelText: 'Edit option',
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                              )
+                            : Text(options[index]),
+                        trailing: isEditing
+                            ? Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.check),
+                                    onPressed: onSaveEdit,
+                                    tooltip: 'Save option',
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.close),
+                                    onPressed: onCancelEdit,
+                                    tooltip: 'Cancel edit',
+                                  ),
+                                ],
+                              )
+                            : Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.edit),
+                                    onPressed: () => onStartEdit(index),
+                                    tooltip: 'Edit option',
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline),
+                                    onPressed: () => onRemove(index),
+                                    tooltip: 'Remove option',
+                                  ),
+                                ],
+                              ),
                       ),
                     ),
-                    const SizedBox(width: 10),
-                    ElevatedButton(onPressed: onAdd, child: const Text('Add')),
-                  ],
+                  );
+                },
+              ),
+            ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: addController,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => onAdd(),
+                  decoration: const InputDecoration(
+                    labelText: 'New option',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
                 ),
-              );
-            },
+              ),
+              const SizedBox(width: 10),
+              ElevatedButton(onPressed: onAdd, child: const Text('Add')),
+            ],
           ),
         ],
       ),
@@ -382,7 +410,7 @@ class _SettingsPageState extends State<SettingsPage> {
               });
             },
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 10),
           buildEditableOptionsSection(
             title: 'Other medications',
             description:
@@ -432,7 +460,7 @@ class _SettingsPageState extends State<SettingsPage> {
               });
             },
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 10),
           buildEditableOptionsSection(
             title: 'Crash symptoms',
             description:
@@ -482,7 +510,7 @@ class _SettingsPageState extends State<SettingsPage> {
               });
             },
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 10),
           buildEditableOptionsSection(
             title: 'Additional crash symptoms',
             description:
@@ -791,8 +819,8 @@ class _SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 12),
           TextField(
             controller: promptController,
-            minLines: 6,
-            maxLines: 10,
+            minLines: 4,
+            maxLines: 8,
             decoration: const InputDecoration(
               labelText: 'AI prompt',
               helperText:
@@ -805,22 +833,21 @@ class _SettingsPageState extends State<SettingsPage> {
             },
           ),
           const SizedBox(height: 12),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade100,
+          Material(
+            color: Colors.grey.shade100,
+            shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.grey.shade300),
+              side: BorderSide(color: Colors.grey.shade300),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            clipBehavior: Clip.antiAlias,
+            child: ExpansionTile(
+              initiallyExpanded: false,
+              title: const Text(
+                'Preview with example values',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+              childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
               children: [
-                const Text(
-                  'Preview with example values',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
                 SelectableText(
                   buildPreviewPrompt(),
                   style: const TextStyle(fontSize: 12, height: 1.4),
@@ -879,8 +906,8 @@ class _SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 12),
           TextField(
             controller: taskSubtaskPromptController,
-            minLines: 6,
-            maxLines: 10,
+            minLines: 4,
+            maxLines: 8,
             decoration: const InputDecoration(
               labelText: 'Subtasks prompt',
               helperText:
@@ -893,22 +920,21 @@ class _SettingsPageState extends State<SettingsPage> {
             },
           ),
           const SizedBox(height: 12),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade100,
+          Material(
+            color: Colors.grey.shade100,
+            shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.grey.shade300),
+              side: BorderSide(color: Colors.grey.shade300),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            clipBehavior: Clip.antiAlias,
+            child: ExpansionTile(
+              initiallyExpanded: false,
+              title: const Text(
+                'Preview with example values',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+              childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
               children: [
-                const Text(
-                  'Preview with example values',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
                 SelectableText(
                   buildTaskSubtaskPreviewPrompt(),
                   style: const TextStyle(fontSize: 12, height: 1.4),
@@ -928,103 +954,118 @@ class _SettingsPageState extends State<SettingsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ListView.separated(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: categories.length + 1,
-            separatorBuilder: (context, index) => const Divider(height: 16),
-            itemBuilder: (context, index) {
-              if (index < categories.length) {
-                final isEditing = editingIndex == index;
-                return Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 4,
-                    vertical: 4,
-                  ),
-                  decoration: isEditing
-                      ? BoxDecoration(
-                          color: Colors.blue.shade50,
-                          borderRadius: BorderRadius.circular(12),
-                        )
-                      : null,
-                  child: ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                    title: isEditing
-                        ? TextField(
-                            controller: editCategoryController,
-                            textInputAction: TextInputAction.done,
-                            onSubmitted: (_) => saveEditedCategory(),
-                            decoration: const InputDecoration(
-                              labelText: 'Edit category',
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                            ),
+          if (categories.isEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                'No categories yet.',
+                style: TextStyle(color: Colors.grey.shade600),
+              ),
+            )
+          else
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 240),
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: categories.length,
+                separatorBuilder: (context, index) => const Divider(height: 8),
+                itemBuilder: (context, index) {
+                  final isEditing = editingIndex == index;
+                  return Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 4,
+                      vertical: 4,
+                    ),
+                    decoration: isEditing
+                        ? BoxDecoration(
+                            color: Colors.blue.shade50,
+                            borderRadius: BorderRadius.circular(12),
                           )
-                        : Text(categories[index]),
-                    trailing: isEditing
-                        ? Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.check),
-                                onPressed: saveEditedCategory,
-                                tooltip: 'Save category',
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.close),
-                                onPressed: cancelEditingCategory,
-                                tooltip: 'Cancel edit',
-                              ),
-                            ],
-                          )
-                        : Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.edit),
-                                onPressed: () {
-                                  startEditingCategory(index);
-                                },
-                                tooltip: 'Edit category',
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete_outline),
-                                onPressed: () {
-                                  removeCategory(index);
-                                },
-                                tooltip: 'Remove category',
-                              ),
-                            ],
-                          ),
-                  ),
-                );
-              }
-
-              return Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: categoryController,
-                        textInputAction: TextInputAction.done,
-                        onSubmitted: (_) => addCategory(),
-                        decoration: const InputDecoration(
-                          labelText: 'New category',
-                          border: OutlineInputBorder(),
-                          isDense: true,
+                        : null,
+                    child: Material(
+                      color: Colors.transparent,
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 8,
                         ),
+                        title: isEditing
+                            ? TextField(
+                                controller: editCategoryController,
+                                textInputAction: TextInputAction.done,
+                                onSubmitted: (_) => saveEditedCategory(),
+                                decoration: const InputDecoration(
+                                  labelText: 'Edit category',
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                              )
+                            : Text(categories[index]),
+                        trailing: isEditing
+                            ? Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.check),
+                                    onPressed: saveEditedCategory,
+                                    tooltip: 'Save category',
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.close),
+                                    onPressed: cancelEditingCategory,
+                                    tooltip: 'Cancel edit',
+                                  ),
+                                ],
+                              )
+                            : Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.edit),
+                                    onPressed: () {
+                                      startEditingCategory(index);
+                                    },
+                                    tooltip: 'Edit category',
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline),
+                                    onPressed: () {
+                                      removeCategory(index);
+                                    },
+                                    tooltip: 'Remove category',
+                                  ),
+                                ],
+                              ),
                       ),
                     ),
-                    const SizedBox(width: 10),
-                    ElevatedButton(
-                      onPressed: addCategory,
-                      child: const Text('Add'),
+                  );
+                },
+              ),
+            ),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: categoryController,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) => addCategory(),
+                    decoration: const InputDecoration(
+                      labelText: 'New category',
+                      border: OutlineInputBorder(),
+                      isDense: true,
                     ),
-                  ],
+                  ),
                 ),
-              );
-            },
+                const SizedBox(width: 10),
+                ElevatedButton(
+                  onPressed: addCategory,
+                  child: const Text('Add'),
+                ),
+              ],
+            ),
           ),
         ],
       ),
