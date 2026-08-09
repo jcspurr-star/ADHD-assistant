@@ -86,15 +86,34 @@ class TaskListView extends StatelessWidget {
                           child: Text('Sort by priority'),
                         ),
                       ],
-                      child: OutlinedButton.icon(
-                        onPressed: null,
-                        icon: const Icon(Icons.sort, size: 16),
-                        label: Text(
-                          taskSortLabel,
-                          style: const TextStyle(fontSize: 12),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
                         ),
-                        style: OutlinedButton.styleFrom(
-                          visualDensity: VisualDensity.compact,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.grey.shade400),
+                          color: Colors.white,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.sort,
+                              size: 16,
+                              color: Colors.black87,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              taskSortLabel,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.black87,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),

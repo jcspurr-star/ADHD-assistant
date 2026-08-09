@@ -73,8 +73,33 @@ class OneDriveSyncService {
       'onedrive_pending_auth_redirect_uri';
 
   static bool get isConfigured {
-    final trimmed = oneDriveClientId.trim();
-    return trimmed.isNotEmpty && trimmed != 'YOUR_ONEDRIVE_APP_CLIENT_ID';
+    return configurationIssues.isEmpty;
+  }
+
+  static List<String> get configurationIssues {
+    final issues = <String>[];
+
+    final clientId = oneDriveClientId.trim();
+    if (clientId.isEmpty || clientId.startsWith('YOUR_')) {
+      issues.add('Set oneDriveClientId in secrets.dart.');
+    }
+
+    final redirectUri = oneDriveRedirectUri.trim();
+    if (redirectUri.isEmpty || redirectUri.contains('your-app.web.app')) {
+      issues.add(
+        'Set oneDriveRedirectUri in secrets.dart to your real web redirect URI.',
+      );
+    }
+
+    return issues;
+  }
+
+  static String get configurationHelpText {
+    if (configurationIssues.isEmpty) {
+      return 'Outlook / Microsoft sign-in is configured.';
+    }
+
+    return '${configurationIssues.join('\n')}\n\nThese values are local only and need to be set on each machine.';
   }
 
   static Future<bool> isSignedIn() async {
@@ -85,7 +110,7 @@ class OneDriveSyncService {
 
   static Future<OneDriveDeviceCodeSession> beginDeviceCodeFlow() async {
     if (!isConfigured) {
-      throw Exception('OneDrive client ID is not configured.');
+      throw Exception('Outlook / Microsoft client ID is not configured.');
     }
 
     final codeVerifier = _generateCodeVerifier();

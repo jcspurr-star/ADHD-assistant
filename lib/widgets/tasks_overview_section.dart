@@ -11,6 +11,9 @@ class TasksOverviewSection extends StatelessWidget {
     required this.priorityCardSpacing,
     required this.getTopTasks,
     required this.buildPriorityCard,
+    required this.prioritizeWorkOnWeekdays,
+    required this.isWeekday,
+    required this.onToggleWorkdayPriorityMode,
     required this.buildCaptureInboxSection,
     required this.buildOutlookSection,
     required this.buildDailyCheckinSection,
@@ -22,6 +25,9 @@ class TasksOverviewSection extends StatelessWidget {
   final double priorityCardSpacing;
   final List<Task> Function(int count) getTopTasks;
   final Widget Function(int position, Task? task) buildPriorityCard;
+  final bool prioritizeWorkOnWeekdays;
+  final bool isWeekday;
+  final VoidCallback onToggleWorkdayPriorityMode;
   final Widget buildCaptureInboxSection;
   final Widget buildOutlookSection;
   final Widget buildDailyCheckinSection;
@@ -49,6 +55,40 @@ class TasksOverviewSection extends StatelessWidget {
           child: SizedBox(
             width: priorityCardsTotalWidth,
             child: buildCaptureInboxSection,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: SizedBox(
+            width: priorityCardsTotalWidth,
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: onToggleWorkdayPriorityMode,
+                  icon: Icon(
+                    prioritizeWorkOnWeekdays
+                        ? Icons.work_history
+                        : Icons.format_list_bulleted,
+                    size: 18,
+                  ),
+                  label: Text(
+                    prioritizeWorkOnWeekdays
+                        ? 'Workday priority'
+                        : 'All-task priority',
+                  ),
+                ),
+                Text(
+                  isWeekday
+                      ? 'Weekday: Work tasks are boosted when enabled'
+                      : 'Weekend: showing all tasks regardless',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                ),
+              ],
+            ),
           ),
         ),
         const SizedBox(height: 8),

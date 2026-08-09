@@ -201,6 +201,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   int? pendingTaskScrollIndex;
   int priorityCardCount = 3;
   int outlookLookAheadDays = 1;
+  bool prioritizeWorkOnWeekdays = true;
   int selectedFocusTimerMinutes = 25;
   int selectedFocusTimerSeconds = 0;
   Duration remainingFocusTime = const Duration(minutes: 25);
@@ -211,6 +212,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   Future<List<OutlookCalendarEvent>>? upcomingOutlookEventsFuture;
   bool _syncingNoteControllers = false;
   bool timerCompletionCueActive = false;
+  bool hasShownOutlookConfigWarning = false;
   FirebaseSyncBadgeState firebaseSyncBadgeState =
       FirebaseSyncBadgeState.checking;
   String firebaseSyncStatusText = 'Cloud...';
@@ -356,6 +358,24 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     });
   }
 
+  void _showOutlookConfigWarningIfNeeded() {
+    if (hasShownOutlookConfigWarning || StorageService.isOutlookConfigured) {
+      return;
+    }
+
+    hasShownOutlookConfigWarning = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) {
+        return;
+      }
+
+      await showCopyableErrorDialog(
+        'Outlook Setup Needed',
+        StorageService.outlookConfigurationHelpText,
+      );
+    });
+  }
+
   int getDefaultPriorityCardCountForPlatform() {
     final isMobile =
         !kIsWeb &&
@@ -388,6 +408,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           await StorageService.loadPriorityCardCount();
       final loadedOutlookLookAheadDays =
           await StorageService.loadOutlookLookAheadDays();
+      final loadedPrioritizeWorkOnWeekdays =
+          await StorageService.loadPrioritizeWorkOnWeekdays();
       List<String> resolveOptionList(
         List<String>? loaded,
         List<String> fallback,
@@ -421,6 +443,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       final resolvedPriorityCardCount =
           loadedPriorityCardCount ?? getDefaultPriorityCardCountForPlatform();
       final resolvedOutlookLookAheadDays = loadedOutlookLookAheadDays ?? 1;
+      final resolvedPrioritizeWorkOnWeekdays =
+          loadedPrioritizeWorkOnWeekdays ?? true;
       if (!mounted) return;
       setState(() {
         categories = loadedCategories.isEmpty ? ['None'] : loadedCategories;
@@ -437,6 +461,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             : GeminiService.defaultSubtaskPromptTemplate;
         priorityCardCount = resolvedPriorityCardCount;
         outlookLookAheadDays = resolvedOutlookLookAheadDays;
+        prioritizeWorkOnWeekdays = resolvedPrioritizeWorkOnWeekdays;
         tasks = loadedTasks;
         inboxEntries = loadedInboxEntries;
         noteEntries = loadedNoteEntries;
@@ -448,6 +473,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       });
       syncNoteControllers();
 
+      _showOutlookConfigWarningIfNeeded();
       _refreshUpcomingOutlookEvents();
       unawaited(_refreshFirebaseSyncStatus());
     } catch (error, stackTrace) {
@@ -954,12 +980,9 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   Future<void> handleOutlookLink() async {
     if (!StorageService.isOutlookConfigured) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Set oneDriveClientId in secrets.dart for Outlook linking first.',
-          ),
-        ),
+      await showCopyableErrorDialog(
+        'Outlook Setup Needed',
+        StorageService.outlookConfigurationHelpText,
       );
       return;
     }
@@ -2280,8 +2303,18 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
 
   List<Task> getTopTasks(int count) {
     final unfinishedTasks = tasks.where((task) => task.done != true).toList();
+    final applyWorkdayBias =
+        prioritizeWorkOnWeekdays && _isWeekday(DateTime.now());
 
     unfinishedTasks.sort((a, b) {
+      if (applyWorkdayBias) {
+        final isWorkA = _isWorkTask(a);
+        final isWorkB = _isWorkTask(b);
+        if (isWorkA != isWorkB) {
+          return isWorkA ? -1 : 1;
+        }
+      }
+
       final priorityA = RecommendationService.getPriorityScore(a.priority);
       final priorityB = RecommendationService.getPriorityScore(b.priority);
       if (priorityA != priorityB) return priorityB.compareTo(priorityA);
@@ -2296,6 +2329,22 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     });
 
     return unfinishedTasks.take(count).toList();
+  }
+
+  bool _isWeekday(DateTime date) {
+    return date.weekday >= DateTime.monday && date.weekday <= DateTime.friday;
+  }
+
+  bool _isWorkTask(Task task) {
+    return task.category.trim().toLowerCase() == 'work';
+  }
+
+  Future<void> toggleWorkdayPriorityMode() async {
+    final nextValue = !prioritizeWorkOnWeekdays;
+    setState(() {
+      prioritizeWorkOnWeekdays = nextValue;
+    });
+    await StorageService.savePrioritizeWorkOnWeekdays(nextValue);
   }
 
   Future<void> createSubtasks(int index, int stepCount) async {
@@ -4756,6 +4805,9 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                 priorityCardSpacing: priorityCardSpacing,
                 getTopTasks: getTopTasks,
                 buildPriorityCard: buildPriorityCard,
+                prioritizeWorkOnWeekdays: prioritizeWorkOnWeekdays,
+                isWeekday: _isWeekday(DateTime.now()),
+                onToggleWorkdayPriorityMode: toggleWorkdayPriorityMode,
                 buildCaptureInboxSection: buildCaptureInboxSection(),
                 buildOutlookSection: buildOutlookSection(),
                 buildDailyCheckinSection: buildDailyCheckinSection(),

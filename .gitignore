@@ -33,6 +33,8 @@ migrate_working_dir/
 /build/
 /coverage/
 /lib/secrets.dart
+/.firebase/
+/recovery_snapshot_summary.txt
 
 # Symbolication related
 app.*.symbols

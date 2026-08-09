@@ -20,6 +20,8 @@ class StorageService {
   static const String _taskSubtaskPromptKey = 'task_subtask_prompt';
   static const String _priorityCardCountKey = 'priority_card_count';
   static const String _outlookLookAheadDaysKey = 'outlook_look_ahead_days';
+  static const String _prioritizeWorkOnWeekdaysKey =
+      'prioritize_work_on_weekdays';
   static const String _contextTodayOptionsKey = 'context_today_options';
   static const String _otherMedicationOptionsKey = 'other_medication_options';
   static const String _dopamineCrashSymptomOptionsKey =
@@ -37,6 +39,9 @@ class StorageService {
   static const int _maxDailyBackupSnapshots = 30;
 
   static bool get isOutlookConfigured => OneDriveSyncService.isConfigured;
+
+  static String get outlookConfigurationHelpText =>
+      OneDriveSyncService.configurationHelpText;
 
   static Future<bool> isOutlookLinked() {
     return OneDriveSyncService.isSignedIn();
@@ -665,6 +670,21 @@ class StorageService {
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }
 
+  static Future<bool?> loadPrioritizeWorkOnWeekdays() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!prefs.containsKey(_prioritizeWorkOnWeekdaysKey)) {
+      return null;
+    }
+    return prefs.getBool(_prioritizeWorkOnWeekdaysKey);
+  }
+
+  static Future<void> savePrioritizeWorkOnWeekdays(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_prioritizeWorkOnWeekdaysKey, enabled);
+    await _touchStateMetadata(prefs);
+    unawaited(_pushCurrentStateToCloudIfAvailable());
+  }
+
   static Future<List<String>?> loadContextTodayOptions() async {
     return _loadStringList(_contextTodayOptionsKey);
   }
@@ -1130,6 +1150,8 @@ class StorageService {
     final taskSubtaskPrompt = prefs.getString(_taskSubtaskPromptKey) ?? '';
     final priorityCardCount = prefs.getInt(_priorityCardCountKey) ?? 3;
     final outlookLookAheadDays = prefs.getInt(_outlookLookAheadDaysKey) ?? 1;
+    final prioritizeWorkOnWeekdays =
+        prefs.getBool(_prioritizeWorkOnWeekdaysKey) ?? true;
     final contextTodayOptionsRaw = prefs.getString(_contextTodayOptionsKey);
     final otherMedicationOptionsRaw = prefs.getString(
       _otherMedicationOptionsKey,
@@ -1174,6 +1196,7 @@ class StorageService {
       'task_subtask_prompt': taskSubtaskPrompt,
       'priority_card_count': priorityCardCount,
       'outlook_look_ahead_days': outlookLookAheadDays,
+      'prioritize_work_on_weekdays': prioritizeWorkOnWeekdays,
       'context_today_options': _decodeStringList(contextTodayOptionsRaw),
       'other_medication_options': _decodeStringList(otherMedicationOptionsRaw),
       'dopamine_crash_symptom_options': _decodeStringList(
@@ -1208,6 +1231,8 @@ class StorageService {
     final outlookLookAheadDaysRaw =
         (state['outlook_look_ahead_days'] ?? 1) as num;
     final outlookLookAheadDays = outlookLookAheadDaysRaw.toInt().clamp(1, 7);
+    final prioritizeWorkOnWeekdays =
+        (state['prioritize_work_on_weekdays'] ?? true) == true;
     final updatedAt =
         (state['updated_at_utc'] ?? DateTime.now().toUtc().toIso8601String())
             .toString();
@@ -1231,6 +1256,7 @@ class StorageService {
     await prefs.setString(_taskSubtaskPromptKey, taskSubtaskPrompt);
     await prefs.setInt(_priorityCardCountKey, priorityCardCount);
     await prefs.setInt(_outlookLookAheadDaysKey, outlookLookAheadDays);
+    await prefs.setBool(_prioritizeWorkOnWeekdaysKey, prioritizeWorkOnWeekdays);
     await prefs.setString(
       _contextTodayOptionsKey,
       jsonEncode(_normalizeStringList(state['context_today_options'])),
