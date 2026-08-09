@@ -30,76 +30,92 @@ class TaskListView extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (showOverview) const SizedBox(height: 16),
-        if (showOverview)
-          const Divider(height: 1, thickness: 1, color: Colors.grey),
-        if (showOverview) const SizedBox(height: 10),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: SizedBox(
-            width: priorityCardsTotalWidth,
-            child: Row(
-              children: [
-                Expanded(
-                  child: SizedBox(
-                    height: 44,
-                    child: SingleChildScrollView(
-                      controller: taskTabsScrollController,
-                      scrollDirection: Axis.horizontal,
-                      child: Row(children: taskTabs),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final chromeHeight =
+            (showOverview ? 27.0 : 0.0) +
+            44.0 +
+            10.0 +
+            (isGenerating ? 36.0 : 0.0);
+        final computedListHeight = constraints.maxHeight.isFinite
+            ? (constraints.maxHeight - chromeHeight).clamp(180.0, 5000.0)
+            : 520.0;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (showOverview) const SizedBox(height: 16),
+            if (showOverview)
+              const Divider(height: 1, thickness: 1, color: Colors.grey),
+            if (showOverview) const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: SizedBox(
+                width: priorityCardsTotalWidth,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: SizedBox(
+                        height: 44,
+                        child: SingleChildScrollView(
+                          controller: taskTabsScrollController,
+                          scrollDirection: Axis.horizontal,
+                          child: Row(children: taskTabs),
+                        ),
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        await onToggleExpandAll();
+                      },
+                      icon: Icon(
+                        hasAnyExpandedTask
+                            ? Icons.unfold_less
+                            : Icons.unfold_more,
+                        size: 16,
+                      ),
+                      label: Text(
+                        hasAnyExpandedTask ? 'Collapse all' : 'Expand all',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    await onToggleExpandAll();
-                  },
-                  icon: Icon(
-                    hasAnyExpandedTask ? Icons.unfold_less : Icons.unfold_more,
-                    size: 16,
-                  ),
-                  label: Text(
-                    hasAnyExpandedTask ? 'Collapse all' : 'Expand all',
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                  ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            if (isGenerating)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 16),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    SizedBox(width: 12),
+                    Text('Generating starter steps...'),
+                  ],
                 ),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 10),
-        if (isGenerating)
-          const Padding(
-            padding: EdgeInsets.only(bottom: 16),
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            SizedBox(
+              height: computedListHeight,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: SizedBox(
+                  width: priorityCardsTotalWidth,
+                  child: buildTaskListContent(),
                 ),
-                SizedBox(width: 12),
-                Text('Generating starter steps...'),
-              ],
+              ),
             ),
-          ),
-        Expanded(
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: SizedBox(
-              width: priorityCardsTotalWidth,
-              child: buildTaskListContent(),
-            ),
-          ),
-        ),
-      ],
+          ],
+        );
+      },
     );
   }
 }

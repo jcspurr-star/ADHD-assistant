@@ -1172,29 +1172,6 @@ class StorageService {
     ];
   }
 
-  static bool _isRemoteNewer(
-    Map<String, dynamic> candidate,
-    Map<String, dynamic> baseline,
-  ) {
-    final candidateRaw = (candidate['updated_at_utc'] ?? '').toString();
-    final baselineRaw = (baseline['updated_at_utc'] ?? '').toString();
-
-    final candidateTime = DateTime.tryParse(candidateRaw);
-    final baselineTime = DateTime.tryParse(baselineRaw);
-
-    if (candidateTime == null && baselineTime == null) {
-      return false;
-    }
-    if (candidateTime == null) {
-      return false;
-    }
-    if (baselineTime == null) {
-      return true;
-    }
-
-    return candidateTime.isAfter(baselineTime);
-  }
-
   static DateTime? _stateTimestamp(Map<String, dynamic> state) {
     final raw = (state['updated_at_utc'] ?? '').toString();
     return DateTime.tryParse(raw);

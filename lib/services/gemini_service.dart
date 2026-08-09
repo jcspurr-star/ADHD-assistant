@@ -70,15 +70,21 @@ Return ONLY a JSON object with this property:
       );
     }
 
-    final data = jsonDecode(response.body);
-    final text = data["candidates"][0]["content"]["parts"][0]["text"];
-    final Map<String, dynamic> breakdown = jsonDecode(text);
-
-    return GeminiTaskBreakdown(
-      subtasks: (breakdown["steps"] as List<dynamic>)
-          .map((step) => Subtask(text: step.toString(), done: false))
-          .toList(),
-    );
+    try {
+      final data = jsonDecode(response.body);
+      final text = data["candidates"][0]["content"]["parts"][0]["text"];
+      final breakdown = _parseStepsPayload(text.toString());
+      return GeminiTaskBreakdown(subtasks: breakdown);
+    } catch (_) {
+      return GeminiTaskBreakdown(
+        subtasks: [
+          Subtask(
+            text: "Couldn't parse AI response. Please try again.",
+            done: false,
+          ),
+        ],
+      );
+    }
   }
 
   static Future<GeminiTaskBreakdown> generateTaskSubtasks(
@@ -122,15 +128,58 @@ Return ONLY a JSON object with this property:
       );
     }
 
-    final data = jsonDecode(response.body);
-    final text = data["candidates"][0]["content"]["parts"][0]["text"];
-    final Map<String, dynamic> breakdown = jsonDecode(text);
+    try {
+      final data = jsonDecode(response.body);
+      final text = data["candidates"][0]["content"]["parts"][0]["text"];
+      final breakdown = _parseStepsPayload(text.toString());
+      return GeminiTaskBreakdown(subtasks: breakdown);
+    } catch (_) {
+      return GeminiTaskBreakdown(
+        subtasks: [
+          Subtask(
+            text: "Couldn't parse AI response. Please try again.",
+            done: false,
+          ),
+        ],
+      );
+    }
+  }
 
-    return GeminiTaskBreakdown(
-      subtasks: (breakdown["steps"] as List<dynamic>)
-          .map((step) => Subtask(text: step.toString(), done: false))
-          .toList(),
-    );
+  static List<Subtask> _parseStepsPayload(String rawText) {
+    final trimmed = rawText.trim();
+    final candidate = _extractJsonObject(trimmed);
+    final decoded = jsonDecode(candidate);
+
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException('Expected JSON object');
+    }
+
+    final steps = decoded["steps"];
+    if (steps is! List<dynamic>) {
+      throw const FormatException('Expected steps array');
+    }
+
+    final subtasks = steps
+        .map((step) => step.toString().trim())
+        .where((step) => step.isNotEmpty)
+        .map((step) => Subtask(text: step, done: false))
+        .toList();
+
+    if (subtasks.isEmpty) {
+      throw const FormatException('No usable steps found');
+    }
+
+    return subtasks;
+  }
+
+  static String _extractJsonObject(String text) {
+    final fenceStart = text.indexOf('{');
+    final fenceEnd = text.lastIndexOf('}');
+    if (fenceStart != -1 && fenceEnd > fenceStart) {
+      return text.substring(fenceStart, fenceEnd + 1);
+    }
+
+    return text;
   }
 }
 

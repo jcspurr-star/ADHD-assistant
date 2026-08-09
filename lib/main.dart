@@ -2095,6 +2095,95 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     stuckController.dispose();
   }
 
+  Future<void> generateStarterScript(int index) async {
+    if (index < 0 || index >= tasks.length) {
+      return;
+    }
+
+    if (tasks[index].aiSubtasks.isEmpty && !isGenerating) {
+      await createSubtasks(index, defaultStarterStepCount);
+      if (!mounted) {
+        return;
+      }
+    }
+
+    final task = tasks[index];
+    String cleanLine(String text) {
+      return text
+        .trim()
+        .replaceAll(RegExp(r'^[-*\d\.\)\s]+'), '')
+        .replaceAll(RegExp(r'\s+'), ' ');
+    }
+
+    String cap(String value, int maxChars) {
+      final trimmed = value.trim();
+      if (trimmed.length <= maxChars) {
+        return trimmed;
+      }
+
+      final window = trimmed.substring(0, maxChars).trimRight();
+      final sentenceEnd = window.lastIndexOf(RegExp(r'[.!?]'));
+      if (sentenceEnd >= (maxChars * 0.45)) {
+        return window.substring(0, sentenceEnd + 1).trimRight();
+      }
+
+      final wordEnd = window.lastIndexOf(' ');
+      final fallback = (wordEnd > 0 ? window.substring(0, wordEnd) : window)
+          .trimRight();
+      if (fallback.endsWith('.') || fallback.endsWith('!') || fallback.endsWith('?')) {
+        return fallback;
+      }
+      return '$fallback.';
+    }
+
+    final suggestions = task.aiSubtasks
+      .map((subtask) => cleanLine(subtask.text))
+        .where((text) => text.isNotEmpty)
+        .toList();
+
+    final fallbackStep = cleanLine(getStarterStepSourceText(index));
+    final tinyStepRaw = suggestions.isNotEmpty
+        ? suggestions.first
+      : (fallbackStep.isNotEmpty ? fallbackStep : cleanLine(task.task));
+    final tinyStep = cap(tinyStepRaw, 70);
+
+    final setupItems = suggestions
+        .skip(1)
+        .take(2)
+        .map(cleanLine)
+        .where((item) => item.isNotEmpty)
+        .toList();
+    if (setupItems.isEmpty) {
+      setupItems.add('Open what you need');
+      setupItems.add('Do one tiny action');
+    }
+
+    final setupChecklist = cap(
+      'Setup: ${setupItems.take(2).join('; ')}.',
+      100,
+    );
+    final ifStuck = cap(
+      'If stuck: 2-minute timer, do "$tinyStep", then stop.',
+      100,
+    );
+
+    setState(() {
+      tasks[index].starterTinyStep = tinyStep;
+      tasks[index].starterSetupChecklist = setupChecklist;
+      tasks[index].starterIfStuck = ifStuck;
+    });
+
+    await saveTasks();
+
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Starter script generated.')),
+    );
+  }
+
   Future<void> addSubtaskFromInput(int taskIndex) async {
     final controller = getSubtaskController(taskIndex);
     final text = controller.text.trim();
@@ -4380,12 +4469,27 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                 value: task.starterIfStuck,
               ),
               const SizedBox(height: 4),
-              OutlinedButton.icon(
-                onPressed: () {
-                  editStarterScript(index);
-                },
-                icon: const Icon(Icons.edit_note),
-                label: const Text('Edit starter script'),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: isGenerating
+                        ? null
+                        : () async {
+                            await generateStarterScript(index);
+                          },
+                    icon: const Icon(Icons.auto_awesome),
+                    label: const Text('Generate starter script'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      editStarterScript(index);
+                    },
+                    icon: const Icon(Icons.edit_note),
+                    label: const Text('Edit starter script'),
+                  ),
+                ],
               ),
             ],
           );
