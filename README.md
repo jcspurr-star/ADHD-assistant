@@ -16,6 +16,15 @@ For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev/), which offers tutorials,
 samples, guidance on mobile development, and a full API reference.
 
+## Local Secrets Setup
+
+This project keeps machine-specific secrets out of source control.
+
+1. Copy `lib/secrets.template.dart` to `lib/secrets.dart`.
+2. Fill in your real values in `lib/secrets.dart`.
+
+`lib/secrets.dart` is ignored by git and stays local on each machine.
+
 ## OneDrive Sync Setup (Windows + Android)
 
 This app supports single-user OneDrive sync using Microsoft device-code login.
@@ -34,7 +43,7 @@ This app supports single-user OneDrive sync using Microsoft device-code login.
 
 ### 3) Configure the app client ID
 
-1. Open [lib/secrets.dart](lib/secrets.dart).
+1. Open `lib/secrets.dart`.
 2. Set `oneDriveClientId` to your Azure app client ID.
 
 ### 4) Link and sync in the app
