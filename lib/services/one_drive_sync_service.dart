@@ -1,0 +1,503 @@
+import 'dart:convert';
+import 'dart:math' as math;
+
+import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import '../secrets.dart';
+
+class OneDriveDeviceCodeSession {
+  final String deviceCode;
+  final String userCode;
+  final String verificationUri;
+  final String message;
+  final int intervalSeconds;
+  final int expiresInSeconds;
+  final String? codeVerifier;
+  final String? redirectUri;
+  final String? state;
+
+  const OneDriveDeviceCodeSession({
+    required this.deviceCode,
+    required this.userCode,
+    required this.verificationUri,
+    required this.message,
+    required this.intervalSeconds,
+    required this.expiresInSeconds,
+    this.codeVerifier,
+    this.redirectUri,
+    this.state,
+  });
+}
+
+class OutlookCalendarEvent {
+  final String id;
+  final String subject;
+  final DateTime? start;
+  final DateTime? end;
+  final bool isAllDay;
+
+  const OutlookCalendarEvent({
+    required this.id,
+    required this.subject,
+    required this.start,
+    required this.end,
+    required this.isAllDay,
+  });
+}
+
+class OneDriveSyncService {
+  static final RegExp _dateTimeHasExplicitZone = RegExp(r'(Z|[+-]\d\d:\d\d)$');
+
+  static String get _authorityTenant {
+    final trimmed = oneDriveAuthorityTenant.trim();
+    return trimmed.isEmpty ? 'consumers' : trimmed;
+  }
+
+  static String get _tokenEndpoint =>
+      'https://login.microsoftonline.com/$_authorityTenant/oauth2/v2.0/token';
+  static const String _scope =
+      'offline_access User.Read Calendars.Read Files.ReadWrite.AppFolder';
+  static const String _stateFileName = 'adhd_assistant_app_state.json';
+
+  static const String _accessTokenKey = 'onedrive_access_token';
+  static const String _refreshTokenKey = 'onedrive_refresh_token';
+  static const String _accessTokenExpiryEpochKey =
+      'onedrive_access_token_expiry_epoch';
+  static const String _pendingOutlookAuthStateKey =
+      'onedrive_pending_auth_state';
+  static const String _pendingOutlookAuthCodeVerifierKey =
+      'onedrive_pending_auth_code_verifier';
+  static const String _pendingOutlookAuthRedirectUriKey =
+      'onedrive_pending_auth_redirect_uri';
+
+  static bool get isConfigured {
+    final trimmed = oneDriveClientId.trim();
+    return trimmed.isNotEmpty && trimmed != 'YOUR_ONEDRIVE_APP_CLIENT_ID';
+  }
+
+  static Future<bool> isSignedIn() async {
+    final prefs = await SharedPreferences.getInstance();
+    final refreshToken = prefs.getString(_refreshTokenKey);
+    return refreshToken != null && refreshToken.trim().isNotEmpty;
+  }
+
+  static Future<OneDriveDeviceCodeSession> beginDeviceCodeFlow() async {
+    if (!isConfigured) {
+      throw Exception('OneDrive client ID is not configured.');
+    }
+
+    final codeVerifier = _generateCodeVerifier();
+    final redirectUri = _redirectUriForCurrentPlatform();
+    final state = _generateState();
+
+    await _persistPendingAuthSession(
+      state: state,
+      codeVerifier: codeVerifier,
+      redirectUri: redirectUri,
+    );
+
+    final authorizationUrl = buildAuthorizationUrl(
+      redirectUri: redirectUri,
+      codeVerifier: codeVerifier,
+      state: state,
+    );
+
+    return OneDriveDeviceCodeSession(
+      deviceCode: '',
+      userCode: '',
+      verificationUri: authorizationUrl.toString(),
+      message: kIsWeb
+          ? 'Complete the Microsoft sign-in in your browser and return to this app when prompted.'
+          : 'Open the sign-in page and continue.',
+      intervalSeconds: 0,
+      expiresInSeconds: 900,
+      codeVerifier: codeVerifier,
+      redirectUri: redirectUri,
+      state: state,
+    );
+  }
+
+  static Future<bool> completeDeviceCodeFlow([
+    OneDriveDeviceCodeSession? session,
+  ]) async {
+    final code = Uri.base.queryParameters['code'];
+    final error = Uri.base.queryParameters['error'];
+    final returnedState = Uri.base.queryParameters['state'];
+
+    if ((code == null || code.isEmpty) && (error == null || error.isEmpty)) {
+      return false;
+    }
+
+    if (error != null && error.isNotEmpty) {
+      return false;
+    }
+
+    final pending = await _loadPendingAuthSession();
+    if (pending.state != null &&
+        pending.state!.isNotEmpty &&
+        pending.state != returnedState) {
+      return false;
+    }
+
+    final redirectUri = pending.redirectUri ?? _redirectUriForCurrentPlatform();
+    final codeVerifier = pending.codeVerifier ?? '';
+
+    if (codeVerifier.isEmpty || code == null || code.isEmpty) {
+      return false;
+    }
+
+    final response = await http.post(
+      Uri.parse(_tokenEndpoint),
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: {
+        'grant_type': 'authorization_code',
+        'client_id': oneDriveClientId,
+        'code': code,
+        'redirect_uri': redirectUri,
+        'code_verifier': codeVerifier,
+      },
+    );
+
+    if (response.statusCode != 200) {
+      final oauthError = _extractOauthError(response.body);
+      throw Exception('Unable to finish Microsoft sign-in. $oauthError');
+    }
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    await _storeTokenResponse(body);
+    await _clearPendingAuthSession();
+    return true;
+  }
+
+  static String buildAuthorizationUrl({
+    required String redirectUri,
+    required String codeVerifier,
+    String? state,
+  }) {
+    final resolvedState = state ?? _generateState();
+    final codeChallenge = _generateCodeChallenge(codeVerifier);
+    return Uri.https(
+      'login.microsoftonline.com',
+      '/$_authorityTenant/oauth2/v2.0/authorize',
+      {
+        'client_id': oneDriveClientId,
+        'response_type': 'code',
+        'redirect_uri': redirectUri,
+        'scope': _scope,
+        'code_challenge': codeChallenge,
+        'code_challenge_method': 'S256',
+        'state': resolvedState,
+      },
+    ).toString();
+  }
+
+  static String _generateCodeVerifier() {
+    final bytes = List<int>.generate(
+      64,
+      (_) => math.Random.secure().nextInt(256),
+    );
+    return base64UrlEncode(bytes).replaceAll('=', '');
+  }
+
+  static String _generateCodeChallenge(String codeVerifier) {
+    final digest = sha256.convert(utf8.encode(codeVerifier)).bytes;
+    return base64UrlEncode(digest).replaceAll('=', '');
+  }
+
+  static String _generateState() {
+    final bytes = List<int>.generate(
+      16,
+      (_) => math.Random.secure().nextInt(256),
+    );
+    return base64UrlEncode(bytes).replaceAll('=', '');
+  }
+
+  static String _redirectUriForCurrentPlatform() {
+    final configuredRedirectUri = oneDriveRedirectUri.trim();
+    if (configuredRedirectUri.isNotEmpty) {
+      return configuredRedirectUri;
+    }
+
+    if (kIsWeb) {
+      final uri = Uri.base;
+      final normalizedPath = uri.path.isEmpty || uri.path == '/'
+          ? '/outlook-callback'
+          : uri.path.endsWith('/outlook-callback')
+          ? uri.path
+          : '${uri.path}/outlook-callback';
+      return '${uri.origin}$normalizedPath';
+    }
+
+    return 'http://localhost/outlook-callback';
+  }
+
+  static Future<void> _persistPendingAuthSession({
+    required String state,
+    required String codeVerifier,
+    required String redirectUri,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_pendingOutlookAuthStateKey, state);
+    await prefs.setString(_pendingOutlookAuthCodeVerifierKey, codeVerifier);
+    await prefs.setString(_pendingOutlookAuthRedirectUriKey, redirectUri);
+  }
+
+  static Future<({String? state, String? codeVerifier, String? redirectUri})>
+  _loadPendingAuthSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    return (
+      state: prefs.getString(_pendingOutlookAuthStateKey),
+      codeVerifier: prefs.getString(_pendingOutlookAuthCodeVerifierKey),
+      redirectUri: prefs.getString(_pendingOutlookAuthRedirectUriKey),
+    );
+  }
+
+  static Future<void> _clearPendingAuthSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_pendingOutlookAuthStateKey);
+    await prefs.remove(_pendingOutlookAuthCodeVerifierKey);
+    await prefs.remove(_pendingOutlookAuthRedirectUriKey);
+  }
+
+  static Future<void> signOut() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_accessTokenKey);
+    await prefs.remove(_refreshTokenKey);
+    await prefs.remove(_accessTokenExpiryEpochKey);
+  }
+
+  static Future<Map<String, dynamic>?> downloadState() async {
+    final accessToken = await _getValidAccessToken();
+    if (accessToken == null) return null;
+
+    final response = await http.get(
+      Uri.parse(
+        'https://graph.microsoft.com/v1.0/me/drive/special/approot:/$_stateFileName:/content',
+      ),
+      headers: {
+        'Authorization': 'Bearer $accessToken',
+        'Accept': 'application/json',
+      },
+    );
+
+    if (response.statusCode == 404) {
+      return null;
+    }
+
+    if (response.statusCode != 200) {
+      // Force relink when refresh token has become invalid or revoked.
+      if (response.statusCode == 400) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        final error = (body['error'] ?? '').toString();
+        if (error == 'invalid_grant' || error == 'interaction_required') {
+          await signOut();
+        }
+      }
+      return null;
+    }
+
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  static Future<bool> uploadState(Map<String, dynamic> state) async {
+    final accessToken = await _getValidAccessToken();
+    if (accessToken == null) return false;
+
+    final response = await http.put(
+      Uri.parse(
+        'https://graph.microsoft.com/v1.0/me/drive/special/approot:/$_stateFileName:/content',
+      ),
+      headers: {
+        'Authorization': 'Bearer $accessToken',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode(state),
+    );
+
+    return response.statusCode == 200 || response.statusCode == 201;
+  }
+
+  static Future<List<OutlookCalendarEvent>> fetchUpcomingCalendarEvents({
+    Duration lookAhead = const Duration(days: 7),
+    int maxItems = 10,
+  }) async {
+    final accessToken = await _getValidAccessToken();
+    if (accessToken == null) {
+      throw Exception('No Microsoft sign-in session found.');
+    }
+
+    final nowUtc = DateTime.now().toUtc();
+    final endUtc = nowUtc.add(lookAhead);
+    final query = {
+      'startDateTime': nowUtc.toIso8601String(),
+      'endDateTime': endUtc.toIso8601String(),
+      r'$top': maxItems.toString(),
+      r'$orderby': 'start/dateTime',
+      r'$select': 'id,subject,isAllDay,start,end',
+    };
+
+    final response = await http.get(
+      Uri.https('graph.microsoft.com', '/v1.0/me/calendarView', query),
+      headers: {
+        'Authorization': 'Bearer $accessToken',
+        'Accept': 'application/json',
+        'Prefer': 'outlook.timezone="UTC"',
+      },
+    );
+
+    if (response.statusCode == 401) {
+      await signOut();
+      throw Exception(
+        'Your Microsoft session expired or was revoked. Please link again.',
+      );
+    }
+
+    if (response.statusCode == 403) {
+      throw Exception(
+        'Calendar permission denied. Ensure Calendars.Read is granted in your Azure app registration.',
+      );
+    }
+
+    if (response.statusCode != 200) {
+      throw Exception(
+        'Unable to load Outlook calendar events. ${_extractGraphError(response.body)}',
+      );
+    }
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    final rawEvents = (body['value'] as List<dynamic>? ?? const []);
+
+    return rawEvents.map((raw) {
+      final event = Map<String, dynamic>.from(raw as Map);
+      return OutlookCalendarEvent(
+        id: (event['id'] ?? '').toString(),
+        subject: (event['subject'] ?? '').toString().trim().isEmpty
+            ? '(No title)'
+            : (event['subject'] ?? '').toString(),
+        start: _parseGraphDateTimeField(event['start']),
+        end: _parseGraphDateTimeField(event['end']),
+        isAllDay: event['isAllDay'] == true,
+      );
+    }).toList();
+  }
+
+  static Future<String?> _getValidAccessToken() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final accessToken = prefs.getString(_accessTokenKey);
+    final expiresAt = prefs.getInt(_accessTokenExpiryEpochKey) ?? 0;
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+    if (accessToken != null && accessToken.isNotEmpty && now < expiresAt - 60) {
+      return accessToken;
+    }
+
+    final refreshToken = prefs.getString(_refreshTokenKey);
+    if (refreshToken == null || refreshToken.isEmpty) {
+      return null;
+    }
+
+    final response = await http.post(
+      Uri.parse(_tokenEndpoint),
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: {
+        'grant_type': 'refresh_token',
+        'client_id': oneDriveClientId,
+        'refresh_token': refreshToken,
+        'scope': _scope,
+      },
+    );
+
+    if (response.statusCode != 200) {
+      return null;
+    }
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    await _storeTokenResponse(body);
+    return body['access_token']?.toString();
+  }
+
+  static Future<void> _storeTokenResponse(Map<String, dynamic> body) async {
+    final accessToken = (body['access_token'] ?? '').toString();
+    final refreshToken = (body['refresh_token'] ?? '').toString();
+    final expiresIn = (body['expires_in'] as num?)?.toInt() ?? 3600;
+
+    if (accessToken.isEmpty) {
+      throw Exception('Microsoft sign-in did not return an access token.');
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    final expiresAt =
+        (DateTime.now().millisecondsSinceEpoch ~/ 1000) + expiresIn;
+
+    await prefs.setString(_accessTokenKey, accessToken);
+    if (refreshToken.isNotEmpty) {
+      await prefs.setString(_refreshTokenKey, refreshToken);
+    }
+    await prefs.setInt(_accessTokenExpiryEpochKey, expiresAt);
+  }
+
+  static String _extractOauthError(String rawBody) {
+    try {
+      final body = jsonDecode(rawBody) as Map<String, dynamic>;
+      final error = (body['error'] ?? '').toString();
+      final description = (body['error_description'] ?? '').toString();
+      if (error.isEmpty && description.isEmpty) {
+        return 'HTTP response: $rawBody';
+      }
+      if (description.isEmpty) {
+        return 'Error: $error';
+      }
+      return 'Error: $error. $description';
+    } catch (_) {
+      return 'HTTP response: $rawBody';
+    }
+  }
+
+  static DateTime? _parseGraphDateTimeField(dynamic rawValue) {
+    if (rawValue is Map<String, dynamic>) {
+      final dateTimeText = (rawValue['dateTime'] ?? '').toString();
+      final timeZone = (rawValue['timeZone'] ?? '').toString();
+      if (dateTimeText.isEmpty) {
+        return null;
+      }
+
+      final parsed = DateTime.tryParse(dateTimeText);
+      if (parsed == null) {
+        return null;
+      }
+
+      if (timeZone.toUpperCase() == 'UTC' &&
+          !_dateTimeHasExplicitZone.hasMatch(dateTimeText)) {
+        return DateTime.parse('${dateTimeText}Z');
+      }
+
+      return parsed;
+    }
+
+    return null;
+  }
+
+  static String _extractGraphError(String rawBody) {
+    try {
+      final body = jsonDecode(rawBody) as Map<String, dynamic>;
+      final error = body['error'];
+      if (error is Map<String, dynamic>) {
+        final code = (error['code'] ?? '').toString();
+        final message = (error['message'] ?? '').toString();
+        if (code.isEmpty && message.isEmpty) {
+          return rawBody;
+        }
+        if (message.isEmpty) {
+          return 'Error: $code';
+        }
+        return 'Error: $code. $message';
+      }
+      return rawBody;
+    } catch (_) {
+      return rawBody;
+    }
+  }
+}

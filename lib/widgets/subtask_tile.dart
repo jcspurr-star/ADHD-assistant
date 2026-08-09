@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import '../models/task.dart';
 
 class SubtaskTile extends StatelessWidget {
-  final Map<String, dynamic> subtask;
+  final Subtask subtask;
+  final int index;
 
   final VoidCallback onEdit;
   final VoidCallback onDelete;
@@ -13,6 +15,7 @@ class SubtaskTile extends StatelessWidget {
   const SubtaskTile({
     super.key,
     required this.subtask,
+    required this.index,
     required this.onEdit,
     required this.onDelete,
     required this.onMoveUp,
@@ -24,10 +27,46 @@ class SubtaskTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListTile(
       dense: true,
+      contentPadding: EdgeInsets.zero,
+      horizontalTitleGap: 4,
+      minLeadingWidth: 24,
+      tileColor: subtask.aiSuggested ? Colors.blue.shade50 : null,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
 
-      leading: Checkbox(value: subtask["done"], onChanged: onChanged),
+      leading: SizedBox(
+        width: 24,
+        height: 24,
+        child: Checkbox(
+          value: subtask.done,
+          onChanged: onChanged,
+          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          visualDensity: const VisualDensity(horizontal: -4, vertical: -4),
+        ),
+      ),
 
-      title: Text(subtask["text"]),
+      title: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '$index.',
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+              color: Colors.black54,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              subtask.text,
+              style: TextStyle(
+                fontWeight: subtask.aiSuggested
+                    ? FontWeight.w600
+                    : FontWeight.normal,
+              ),
+            ),
+          ),
+        ],
+      ),
 
       trailing: Row(
         mainAxisSize: MainAxisSize.min,

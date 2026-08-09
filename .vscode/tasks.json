@@ -1,0 +1,20 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Deploy Firebase Hosting",
+			"type": "shell",
+			"command": "\"C:\\Users\\James Spurr\\AppData\\Roaming\\npm\\firebase.cmd\"",
+			"args": [
+				"deploy",
+				"--only",
+				"hosting"
+			]
+		},
+		{
+			"label": "Deploy Firebase Hosting (escaped)",
+			"type": "shell",
+			"command": "& \"C:\\Users\\James Spurr\\AppData\\Roaming\\npm\\firebase.cmd\" deploy --only hosting"
+		}
+	]
+}

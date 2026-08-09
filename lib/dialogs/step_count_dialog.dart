@@ -6,7 +6,7 @@ Future<int?> showStepCountDialog(BuildContext context) async {
   return await showDialog<int>(
     context: context,
     builder: (context) => AlertDialog(
-      title: const Text("Generate Subtasks"),
+      title: const Text("Generate starter steps"),
       content: TextField(
         controller: controller,
         keyboardType: TextInputType.number,
