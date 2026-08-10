@@ -17,6 +17,7 @@ class TasksOverviewSection extends StatelessWidget {
     required this.buildCaptureInboxSection,
     required this.buildOutlookSection,
     required this.buildDailyCheckinSection,
+    required this.buildDayPlannerSection,
   });
 
   final bool isNarrow;
@@ -31,6 +32,7 @@ class TasksOverviewSection extends StatelessWidget {
   final Widget buildCaptureInboxSection;
   final Widget buildOutlookSection;
   final Widget buildDailyCheckinSection;
+  final Widget buildDayPlannerSection;
 
   @override
   Widget build(BuildContext context) {
@@ -132,6 +134,14 @@ class TasksOverviewSection extends StatelessWidget {
           child: SizedBox(
             width: priorityCardsTotalWidth,
             child: buildOutlookSection,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: SizedBox(
+            width: priorityCardsTotalWidth,
+            child: buildDayPlannerSection,
           ),
         ),
         const SizedBox(height: 8),

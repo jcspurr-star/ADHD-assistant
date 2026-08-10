@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/note_entry.dart';
 import '../models/task.dart';
@@ -20,6 +21,7 @@ class StorageService {
   static const String _taskSubtaskPromptKey = 'task_subtask_prompt';
   static const String _priorityCardCountKey = 'priority_card_count';
   static const String _outlookLookAheadDaysKey = 'outlook_look_ahead_days';
+  static const String _importedOutlookEventsKey = 'imported_outlook_events';
   static const String _prioritizeWorkOnWeekdaysKey =
       'prioritize_work_on_weekdays';
   static const String _contextTodayOptionsKey = 'context_today_options';
@@ -415,11 +417,119 @@ class StorageService {
   static Future<List<OutlookCalendarEvent>> getUpcomingOutlookEvents({
     Duration lookAhead = const Duration(days: 7),
     int maxItems = 10,
-  }) {
-    return OneDriveSyncService.fetchUpcomingCalendarEvents(
-      lookAhead: lookAhead,
-      maxItems: maxItems,
+  }) async {
+    final importedEvents = await loadImportedOutlookEvents();
+
+    try {
+      final liveEvents = await OneDriveSyncService.fetchUpcomingCalendarEvents(
+        lookAhead: lookAhead,
+        maxItems: maxItems,
+      );
+      return _mergeCalendarEvents(
+        [...liveEvents, ...importedEvents],
+        lookAhead: lookAhead,
+        maxItems: maxItems,
+      );
+    } catch (_) {
+      return _mergeCalendarEvents(
+        importedEvents,
+        lookAhead: lookAhead,
+        maxItems: maxItems,
+      );
+    }
+  }
+
+  static Future<void> saveImportedOutlookEvents(
+    List<OutlookCalendarEvent> events,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    debugPrint('Saving ${events.length} imported calendar events');
+    final encoded = jsonEncode(
+      events.map((event) {
+        return {
+          'id': event.id,
+          'subject': event.subject,
+          'start': event.start?.toUtc().toIso8601String(),
+          'end': event.end?.toUtc().toIso8601String(),
+          'isAllDay': event.isAllDay,
+          'calendarSource': event.calendarSource,
+        };
+      }).toList(),
     );
+    await prefs.setString(_importedOutlookEventsKey, encoded);
+    await _touchStateMetadata(prefs);
+    unawaited(_pushCurrentStateToCloudIfAvailable());
+  }
+
+  static Future<List<OutlookCalendarEvent>> loadImportedOutlookEvents() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_importedOutlookEventsKey);
+    if (saved == null || saved.trim().isEmpty) {
+      return <OutlookCalendarEvent>[];
+    }
+
+    try {
+      final decoded = jsonDecode(saved) as List<dynamic>;
+      return decoded.map((entry) {
+        final eventMap = Map<String, dynamic>.from(entry as Map);
+        return OutlookCalendarEvent(
+          id: (eventMap['id'] ?? '').toString(),
+          subject: (eventMap['subject'] ?? '').toString(),
+          start: eventMap['start'] == null
+              ? null
+              : DateTime.parse(eventMap['start'].toString()).toLocal(),
+          end: eventMap['end'] == null
+              ? null
+              : DateTime.parse(eventMap['end'].toString()).toLocal(),
+          isAllDay: eventMap['isAllDay'] == true,
+          calendarSource: (eventMap['calendarSource'] ?? 'work').toString(),
+        );
+      }).toList();
+    } catch (_) {
+      return <OutlookCalendarEvent>[];
+    }
+  }
+
+  static List<OutlookCalendarEvent> _mergeCalendarEvents(
+    List<OutlookCalendarEvent> events, {
+    required Duration lookAhead,
+    required int maxItems,
+  }) {
+    final now = DateTime.now();
+    final cutoff = now.add(lookAhead);
+    final uniqueEvents = <String, OutlookCalendarEvent>{};
+
+    for (final event in events) {
+      if (event.start == null) {
+        continue;
+      }
+
+      final eventStart = event.start!.toLocal();
+      final eventEnd = event.end?.toLocal();
+      final isCurrentOrUpcoming =
+          eventStart.isAfter(now.subtract(const Duration(days: 1))) &&
+          (eventEnd == null ||
+              eventEnd.isAfter(now.subtract(const Duration(minutes: 1)))) &&
+          eventStart.isBefore(cutoff.add(const Duration(days: 1)));
+
+      if (!isCurrentOrUpcoming) {
+        continue;
+      }
+
+      final key = event.id.isNotEmpty
+          ? event.id
+          : '${event.subject}|${event.start?.toIso8601String()}|${event.end?.toIso8601String()}';
+      uniqueEvents.putIfAbsent(key, () => event);
+    }
+
+    final sortedEvents = uniqueEvents.values.toList()
+      ..sort((a, b) {
+        final left = a.start?.toLocal() ?? DateTime(2100);
+        final right = b.start?.toLocal() ?? DateTime(2100);
+        return left.compareTo(right);
+      });
+
+    return sortedEvents.take(maxItems).toList();
   }
 
   static Future<List<Task>> loadTasks() async {

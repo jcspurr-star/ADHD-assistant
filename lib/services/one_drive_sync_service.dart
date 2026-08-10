@@ -37,6 +37,7 @@ class OutlookCalendarEvent {
   final DateTime? start;
   final DateTime? end;
   final bool isAllDay;
+  final String calendarSource;
 
   const OutlookCalendarEvent({
     required this.id,
@@ -44,6 +45,7 @@ class OutlookCalendarEvent {
     required this.start,
     required this.end,
     required this.isAllDay,
+    this.calendarSource = 'home',
   });
 }
 
@@ -404,6 +406,7 @@ class OneDriveSyncService {
         start: _parseGraphDateTimeField(event['start']),
         end: _parseGraphDateTimeField(event['end']),
         isAllDay: event['isAllDay'] == true,
+        calendarSource: 'home',
       );
     }).toList();
   }

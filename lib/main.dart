@@ -12,6 +12,8 @@ import 'services/gemini_service.dart';
 import 'services/recommendation_service.dart';
 import 'services/one_drive_sync_service.dart';
 import 'services/firebase_sync_service.dart';
+import 'services/ics_import_service.dart';
+import 'services/ics_file_loader.dart';
 import 'dialogs/step_count_dialog.dart';
 import 'dialogs/edit_task_dialog.dart';
 import 'dialogs/edit_subtask_dialog.dart';
@@ -27,6 +29,7 @@ import 'widgets/main_section_tabs.dart';
 import 'widgets/notes_view.dart';
 import 'widgets/task_list_view.dart';
 import 'widgets/tasks_overview_section.dart';
+import 'services/day_planner_service.dart';
 
 const double kPageHorizontalPadding = 16;
 const double kWidePriorityCardWidth = 202;
@@ -350,6 +353,57 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       }
       return <OutlookCalendarEvent>[];
     });
+  }
+
+  Future<void> importIcsCalendarFile() async {
+    try {
+      final content = await IcsFileLoader.pickAndReadContent();
+      if (content == null || content.trim().isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No calendar file was selected.')),
+        );
+        return;
+      }
+
+      await _importIcsCalendarContent(content);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to open the selected file: $error')),
+      );
+    }
+  }
+
+  Future<void> _importIcsCalendarContent(String? content) async {
+    if (content == null || content.trim().isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('The selected file was empty.')),
+      );
+      return;
+    }
+
+    final importedEvents = IcsImportService.parseEvents(content);
+    if (importedEvents.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No calendar events were found in that file.'),
+        ),
+      );
+      return;
+    }
+
+    debugPrint('Imported ${importedEvents.length} events from ICS content');
+    await StorageService.saveImportedOutlookEvents(importedEvents);
+    if (!mounted) return;
+    setState(() {
+      upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Imported ${importedEvents.length} event(s).')),
+    );
   }
 
   void _refreshUpcomingOutlookEvents() {
@@ -4110,6 +4164,141 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           );
         }
 
+        Widget buildDayPlannerSection() {
+          return FutureBuilder<List<OutlookCalendarEvent>>(
+            future: upcomingOutlookEventsFuture ?? _loadUpcomingOutlookEvents(),
+            builder: (context, snapshot) {
+              final events = snapshot.data ?? const <OutlookCalendarEvent>[];
+              final plannerResult = DayPlannerService.buildPlan(
+                tasks: tasks,
+                calendarEvents: events,
+                day: DateTime.now(),
+              );
+
+              return Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.teal.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.teal.shade200),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Plan my day',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        Text(
+                          plannerResult.summary,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.teal.shade700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (plannerResult.entries.isEmpty)
+                      Text(
+                        'Nothing to schedule yet.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade700,
+                        ),
+                      )
+                    else
+                      SizedBox(
+                        height: 200,
+                        child: ListView.builder(
+                          itemCount: plannerResult.entries.length,
+                          itemBuilder: (context, index) {
+                            final entry = plannerResult.entries[index];
+                            final isTask = entry.type == 'task';
+                            final isBreak = entry.type == 'break';
+                            final isCalendar = entry.type == 'calendar';
+                            final color = isTask
+                                ? Colors.blue.shade700
+                                : isBreak
+                                ? Colors.orange.shade700
+                                : isCalendar
+                                ? Colors.indigo.shade700
+                                : Colors.grey.shade700;
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 6),
+                              child: Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: color.withAlpha(80),
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 8,
+                                      height: 30,
+                                      decoration: BoxDecoration(
+                                        color: color,
+                                        borderRadius: BorderRadius.circular(
+                                          999,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            entry.title,
+                                            style: const TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                          if (entry.subtitle != null)
+                                            Text(
+                                              entry.subtitle!,
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color: Colors.grey.shade700,
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                    Text(
+                                      '${entry.start.hour.toString().padLeft(2, '0')}:${entry.start.minute.toString().padLeft(2, '0')}–${entry.end.hour.toString().padLeft(2, '0')}:${entry.end.minute.toString().padLeft(2, '0')}',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        color: Colors.grey.shade700,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            },
+          );
+        }
+
         Widget buildOutlookSection() {
           return Container(
             padding: const EdgeInsets.all(10),
@@ -4132,7 +4321,17 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                         ),
                       ),
                     ),
+                    TextButton.icon(
+                      onPressed: importIcsCalendarFile,
+                      icon: const Icon(Icons.upload_file, size: 16),
+                      label: const Text('Import .ics'),
+                    ),
                   ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Export your work calendar as an .ics file and import it here.',
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade700),
                 ),
                 const SizedBox(height: 6),
                 FutureBuilder<List<OutlookCalendarEvent>>(
@@ -4202,6 +4401,19 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                         }
                       }
 
+                      final isWorkCalendarEvent =
+                          event.calendarSource == 'work';
+                      final cardColor = isWorkCalendarEvent
+                          ? Colors.orange.shade50
+                          : Colors.white;
+                      final borderColor = isWorkCalendarEvent
+                          ? Colors.orange.shade300
+                          : Colors.blue.shade100;
+                      final badgeColor = isWorkCalendarEvent
+                          ? Colors.orange.shade700
+                          : Colors.blue.shade700;
+                      final badgeLabel = isWorkCalendarEvent ? 'Work' : 'Home';
+
                       eventWidgets.add(
                         Padding(
                           padding: const EdgeInsets.only(bottom: 6),
@@ -4212,19 +4424,45 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                               vertical: 7,
                             ),
                             decoration: BoxDecoration(
-                              color: Colors.white,
+                              color: cardColor,
                               borderRadius: BorderRadius.circular(10),
-                              border: Border.all(color: Colors.blue.shade100),
+                              border: Border.all(color: borderColor),
                             ),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  event.subject,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w700,
-                                  ),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        event.subject,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 3,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: badgeColor.withAlpha(20),
+                                        borderRadius: BorderRadius.circular(
+                                          999,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        badgeLabel,
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w700,
+                                          color: badgeColor,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ),
                                 const SizedBox(height: 2),
                                 Text(
@@ -4811,6 +5049,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                 buildCaptureInboxSection: buildCaptureInboxSection(),
                 buildOutlookSection: buildOutlookSection(),
                 buildDailyCheckinSection: buildDailyCheckinSection(),
+                buildDayPlannerSection: buildDayPlannerSection(),
               ),
             if (showTaskList)
               TaskListView(
