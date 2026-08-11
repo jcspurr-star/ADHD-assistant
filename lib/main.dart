@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 import 'models/note_entry.dart';
 import 'models/task.dart';
@@ -14,22 +13,31 @@ import 'services/one_drive_sync_service.dart';
 import 'services/firebase_sync_service.dart';
 import 'services/ics_import_service.dart';
 import 'services/ics_file_loader.dart';
+import 'services/outlook_link_coordinator.dart';
+import 'services/outlook_formatting_service.dart';
+import 'services/work_calendar_auto_import_loader.dart';
 import 'dialogs/step_count_dialog.dart';
 import 'dialogs/edit_task_dialog.dart';
 import 'dialogs/edit_subtask_dialog.dart';
+import 'dialogs/task_field_dialogs.dart';
 import 'settings_page.dart';
-import 'widgets/subtask_tile.dart';
-import 'widgets/task_tile.dart';
 import 'widgets/backup_recovery_dialog.dart';
 import 'widgets/countdown_view.dart';
 import 'widgets/home_header.dart';
-import 'widgets/insights_view.dart';
+import 'widgets/insights_section.dart';
 import 'widgets/main_content_view.dart';
 import 'widgets/main_section_tabs.dart';
-import 'widgets/notes_view.dart';
-import 'widgets/task_list_view.dart';
-import 'widgets/tasks_overview_section.dart';
-import 'services/day_planner_service.dart';
+import 'widgets/notes_section.dart';
+import 'widgets/day_planner_section.dart';
+import 'widgets/outlook_section.dart';
+import 'widgets/priority_task_card.dart';
+import 'widgets/quick_capture_section.dart';
+import 'widgets/symptom_tracker_section.dart';
+import 'widgets/task_composer_section.dart';
+import 'widgets/task_list_section.dart';
+import 'widgets/task_panels_section.dart';
+import 'widgets/task_tab_button.dart';
+import 'widgets/tasks_view_section.dart';
 
 const double kPageHorizontalPadding = 16;
 const double kWidePriorityCardWidth = 202;
@@ -39,11 +47,15 @@ const double kWideContentWidth =
     (kWidePriorityCardWidth * 3) + kWidePriorityCardsSpacingTotal + 16;
 const double kDesktopMinWindowWidth =
     kWideContentWidth + (kPageHorizontalPadding * 2) + 20;
+const double kDesktopDefaultWindowWidth = 1280;
 const double kDesktopDefaultWindowHeight = 900;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await FirebaseSyncService.initializeIfAvailable();
+
+  final isWindowsDesktop =
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
 
   final isDesktop =
       !kIsWeb &&
@@ -56,11 +68,14 @@ Future<void> main() async {
 
     const windowOptions = WindowOptions(
       minimumSize: Size(kDesktopMinWindowWidth, 680),
-      size: Size(kDesktopMinWindowWidth, kDesktopDefaultWindowHeight),
+      size: Size(kDesktopDefaultWindowWidth, kDesktopDefaultWindowHeight),
     );
 
     windowManager.waitUntilReadyToShow(windowOptions, () async {
       await windowManager.show();
+      if (isWindowsDesktop) {
+        await windowManager.maximize();
+      }
       await windowManager.focus();
     });
   }
@@ -198,13 +213,18 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   static const List<int> focusTimerPresets = [5, 10, 25, 50];
 
   bool isGenerating = false;
-  bool compactView = true;
+  bool groupTasksByPriority = true;
+  int? selectedTaskPaneIndex;
   TaskListSortMode selectedTaskSortMode = TaskListSortMode.manual;
   int selectedMainSectionIndex = 0;
   int? pendingTaskScrollIndex;
   int priorityCardCount = 3;
   int outlookLookAheadDays = 1;
+  int plannerDayOffset = 0;
   bool prioritizeWorkOnWeekdays = true;
+  bool showWorkInPlanner = true;
+  bool showHomeInPlanner = true;
+  bool showPlannerInPlanner = true;
   int selectedFocusTimerMinutes = 25;
   int selectedFocusTimerSeconds = 0;
   Duration remainingFocusTime = const Duration(minutes: 25);
@@ -219,6 +239,13 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   FirebaseSyncBadgeState firebaseSyncBadgeState =
       FirebaseSyncBadgeState.checking;
   String firebaseSyncStatusText = 'Cloud...';
+  ImportedOutlookEventsSummary importedOutlookSummary =
+      const ImportedOutlookEventsSummary(
+        lastImportedAt: null,
+        rangeStart: null,
+        rangeEnd: null,
+        eventCount: 0,
+      );
 
   @override
   void initState() {
@@ -226,190 +253,30 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
     unawaited(_refreshFirebaseSyncStatus());
     unawaited(_maybeCompleteOutlookAuthFromCurrentUrl());
-    unawaited(loadTasks().catchError((_) {}));
+    unawaited(_runStartupLoad());
   }
 
-  Future<void> _refreshFirebaseSyncStatus({
-    bool triggerSyncAttempt = false,
-    bool showSnackBar = false,
-  }) async {
-    if (!FirebaseSyncService.isConfigured) {
-      if (!mounted) return;
-      setState(() {
-        firebaseSyncBadgeState = FirebaseSyncBadgeState.disabled;
-        firebaseSyncStatusText = 'Cloud off';
-      });
+  Future<void> _runStartupLoad() async {
+    await loadTasks().catchError((_) {});
+    await _loadImportedOutlookSummary();
+  }
+
+  Future<void> _loadImportedOutlookSummary() async {
+    final summary = await StorageService.loadImportedOutlookEventsSummary();
+    if (!mounted) {
       return;
     }
-
-    if (mounted) {
-      setState(() {
-        firebaseSyncBadgeState = FirebaseSyncBadgeState.checking;
-        firebaseSyncStatusText = 'Cloud...';
-      });
-    }
-
-    if (triggerSyncAttempt) {
-      await StorageService.syncWithCloudNow();
-    }
-
-    final signedIn = await FirebaseSyncService.isSignedIn();
-    final connected =
-        signedIn && await FirebaseSyncService.canReachCloudState();
-
-    if (!mounted) return;
 
     setState(() {
-      firebaseSyncBadgeState = connected
-          ? FirebaseSyncBadgeState.connected
-          : FirebaseSyncBadgeState.failing;
-      firebaseSyncStatusText = connected ? 'Cloud OK' : 'Cloud error';
+      importedOutlookSummary = summary;
     });
-
-    if (showSnackBar) {
-      final failureDetails = FirebaseSyncService.lastError;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            connected
-                ? 'Firebase sync is connected.'
-                : failureDetails == null
-                ? 'Firebase sync failed. Check Auth and Firestore setup.'
-                : 'Firebase sync failed: $failureDetails',
-          ),
-        ),
-      );
-    }
-  }
-
-  Future<void> handleCloudSyncStatusTap() async {
-    await _refreshFirebaseSyncStatus(
-      triggerSyncAttempt: true,
-      showSnackBar: true,
-    );
-    await loadTasks();
-  }
-
-  Future<void> openBackupRecoveryDialog() async {
-    final history = await StorageService.loadBackupHistory();
-    if (!mounted) return;
-
-    if (history.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No backup snapshot is available yet.')),
-      );
-      return;
-    }
-
-    final backupPreviews = <Map<String, dynamic>>[];
-    for (final entry in history) {
-      backupPreviews.add(
-        await StorageService.getBackupRecoveryPreviewForBackupEntry(entry),
-      );
-    }
-
-    if (!mounted) return;
-
-    await BackupRecoveryDialog.show(
-      context: context,
-      history: history,
-      backupPreviews: backupPreviews,
-      onRestore: (backupEntry) async {
-        await StorageService.restoreBackupEntryState(backupEntry);
-        if (!mounted) return;
-        await loadTasks();
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Restored the selected backup.')),
-        );
-      },
-      onMerge:
-          (selectedTasks, selectedNoteEntries, selectedInboxEntries) async {
-            await StorageService.mergeMissingBackupEntries(
-              selectedTasks: selectedTasks,
-              selectedNoteEntries: selectedNoteEntries,
-              selectedInboxEntries: selectedInboxEntries,
-            );
-            if (!mounted) return;
-            await loadTasks();
-            if (!mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Merged the selected backup items.'),
-              ),
-            );
-          },
-    );
   }
 
   Future<List<OutlookCalendarEvent>> _loadUpcomingOutlookEvents() {
     return StorageService.getUpcomingOutlookEvents(
       lookAhead: Duration(days: outlookLookAheadDays),
       maxItems: (outlookLookAheadDays * 10).clamp(10, 50).toInt(),
-    ).catchError((error) {
-      if (error is Exception &&
-          error.toString().contains('No Microsoft sign-in session found')) {
-        return <OutlookCalendarEvent>[];
-      }
-      return <OutlookCalendarEvent>[];
-    });
-  }
-
-  Future<void> importIcsCalendarFile() async {
-    try {
-      final content = await IcsFileLoader.pickAndReadContent();
-      if (content == null || content.trim().isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No calendar file was selected.')),
-        );
-        return;
-      }
-
-      await _importIcsCalendarContent(content);
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Unable to open the selected file: $error')),
-      );
-    }
-  }
-
-  Future<void> _importIcsCalendarContent(String? content) async {
-    if (content == null || content.trim().isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('The selected file was empty.')),
-      );
-      return;
-    }
-
-    final importedEvents = IcsImportService.parseEvents(content);
-    if (importedEvents.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No calendar events were found in that file.'),
-        ),
-      );
-      return;
-    }
-
-    debugPrint('Imported ${importedEvents.length} events from ICS content');
-    await StorageService.saveImportedOutlookEvents(importedEvents);
-    if (!mounted) return;
-    setState(() {
-      upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Imported ${importedEvents.length} event(s).')),
     );
-  }
-
-  void _refreshUpcomingOutlookEvents() {
-    setState(() {
-      upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
-    });
   }
 
   void _showOutlookConfigWarningIfNeeded() {
@@ -464,6 +331,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           await StorageService.loadOutlookLookAheadDays();
       final loadedPrioritizeWorkOnWeekdays =
           await StorageService.loadPrioritizeWorkOnWeekdays();
+
       List<String> resolveOptionList(
         List<String>? loaded,
         List<String> fallback,
@@ -499,6 +367,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       final resolvedOutlookLookAheadDays = loadedOutlookLookAheadDays ?? 1;
       final resolvedPrioritizeWorkOnWeekdays =
           loadedPrioritizeWorkOnWeekdays ?? true;
+
       if (!mounted) return;
       setState(() {
         categories = loadedCategories.isEmpty ? ['None'] : loadedCategories;
@@ -515,6 +384,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             : GeminiService.defaultSubtaskPromptTemplate;
         priorityCardCount = resolvedPriorityCardCount;
         outlookLookAheadDays = resolvedOutlookLookAheadDays;
+        plannerDayOffset = plannerDayOffset.clamp(
+          0,
+          (resolvedOutlookLookAheadDays - 1).clamp(0, 31),
+        );
         prioritizeWorkOnWeekdays = resolvedPrioritizeWorkOnWeekdays;
         tasks = loadedTasks;
         inboxEntries = loadedInboxEntries;
@@ -534,6 +407,178 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       debugPrint('Failed to load tasks: $error');
       debugPrintStack(stackTrace: stackTrace);
     }
+  }
+
+  Future<void> _refreshFirebaseSyncStatus({
+    bool triggerSyncAttempt = false,
+    bool showSnackBar = false,
+  }) async {
+    if (!FirebaseSyncService.isConfigured) {
+      if (!mounted) return;
+      setState(() {
+        firebaseSyncBadgeState = FirebaseSyncBadgeState.disabled;
+        firebaseSyncStatusText = 'Cloud off';
+      });
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        firebaseSyncBadgeState = FirebaseSyncBadgeState.checking;
+        firebaseSyncStatusText = 'Cloud...';
+      });
+    }
+
+    if (triggerSyncAttempt) {
+      await StorageService.syncWithCloudNow();
+    }
+
+    final signedIn = await FirebaseSyncService.isSignedIn();
+    final connected =
+        signedIn && await FirebaseSyncService.canReachCloudState();
+
+    if (!mounted) return;
+
+    setState(() {
+      firebaseSyncBadgeState = connected
+          ? FirebaseSyncBadgeState.connected
+          : FirebaseSyncBadgeState.failing;
+      firebaseSyncStatusText = connected ? 'Cloud OK' : 'Cloud error';
+    });
+
+    if (showSnackBar) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            connected
+                ? 'Cloud sync connection is healthy.'
+                : 'Cloud sync is not connected right now.',
+          ),
+        ),
+      );
+    }
+  }
+
+  int? _getCurrentSubtaskIndex(Task task) {
+    final index = task.subtasks.indexWhere((subtask) => subtask.done != true);
+    return index == -1 ? null : index;
+  }
+
+  Future<void> handleCloudSyncStatusTap() async {
+    await _refreshFirebaseSyncStatus(
+      triggerSyncAttempt: true,
+      showSnackBar: true,
+    );
+  }
+
+  Future<void> openBackupRecoveryDialog() async {
+    final history = await StorageService.loadBackupHistory();
+    final backupPreviews = await Future.wait(
+      history.map(StorageService.getBackupRecoveryPreviewForBackupEntry),
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    await BackupRecoveryDialog.show(
+      context: context,
+      history: history,
+      backupPreviews: backupPreviews,
+      onRestore: (backupEntry) async {
+        await StorageService.restoreBackupEntryState(backupEntry);
+        await loadTasks();
+        await _loadImportedOutlookSummary();
+        _refreshUpcomingOutlookEvents();
+      },
+      onMerge:
+          (selectedTasks, selectedNoteEntries, selectedInboxEntries) async {
+            await StorageService.mergeMissingBackupEntries(
+              selectedTasks: selectedTasks,
+              selectedNoteEntries: selectedNoteEntries,
+              selectedInboxEntries: selectedInboxEntries,
+            );
+            await loadTasks();
+            await _loadImportedOutlookSummary();
+            _refreshUpcomingOutlookEvents();
+          },
+    );
+  }
+
+  Future<void> importIcsCalendarFile() async {
+    try {
+      String? content;
+      String status = 'No calendar file was selected.';
+
+      if (kIsWeb) {
+        content = await IcsFileLoader.pickAndReadContent();
+        status = 'No calendar file was selected.';
+      } else {
+        final loadResult =
+            await WorkCalendarAutoImportLoader.loadWithDiagnostics();
+        content = loadResult.content;
+        status = loadResult.status;
+      }
+
+      if (content == null || content.trim().isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(status)));
+        return;
+      }
+
+      await _importIcsCalendarContent(content);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to open the selected file: $error')),
+      );
+    }
+  }
+
+  Future<void> _importIcsCalendarContent(String? content) async {
+    if (content == null || content.trim().isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('The selected file was empty.')),
+      );
+      return;
+    }
+
+    final importedEvents = IcsImportService.parseEvents(content);
+
+    if (importedEvents.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No calendar events were found in that file.'),
+        ),
+      );
+      return;
+    }
+
+    debugPrint('Imported ${importedEvents.length} events from ICS content');
+    final existingImportedEvents =
+        await StorageService.loadImportedOutlookEvents();
+    await StorageService.saveImportedOutlookEvents([
+      ...existingImportedEvents,
+      ...importedEvents,
+    ]);
+    await _loadImportedOutlookSummary();
+    if (!mounted) return;
+    setState(() {
+      upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Imported ${importedEvents.length} event(s).')),
+    );
+  }
+
+  void _refreshUpcomingOutlookEvents() {
+    setState(() {
+      upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
+    });
   }
 
   Future<void> saveTasks() async {
@@ -943,8 +988,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     setState(() {
       selectedMainSectionIndex = 2;
       selectedTaskCategory = 'All tasks';
-      compactView = false;
       tasks[taskIndex].expanded = true;
+      selectedTaskPaneIndex = taskIndex;
       pendingTaskScrollIndex = taskIndex;
     });
 
@@ -1017,6 +1062,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       taskSubtaskPrompt = updatedSettings.taskSubtaskPrompt;
       priorityCardCount = updatedSettings.priorityCardCount;
       outlookLookAheadDays = updatedSettings.outlookLookAheadDays;
+      plannerDayOffset = plannerDayOffset.clamp(
+        0,
+        (updatedSettings.outlookLookAheadDays - 1).clamp(0, 31),
+      );
       normalizeTaskCategories();
       ensureSelectedTaskCategoryIsValid();
     });
@@ -1032,259 +1081,23 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   }
 
   Future<void> handleOutlookLink() async {
-    if (!StorageService.isOutlookConfigured) {
-      if (!mounted) return;
-      await showCopyableErrorDialog(
-        'Outlook Setup Needed',
-        StorageService.outlookConfigurationHelpText,
-      );
-      return;
-    }
-
-    final linked = await StorageService.isOutlookLinked();
-
-    if (linked) {
-      final hasOutlookAccess = await _tryCheckOutlookConnection(silent: true);
-      if (!hasOutlookAccess && mounted) {
-        final relink = await showDialog<bool>(
-          context: context,
-          builder: (dialogContext) {
-            return AlertDialog(
-              title: const Text('Enable Outlook Access'),
-              content: const Text(
-                'Your current Microsoft link does not include Outlook calendar permission yet. Re-link now to grant Calendars.Read?',
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    Navigator.pop(dialogContext, false);
-                  },
-                  child: const Text('Not now'),
-                ),
-                TextButton(
-                  onPressed: () {
-                    Navigator.pop(dialogContext, true);
-                  },
-                  child: const Text('Re-link'),
-                ),
-              ],
-            );
-          },
-        );
-
-        if (relink == true) {
-          await StorageService.unlinkOutlook();
-          if (!mounted) return;
-          await handleOutlookLink();
-          return;
-        }
-      }
-    }
-
-    if (!linked) {
-      try {
-        final session = await StorageService.beginOutlookLink();
-        if (!mounted) return;
-
-        final authUri = Uri.parse(session.verificationUri);
-        final launched = await launchUrl(
-          authUri,
-          mode: LaunchMode.externalApplication,
-        );
-
-        if (mounted) {
-          await showCopyableErrorDialog(
-            'Outlook Auth URL',
-            'Opening this Microsoft sign-in URL:\n\n${authUri.toString()}',
-          );
-        }
-
-        if (!launched && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Could not open the Microsoft sign-in page. Please try again.',
-              ),
-            ),
-          );
-          return;
-        }
-
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Microsoft sign-in opened in your browser. Return to the app after completing sign-in.',
-            ),
-          ),
-        );
-        return;
-      } catch (error) {
-        if (!mounted) return;
-        final errorText =
-            'Unable to start Outlook link: $error\n\n'
-            'Tip: In Azure App Registration, make sure the redirect URI for this app is added under Authentication.';
-        await showCopyableErrorDialog('Outlook Link Error', errorText);
-        return;
-      }
-    }
-
-    final outlookConnected = await _tryCheckOutlookConnection(silent: true);
-    if (!mounted) return;
-
-    _refreshUpcomingOutlookEvents();
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          outlookConnected
-              ? 'Outlook calendar connected.'
-              : 'Outlook link active, but calendar permission is missing.',
-        ),
-      ),
+    await OutlookLinkCoordinator.handleOutlookLink(
+      context: context,
+      outlookLookAheadDays: outlookLookAheadDays,
+      refreshUpcomingOutlookEvents: () async {
+        _refreshUpcomingOutlookEvents();
+      },
+      showCopyableErrorDialog: showCopyableErrorDialog,
     );
   }
 
   Future<void> _maybeCompleteOutlookAuthFromCurrentUrl() async {
-    if (!kIsWeb) {
-      return;
-    }
-
-    final uri = Uri.base;
-    if (!uri.queryParameters.containsKey('code') &&
-        !uri.queryParameters.containsKey('error')) {
-      return;
-    }
-
-    try {
-      final authenticated = await StorageService.completeOutlookLink();
-      if (!mounted) return;
-
-      if (authenticated) {
+    await OutlookLinkCoordinator.maybeCompleteOutlookAuthFromCurrentUrl(
+      context: context,
+      refreshUpcomingOutlookEvents: () async {
         _refreshUpcomingOutlookEvents();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Outlook calendar connected.')),
-        );
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Outlook link did not complete.')),
-      );
-    } catch (error) {
-      if (!mounted) return;
-      final errorText =
-          'Unable to finish Outlook link: $error\n\n'
-          'Tip: In Azure App Registration, make sure the redirect URI for this app is added under Authentication.';
-      await showCopyableErrorDialog('Outlook Link Error', errorText);
-    }
-  }
-
-  Future<bool> _tryCheckOutlookConnection({required bool silent}) async {
-    try {
-      final eventCount = await StorageService.getUpcomingOutlookEventCount(
-        lookAhead: Duration(days: outlookLookAheadDays),
-      );
-      if (!mounted || silent) {
-        return true;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Outlook connected. $eventCount upcoming events found.',
-          ),
-        ),
-      );
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  String _formatOutlookEventTimeRange(OutlookCalendarEvent event) {
-    if (event.isAllDay) {
-      return 'All day';
-    }
-    if (event.start == null) {
-      return 'Time unavailable';
-    }
-
-    final localStart = event.start!.toLocal();
-    final startHour = localStart.hour;
-    final startMinute = localStart.minute.toString().padLeft(2, '0');
-    final startSuffix = startHour >= 12 ? 'PM' : 'AM';
-    final startHour12 = startHour % 12 == 0 ? 12 : startHour % 12;
-
-    if (event.end == null) {
-      return '$startHour12:$startMinute $startSuffix';
-    }
-
-    final localEnd = event.end!.toLocal();
-    final endHour = localEnd.hour;
-    final endMinute = localEnd.minute.toString().padLeft(2, '0');
-    final endSuffix = endHour >= 12 ? 'PM' : 'AM';
-    final endHour12 = endHour % 12 == 0 ? 12 : endHour % 12;
-
-    return '$startHour12:$startMinute $startSuffix - $endHour12:$endMinute $endSuffix';
-  }
-
-  String _formatOutlookDayDivider(DateTime date) {
-    const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-
-    final weekday = weekdays[date.weekday - 1];
-    final day = date.day.toString().padLeft(2, '0');
-    final month = months[date.month - 1];
-    final year = date.year.toString().substring(2);
-
-    return '$weekday, $day-$month-$year';
-  }
-
-  Widget _buildOutlookDayDivider(DateTime date) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        children: [
-          Expanded(
-            child: Divider(
-              height: 1,
-              thickness: 1,
-              color: Colors.blue.shade200,
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Text(
-              _formatOutlookDayDivider(date),
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                color: Colors.blue.shade700,
-              ),
-            ),
-          ),
-          Expanded(
-            child: Divider(
-              height: 1,
-              thickness: 1,
-              color: Colors.blue.shade200,
-            ),
-          ),
-        ],
-      ),
+      },
+      showCopyableErrorDialog: showCopyableErrorDialog,
     );
   }
 
@@ -1428,8 +1241,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     }
 
     final parsed = parseRating(sourceValue);
-    // Legacy entries often persisted 0 by default. Treat those as unset.
-    if (parsed == 0) {
+    // Legacy fallbacks often persisted 0 by default. Treat only fallback 0 as unset.
+    if (!hasCurrentValue && parsed == 0) {
       return -2;
     }
 
@@ -1524,7 +1337,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     await updateTodayDailyCheckin((current) {
       final nextValue = value.clamp(-1, 10).toInt();
       final currentValue = parseRating(current[field]);
-      current[field] = currentValue == nextValue ? 0 : nextValue;
+      current[field] = currentValue == nextValue ? -2 : nextValue;
     });
   }
 
@@ -1715,10 +1528,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               Expanded(
                 child: TextField(
                   controller: minutesController,
-                  autofocus: true,
                   keyboardType: TextInputType.number,
                   textInputAction: TextInputAction.next,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                   decoration: const InputDecoration(
                     labelText: 'Minutes',
                     border: OutlineInputBorder(),
@@ -1731,7 +1542,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                   controller: secondsController,
                   keyboardType: TextInputType.number,
                   textInputAction: TextInputAction.done,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                   onSubmitted: (_) {
                     final minutes = parseMinutes();
                     final seconds = parseSeconds();
@@ -1792,35 +1602,25 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     minutesController.dispose();
     secondsController.dispose();
 
-    if (customDuration == null || customDuration <= Duration.zero) {
+    if (customDuration == null) {
       return;
     }
 
     focusTimer?.cancel();
+    timerCompletionCueReset?.cancel();
+    timerCompletionBeepLoop?.cancel();
+
     setState(() {
       selectedFocusTimerMinutes = customDuration.inMinutes;
-      selectedFocusTimerSeconds = customDuration.inSeconds % 60;
+      selectedFocusTimerSeconds = customDuration.inSeconds.remainder(60);
       remainingFocusTime = customDuration;
+      timerCompletionCueActive = false;
     });
   }
 
   void startFocusTimer() {
     if (focusTimer?.isActive == true) {
       return;
-    }
-
-    timerCompletionCueReset?.cancel();
-    timerCompletionBeepLoop?.cancel();
-
-    if (remainingFocusTime <= Duration.zero) {
-      setState(() {
-        remainingFocusTime = getSelectedFocusTimerDuration();
-        timerCompletionCueActive = false;
-      });
-    } else {
-      setState(() {
-        timerCompletionCueActive = false;
-      });
     }
 
     focusTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -2081,6 +1881,12 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       final taskA = tasks[a];
       final taskB = tasks[b];
 
+      final planningA = RecommendationService.getPlanningDays(taskA);
+      final planningB = RecommendationService.getPlanningDays(taskB);
+      if (planningA != planningB) {
+        return planningA.compareTo(planningB);
+      }
+
       final priorityA = RecommendationService.getPriorityScore(taskA.priority);
       final priorityB = RecommendationService.getPriorityScore(taskB.priority);
       if (priorityA != priorityB) {
@@ -2103,11 +1909,9 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
 
   String getNextActionLabel(int taskIndex) {
     final task = tasks[taskIndex];
-    final incompleteSubtaskIndex = task.subtasks.indexWhere(
-      (subtask) => subtask.done != true,
-    );
+    final incompleteSubtaskIndex = _getCurrentSubtaskIndex(task);
 
-    if (incompleteSubtaskIndex != -1) {
+    if (incompleteSubtaskIndex != null) {
       return task.subtasks[incompleteSubtaskIndex].text;
     }
 
@@ -2356,7 +2160,14 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   }
 
   List<Task> getTopTasks(int count) {
-    final unfinishedTasks = tasks.where((task) => task.done != true).toList();
+    final unfinishedTasks = tasks
+        .where(
+          (task) =>
+              task.done != true &&
+              !isTaskSnoozed(task) &&
+              RecommendationService.isTaskEligibleForToday(task),
+        )
+        .toList();
     final applyWorkdayBias =
         prioritizeWorkOnWeekdays && _isWeekday(DateTime.now());
 
@@ -2373,8 +2184,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       final priorityB = RecommendationService.getPriorityScore(b.priority);
       if (priorityA != priorityB) return priorityB.compareTo(priorityA);
 
-      final dueA = RecommendationService.getDueDays(a);
-      final dueB = RecommendationService.getDueDays(b);
+      final dueA = RecommendationService.getPlanningDays(a);
+      final dueB = RecommendationService.getPlanningDays(b);
       if (dueA != dueB) return dueA.compareTo(dueB);
 
       final progressA = RecommendationService.getTaskProgress(a);
@@ -2534,35 +2345,32 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     await saveTasks();
   }
 
-  Future<void> moveSubtaskUp(int taskIndex, int subtaskIndex) async {
-    if (subtaskIndex == 0) return;
-
-    setState(() {
-      final item = tasks[taskIndex].subtasks.removeAt(subtaskIndex);
-
-      tasks[taskIndex].subtasks.insert(subtaskIndex - 1, item);
-    });
-
-    await saveTasks();
-  }
-
-  Future<void> moveSubtaskDown(int taskIndex, int subtaskIndex) async {
-    if (subtaskIndex == tasks[taskIndex].subtasks.length - 1) {
+  Future<void> reorderSubtasks(
+    int taskIndex,
+    int oldIndex,
+    int newIndex,
+  ) async {
+    if (oldIndex == newIndex) {
       return;
     }
 
     setState(() {
-      final item = tasks[taskIndex].subtasks.removeAt(subtaskIndex);
-
-      tasks[taskIndex].subtasks.insert(subtaskIndex + 1, item);
+      final item = tasks[taskIndex].subtasks.removeAt(oldIndex);
+      final targetIndex = oldIndex < newIndex ? newIndex - 1 : newIndex;
+      tasks[taskIndex].subtasks.insert(targetIndex, item);
     });
 
     await saveTasks();
   }
 
   Future<void> toggleTask(int index, bool? value) async {
+    final newDoneValue = value ?? false;
+
     setState(() {
-      tasks[index].done = value ?? false;
+      tasks[index].done = newDoneValue;
+      for (final subtask in tasks[index].subtasks) {
+        subtask.done = newDoneValue;
+      }
     });
 
     await saveTasks();
@@ -2600,37 +2408,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
 
   Future<void> toggleExpanded(int index) async {
     setState(() {
-      if (compactView) {
-        compactView = false;
-        for (final task in tasks) {
-          task.expanded = false;
-        }
-        tasks[index].expanded = true;
-      } else {
-        tasks[index].expanded = !tasks[index].expanded;
-      }
-    });
-
-    await saveTasks();
-  }
-
-  Future<void> expandAllTaskTiles() async {
-    setState(() {
-      compactView = false;
-      for (final task in tasks) {
-        task.expanded = true;
-      }
-    });
-
-    await saveTasks();
-  }
-
-  Future<void> collapseAllTaskTiles() async {
-    setState(() {
-      compactView = true;
-      for (final task in tasks) {
-        task.expanded = false;
-      }
+      tasks[index].expanded = !tasks[index].expanded;
     });
 
     await saveTasks();
@@ -2761,107 +2539,125 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     }
   }
 
-  Future<void> changePriority(int index) async {
-    String selected = tasks[index].priority;
-
-    await showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Task Priority"),
-        content: StatefulBuilder(
-          builder: (context, setStateDialog) {
-            return Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.circle, color: Colors.red),
-                  title: const Text("High"),
-                  trailing: selected == "high" ? const Icon(Icons.check) : null,
-                  onTap: () {
-                    setStateDialog(() {
-                      selected = "high";
-                    });
-                  },
-                ),
-
-                ListTile(
-                  leading: const Icon(Icons.circle, color: Colors.orange),
-                  title: const Text("Medium"),
-                  trailing: selected == "medium"
-                      ? const Icon(Icons.check)
-                      : null,
-                  onTap: () {
-                    setStateDialog(() {
-                      selected = "medium";
-                    });
-                  },
-                ),
-
-                ListTile(
-                  leading: const Icon(Icons.circle, color: Colors.green),
-                  title: const Text("Low"),
-                  trailing: selected == "low" ? const Icon(Icons.check) : null,
-                  onTap: () {
-                    setStateDialog(() {
-                      selected = "low";
-                    });
-                  },
-                ),
-              ],
-            );
-          },
-        ),
-
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-            },
-            child: const Text("Cancel"),
-          ),
-
-          TextButton(
-            onPressed: () async {
-              tasks[index].priority = selected;
-
-              Navigator.pop(context);
-
-              await saveTasks();
-
-              if (mounted) setState(() {});
-            },
-            child: const Text("Save"),
-          ),
-        ],
-      ),
-    );
-  }
-
   // Recommendation and sorting logic moved to RecommendationService.
 
-  Future<void> setDueDate(int index) async {
-    final pickedDate = await showDatePicker(
+  Future<void> _setTaskDateField({
+    required int index,
+    required String title,
+    required String message,
+    required String? currentValue,
+    required void Function(String? value) applyValue,
+  }) async {
+    final result = await TaskFieldDialogs.showTaskDateDialog(
       context: context,
-      initialDate: DateTime.now(),
-      firstDate: DateTime.now(),
-      lastDate: DateTime(2100),
+      title: title,
+      message: message,
+      currentValue: currentValue,
     );
 
-    if (pickedDate == null) return;
+    if (!mounted || result == null) return;
 
     setState(() {
-      tasks[index].dueDate = pickedDate.toIso8601String().split("T").first;
+      switch (result.action) {
+        case TaskDateDialogAction.remove:
+          applyValue(null);
+        case TaskDateDialogAction.set:
+          applyValue(result.isoDate);
+      }
     });
 
     await saveTasks();
   }
 
+  Future<void> setDueDate(int index) async {
+    await _setTaskDateField(
+      index: index,
+      title: 'Due date',
+      message: 'Change or remove the due date for this task.',
+      currentValue: tasks[index].dueDate,
+      applyValue: (value) {
+        tasks[index].dueDate = value;
+      },
+    );
+  }
+
+  Future<void> setDoDate(int index) async {
+    await _setTaskDateField(
+      index: index,
+      title: 'Plan date',
+      message: 'Choose when you want this task to start showing up for action.',
+      currentValue: tasks[index].doDate,
+      applyValue: (value) {
+        tasks[index].doDate = value;
+      },
+    );
+  }
+
+  Future<void> setTaskEffort(int index) async {
+    const effortOptions = <int>[5, 15, 30, 45, 60, 90, 120, 180, 240, 360, 480];
+    final selected = await TaskFieldDialogs.showEffortDialog(
+      context: context,
+      title: 'Whole-task effort estimate',
+      description: 'Roughly how much total time will the whole task take?',
+      options: effortOptions,
+      formatEffortLabel: formatEffortLabel,
+      allowClear: tasks[index].effortMinutes != null,
+    );
+
+    if (selected == null) {
+      return;
+    }
+
+    setState(() {
+      tasks[index].effortMinutes = selected < 0 ? null : selected;
+    });
+    await saveTasks();
+  }
+
+  Future<void> setNextSessionEffort(int index) async {
+    const effortOptions = <int>[5, 15, 30, 45, 60, 90, 120, 180, 240];
+    final selected = await TaskFieldDialogs.showEffortDialog(
+      context: context,
+      title: 'Next-session effort estimate',
+      description:
+          'How long should the next focused work session for this task be?',
+      options: effortOptions,
+      formatEffortLabel: formatEffortLabel,
+      allowClear: tasks[index].nextSessionEffortMinutes != null,
+    );
+
+    if (selected == null) {
+      return;
+    }
+
+    setState(() {
+      tasks[index].nextSessionEffortMinutes = selected < 0 ? null : selected;
+    });
+    await saveTasks();
+  }
+
+  Future<void> setSubtaskDate(int taskIndex, int subtaskIndex) async {
+    await _setTaskDateField(
+      index: taskIndex,
+      title: 'Subtask plan date',
+      message:
+          'Choose when this subtask should start showing up as the next step.',
+      currentValue: tasks[taskIndex].subtasks[subtaskIndex].doDate,
+      applyValue: (value) {
+        tasks[taskIndex].subtasks[subtaskIndex].doDate = value;
+      },
+    );
+  }
+
   String formatDueDate(String? dueDate) {
-    if (dueDate == null) {
+    if (dueDate == null || dueDate.trim().isEmpty) {
       return "";
     }
 
-    final date = DateTime.parse(dueDate);
+    final date = DateTime.tryParse(dueDate);
+    if (date == null) {
+      return "";
+    }
 
     final now = DateTime.now();
 
@@ -2907,6 +2703,33 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     final year = date.year.toString().substring(2);
 
     return '$day-$month-$year';
+  }
+
+  String formatEffortLabel(int? minutes) {
+    if (minutes == null || minutes <= 0) {
+      return 'No effort';
+    }
+
+    if (minutes < 60) {
+      return '${minutes}m';
+    }
+
+    final hours = minutes ~/ 60;
+    final remainder = minutes % 60;
+    if (remainder == 0) {
+      return '${hours}h';
+    }
+
+    return '${hours}h ${remainder}m';
+  }
+
+  String formatPriorityCardDate(Task task) {
+    final doLabel = formatDueDate(task.doDate);
+    if (doLabel.isNotEmpty) {
+      return 'Plan $doLabel';
+    }
+
+    return formatDueDate(task.dueDate);
   }
 
   Future<void> recommendNextTask() async {
@@ -3023,9 +2846,16 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final isNarrow = constraints.maxWidth < 720;
-        final hasAnyExpandedTask = tasks.any((task) => task.expanded);
+        final useWideWebOverviewColumns =
+            showOverview && !showTaskList && constraints.maxWidth >= 1200;
+        final wideWebOverviewColumnWidth = ((constraints.maxWidth - 20.0) / 3.0)
+            .clamp(0.0, constraints.maxWidth);
         final priorityCardWidth = isNarrow ? null : kWidePriorityCardWidth;
-        final priorityCardsTotalWidth = isNarrow
+        final priorityCardsTotalWidth = useWideWebOverviewColumns
+            ? (wideWebOverviewColumnWidth - 16.0)
+                  .clamp(280.0, constraints.maxWidth)
+                  .toDouble()
+            : isNarrow
             ? constraints.maxWidth
             : (((priorityCardWidth ?? 0) * 3) + kWidePriorityCardsSpacingTotal)
                   .clamp(0, constraints.maxWidth)
@@ -3040,2058 +2870,311 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         final priorityCardDisplayWidth =
             ((priorityCardAvailableWidth - kPriorityCardWidthReduction) /
                     priorityCardCount)
-                .clamp(96.0, kWidePriorityCardWidth)
+                .floorToDouble()
+                .clamp(
+                  useWideWebOverviewColumns ? 94.0 : 96.0,
+                  useWideWebOverviewColumns ? 220.0 : kWidePriorityCardWidth,
+                )
                 .toDouble();
         final taskTabs = getTaskTabs();
         final visibleTaskIndices = getVisibleTaskIndices();
 
-        Widget buildPriorityMetaBox(
-          String value, {
-          required bool isUrgencyBox,
-          required Color accentColor,
-        }) {
-          return Container(
-            height: 34,
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: isUrgencyBox
-                  ? accentColor.withAlpha(28)
-                  : Colors.white.withAlpha(170),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color: isUrgencyBox
-                    ? accentColor.withAlpha(180)
-                    : Colors.grey.shade300,
-                width: isUrgencyBox ? 1.5 : 1,
-              ),
-            ),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                value.isEmpty ? ' ' : value,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: isUrgencyBox ? accentColor : Colors.black87,
-                ),
-              ),
-            ),
-          );
-        }
-
         Widget buildPriorityCard(int position, Task? task) {
-          final card = Card(
-            color: position == 0
-                ? Colors.blue.shade50
-                : position == 1
-                ? Colors.blue.shade100
-                : Colors.blue.shade200,
-            child: Padding(
-              padding: const EdgeInsets.all(6),
-              child: task == null
-                  ? const Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'No task',
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        SizedBox(height: 6),
-                        Text('Add more tasks to fill this slot.'),
-                      ],
-                    )
-                  : Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            Text(
-                              position == 0
-                                  ? '#1'
-                                  : position == 1
-                                  ? '#2'
-                                  : '#3',
-                              style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: SingleChildScrollView(
-                                scrollDirection: Axis.horizontal,
-                                child: Text(
-                                  task.task,
-                                  maxLines: 1,
-                                  softWrap: false,
-                                  style: const TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            if (task.category != 'None')
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 3,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withAlpha(180),
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(
-                                    color: Colors.grey.shade300,
-                                  ),
-                                ),
-                                child: Text(
-                                  task.category,
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    color: Colors.grey.shade600,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: buildPriorityMetaBox(
-                                getPriorityLabel(task.priority),
-                                isUrgencyBox: true,
-                                accentColor: switch (task.priority) {
-                                  'high' => Colors.red.shade700,
-                                  'medium' => Colors.orange.shade700,
-                                  'low' => Colors.green.shade700,
-                                  _ => Colors.grey.shade700,
-                                },
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: buildPriorityMetaBox(
-                                task.dueDate == null
-                                    ? ''
-                                    : formatDueDate(task.dueDate),
-                                isUrgencyBox: false,
-                                accentColor: Colors.grey.shade700,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-            ),
-          );
+          final priorityAccentColor = switch (task?.priority) {
+            'high' => Colors.red.shade700,
+            'medium' => Colors.orange.shade700,
+            'low' => Colors.green.shade700,
+            _ => Colors.grey.shade700,
+          };
 
-          if (task == null) {
-            return SizedBox(width: priorityCardDisplayWidth, child: card);
-          }
-
-          return SizedBox(
+          return PriorityTaskCard(
             width: priorityCardDisplayWidth,
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: () async {
-                  await openTaskFromPriorityCard(task);
-                },
-                child: card,
-              ),
-            ),
+            position: position,
+            title: task?.task,
+            categoryLabel: task == null
+                ? null
+                : (task.category == 'None' ? 'No category' : task.category),
+            priorityLabel: task == null
+                ? null
+                : getPriorityLabel(task.priority),
+            dateLabel: task == null ? null : formatPriorityCardDate(task),
+            priorityAccentColor: priorityAccentColor,
+            useWideWebOverviewColumns: useWideWebOverviewColumns,
+            onTap: task == null
+                ? null
+                : () {
+                    openTaskFromPriorityCard(task);
+                  },
           );
         }
 
         Widget buildDailyCheckinSection() {
-          final checkin = getTodayDailyCheckin();
-          final focus = checkin['focus'] as int;
-          final restlessness = checkin['restlessness'] as int;
-          final impulsivity = checkin['impulsivity'] as int;
-          final overwhelm = checkin['overwhelm'] as int;
-          final emotionalRegulation = checkin['emotionalRegulation'] as int;
-          final workTaskScore = checkin['workTaskScore'] as int;
-          final homeTaskScore = checkin['homeTaskScore'] as int;
-          final breakfastScore = checkin['breakfastScore'] as int;
-          final lunchScore = checkin['lunchScore'] as int;
-          final dinnerScore = checkin['dinnerScore'] as int;
-          final snacksScore = checkin['snacksScore'] as int;
-          final snack2Score = checkin['snack2Score'] as int;
-          final snack3Score = checkin['snack3Score'] as int;
-          final breakfastTime = (checkin['breakfastTime'] ?? '').toString();
-          final lunchTime = (checkin['lunchTime'] ?? '').toString();
-          final dinnerTime = (checkin['dinnerTime'] ?? '').toString();
-          final snacksTime = (checkin['snacksTime'] ?? '').toString();
-          final snack2Time = (checkin['snack2Time'] ?? '').toString();
-          final snack3Time = (checkin['snack3Time'] ?? '').toString();
-          final concertaXlTime = (checkin['concertaXlTime'] ?? '').toString();
-          final concertaIrTime = (checkin['concertaIrTime'] ?? '').toString();
-          final otherMedicationsTaken = parseStringList(
-            checkin['otherMedicationsTaken'],
-          );
-          final dopamineCrashStartTime =
-              (checkin['dopamineCrashStartTime'] ?? '').toString();
-          final dopamineCrashEndTime = (checkin['dopamineCrashEndTime'] ?? '')
-              .toString();
-          final dopamineCrashSymptoms = parseStringList(
-            checkin['dopamineCrashSymptoms'],
-          );
-          final dopamineCrashAdditionalSymptoms = parseStringList(
-            checkin['dopamineCrashSymptomsAdditional'],
-          );
-          final contextTags = parseStringList(checkin['contextTags']);
-          final fixedContextColumns = <List<String>>[
-            ['Good sleep', 'Bad sleep', 'Exercise day'],
-            ['Home', 'WFH', 'WFO'],
-            ['Low stress', 'Mid stress', 'High stress'],
-          ];
-          final fixedContextTags = fixedContextColumns
-              .expand((column) => column)
-              .toSet();
-          final remainingContextTags = dailyContextOptions
-              .where((tag) => !fixedContextTags.contains(tag))
-              .toList();
-          final contextColumns = <List<String>>[
-            ...fixedContextColumns,
-            for (var i = 0; i < remainingContextTags.length; i += 3)
-              remainingContextTags.sublist(
-                i,
-                i + 3 > remainingContextTags.length
-                    ? remainingContextTags.length
-                    : i + 3,
-              ),
-          ];
-
-          Widget buildRatingRow({
-            required String label,
-            required String field,
-            required int value,
-            Widget? trailingControl,
-          }) {
-            final hasSelection = value == -1 || value > 0;
-            final accentColor = switch (field) {
-              'focus' => const Color(0xFF2F6FE4),
-              'restlessness' => const Color(0xFF6B5BDB),
-              'impulsivity' => const Color(0xFFE16A2A),
-              'overwhelm' => const Color(0xFFC14E7B),
-              'emotionalRegulation' => const Color(0xFF2E9B8C),
-              'workTaskScore' => const Color(0xFF2A7F56),
-              'homeTaskScore' => const Color(0xFF9A6B2A),
-              'breakfastScore' => const Color(0xFF3E8F5B),
-              'lunchScore' => const Color(0xFF4E9A66),
-              'dinnerScore' => const Color(0xFF397A8A),
-              'snacksScore' => const Color(0xFF8D6BC9),
-              'snack2Score' => const Color(0xFF7C5CC3),
-              'snack3Score' => const Color(0xFF6E4FB6),
-              _ => const Color(0xFF4C5FD4),
-            };
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Container(
-                padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
-                decoration: BoxDecoration(
-                  color: hasSelection
-                      ? Colors.white
-                      : accentColor.withAlpha(20),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: hasSelection
-                        ? accentColor.withAlpha(90)
-                        : accentColor.withAlpha(55),
-                  ),
-                ),
-                child: LayoutBuilder(
-                  builder: (context, rowConstraints) {
-                    final labelWidth = (rowConstraints.maxWidth * 0.26)
-                        .clamp(105.0, 155.0)
-                        .toDouble();
-
-                    return Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        SizedBox(
-                          width: labelWidth,
-                          child: Text(
-                            label,
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              color: accentColor,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: Row(
-                              children: [
-                                ...List.generate(10, (index) {
-                                  final rating = index + 1;
-                                  return Padding(
-                                    padding: const EdgeInsets.only(right: 4),
-                                    child: SizedBox(
-                                      width: 34,
-                                      child: ChoiceChip(
-                                        label: SizedBox(
-                                          width: double.infinity,
-                                          child: Text(
-                                            rating.toString(),
-                                            textAlign: TextAlign.center,
-                                            style: const TextStyle(
-                                              fontSize: 11,
-                                            ),
-                                          ),
-                                        ),
-                                        selected: value == rating,
-                                        labelPadding: EdgeInsets.zero,
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 2,
-                                          vertical: 0,
-                                        ),
-                                        selectedColor: accentColor.withAlpha(
-                                          44,
-                                        ),
-                                        backgroundColor: Colors.white,
-                                        side: BorderSide(
-                                          color: accentColor.withAlpha(80),
-                                        ),
-                                        materialTapTargetSize:
-                                            MaterialTapTargetSize.shrinkWrap,
-                                        onSelected: (_) async {
-                                          await setTodayDailyRating(
-                                            field,
-                                            rating,
-                                          );
-                                        },
-                                        visualDensity: VisualDensity.compact,
-                                      ),
-                                    ),
-                                  );
-                                }),
-                                SizedBox(
-                                  width: 46,
-                                  child: ChoiceChip(
-                                    label: const SizedBox(
-                                      width: double.infinity,
-                                      child: Text(
-                                        'N/A',
-                                        textAlign: TextAlign.center,
-                                        style: TextStyle(fontSize: 11),
-                                      ),
-                                    ),
-                                    selected: value == -1,
-                                    labelPadding: EdgeInsets.zero,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 2,
-                                      vertical: 0,
-                                    ),
-                                    selectedColor: accentColor.withAlpha(44),
-                                    backgroundColor: Colors.white,
-                                    side: BorderSide(
-                                      color: accentColor.withAlpha(80),
-                                    ),
-                                    materialTapTargetSize:
-                                        MaterialTapTargetSize.shrinkWrap,
-                                    onSelected: (_) async {
-                                      await setTodayDailyRating(field, -1);
-                                    },
-                                    visualDensity: VisualDensity.compact,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        if (trailingControl != null) const SizedBox(width: 8),
-                        ?trailingControl,
-                      ],
-                    );
-                  },
-                ),
-              ),
-            );
-          }
-
-          Widget buildMealRow({
-            required String label,
-            required String scoreField,
-            required int scoreValue,
-            required String timeField,
-            required String timeValue,
-            required String timeHelpText,
-          }) {
-            return buildRatingRow(
-              label: label,
-              field: scoreField,
-              value: scoreValue,
-              trailingControl: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SizedBox(
-                    width: 44,
-                    child: Text(
-                      timeValue.isEmpty ? '--:--' : timeValue,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.indigo.shade700,
-                      ),
-                    ),
-                  ),
-                  OutlinedButton(
-                    onPressed: () async {
-                      await setTodayMedicationTime(timeField, timeHelpText);
-                    },
-                    style: OutlinedButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 6,
-                      ),
-                    ),
-                    child: const Text('Set'),
-                  ),
-                  if (timeValue.isNotEmpty)
-                    TextButton(
-                      onPressed: () async {
-                        await clearTodayMedicationTime(timeField);
-                      },
-                      style: TextButton.styleFrom(
-                        visualDensity: VisualDensity.compact,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 6,
-                        ),
-                      ),
-                      child: const Text('Clear'),
-                    ),
-                ],
-              ),
-            );
-          }
-
-          Widget buildMedicationTimeRow({
-            required String label,
-            required String field,
-            required String value,
-            required String pickerHelpText,
-            required String quickTime,
-            required String quickLabel,
-          }) {
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '$label: ${value.isEmpty ? '' : value}',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: [
-                      OutlinedButton(
-                        onPressed: () async {
-                          await setTodayMedicationQuickTime(field, quickTime);
-                        },
-                        style: OutlinedButton.styleFrom(
-                          visualDensity: VisualDensity.compact,
-                        ),
-                        child: Text(quickLabel),
-                      ),
-                      OutlinedButton(
-                        onPressed: () async {
-                          await setTodayMedicationTime(field, pickerHelpText);
-                        },
-                        style: OutlinedButton.styleFrom(
-                          visualDensity: VisualDensity.compact,
-                        ),
-                        child: const Text('Set'),
-                      ),
-                      if (value.isNotEmpty)
-                        TextButton(
-                          onPressed: () async {
-                            await clearTodayMedicationTime(field);
-                          },
-                          style: TextButton.styleFrom(
-                            visualDensity: VisualDensity.compact,
-                          ),
-                          child: const Text('Clear'),
-                        ),
-                    ],
-                  ),
-                ],
-              ),
-            );
-          }
-
-          Widget buildCrashSymptomSection({
-            required String title,
-            required List<String> options,
-            required List<String> selected,
-            required String field,
-          }) {
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    const spacing = 6.0;
-                    const targetColumns = 4;
-                    if (options.isEmpty) {
-                      return const SizedBox.shrink();
-                    }
-                    final columns = options.length < targetColumns
-                        ? options.length
-                        : targetColumns;
-                    final chipWidth =
-                        (constraints.maxWidth - ((columns - 1) * spacing)) /
-                        columns;
-
-                    return Wrap(
-                      spacing: spacing,
-                      runSpacing: spacing,
-                      children: options.map((symptom) {
-                        return SizedBox(
-                          width: chipWidth,
-                          child: FilterChip(
-                            label: SizedBox(
-                              width: double.infinity,
-                              child: Text(
-                                symptom,
-                                textAlign: TextAlign.center,
-                                maxLines: 2,
-                                softWrap: true,
-                                style: const TextStyle(fontSize: 11),
-                              ),
-                            ),
-                            selected: selected.contains(symptom),
-                            onSelected: (_) async {
-                              await toggleTodayCrashSymptomField(
-                                field,
-                                symptom,
-                              );
-                            },
-                            labelPadding: EdgeInsets.zero,
-                            padding: const EdgeInsets.symmetric(horizontal: 4),
-                            materialTapTargetSize:
-                                MaterialTapTargetSize.shrinkWrap,
-                            visualDensity: VisualDensity.compact,
-                          ),
-                        );
-                      }).toList(),
-                    );
-                  },
-                ),
-              ],
-            );
-          }
-
-          return Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: Colors.indigo.shade50,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.indigo.shade200),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Expanded(
-                      child: Text(
-                        'ADHD symptom tracker',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                DefaultTabController(
-                  length: 4,
-                  child: Column(
-                    children: [
-                      TabBar(
-                        labelColor: Colors.indigo.shade700,
-                        unselectedLabelColor: Colors.grey.shade700,
-                        indicatorColor: Colors.indigo.shade700,
-                        tabs: const [
-                          Tab(text: 'General'),
-                          Tab(text: 'Meals'),
-                          Tab(text: 'Medication'),
-                          Tab(text: 'Crash'),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      SizedBox(
-                        height: 430,
-                        child: TabBarView(
-                          children: [
-                            SingleChildScrollView(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Context today',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w700,
-                                      color: Colors.indigo.shade700,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  LayoutBuilder(
-                                    builder: (context, contextConstraints) {
-                                      const columnGap = 8.0;
-                                      const separatorWidth = 1.0;
-                                      const chipHeight = 40.0;
-                                      const chipVerticalGap = 5.0;
-
-                                      final columnCount = contextColumns.length;
-                                      if (columnCount == 0) {
-                                        return const SizedBox.shrink();
-                                      }
-
-                                      return Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: List.generate(columnCount, (
-                                          columnIndex,
-                                        ) {
-                                          final tags =
-                                              contextColumns[columnIndex];
-                                          final isLast =
-                                              columnIndex == columnCount - 1;
-
-                                          return Expanded(
-                                            child: Row(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
-                                              children: [
-                                                Expanded(
-                                                  child: Column(
-                                                    crossAxisAlignment:
-                                                        CrossAxisAlignment
-                                                            .start,
-                                                    children: tags.map((tag) {
-                                                      return Padding(
-                                                        padding:
-                                                            const EdgeInsets.only(
-                                                              bottom:
-                                                                  chipVerticalGap,
-                                                            ),
-                                                        child: SizedBox(
-                                                          width:
-                                                              double.infinity,
-                                                          height: chipHeight,
-                                                          child: FilterChip(
-                                                            label: SizedBox(
-                                                              width: double
-                                                                  .infinity,
-                                                              child: Text(
-                                                                tag,
-                                                                textAlign:
-                                                                    TextAlign
-                                                                        .center,
-                                                                maxLines: 2,
-                                                                softWrap: true,
-                                                                style:
-                                                                    const TextStyle(
-                                                                      fontSize:
-                                                                          10,
-                                                                    ),
-                                                              ),
-                                                            ),
-                                                            selected:
-                                                                contextTags
-                                                                    .contains(
-                                                                      tag,
-                                                                    ),
-                                                            onSelected: (_) async {
-                                                              await toggleTodayContextTag(
-                                                                tag,
-                                                              );
-                                                            },
-                                                            labelPadding:
-                                                                EdgeInsets.zero,
-                                                            padding:
-                                                                const EdgeInsets.symmetric(
-                                                                  horizontal: 4,
-                                                                ),
-                                                            materialTapTargetSize:
-                                                                MaterialTapTargetSize
-                                                                    .shrinkWrap,
-                                                            visualDensity:
-                                                                VisualDensity
-                                                                    .compact,
-                                                          ),
-                                                        ),
-                                                      );
-                                                    }).toList(),
-                                                  ),
-                                                ),
-                                                if (!isLast) ...[
-                                                  const SizedBox(width: 4),
-                                                  Container(
-                                                    width: separatorWidth,
-                                                    height: 99,
-                                                    color: Colors
-                                                        .indigo
-                                                        .shade100
-                                                        .withAlpha(150),
-                                                  ),
-                                                  const SizedBox(
-                                                    width: columnGap - 4,
-                                                  ),
-                                                ],
-                                              ],
-                                            ),
-                                          );
-                                        }),
-                                      );
-                                    },
-                                  ),
-                                  const SizedBox(height: 10),
-                                  buildRatingRow(
-                                    label: 'Work tasks',
-                                    field: 'workTaskScore',
-                                    value: workTaskScore,
-                                  ),
-                                  buildRatingRow(
-                                    label: 'Home tasks',
-                                    field: 'homeTaskScore',
-                                    value: homeTaskScore,
-                                  ),
-                                  buildRatingRow(
-                                    label: symptomTrackerLabels['focus']!,
-                                    field: 'focus',
-                                    value: focus,
-                                  ),
-                                  buildRatingRow(
-                                    label:
-                                        symptomTrackerLabels['restlessness']!,
-                                    field: 'restlessness',
-                                    value: restlessness,
-                                  ),
-                                  buildRatingRow(
-                                    label: symptomTrackerLabels['impulsivity']!,
-                                    field: 'impulsivity',
-                                    value: impulsivity,
-                                  ),
-                                  buildRatingRow(
-                                    label: symptomTrackerLabels['overwhelm']!,
-                                    field: 'overwhelm',
-                                    value: overwhelm,
-                                  ),
-                                  buildRatingRow(
-                                    label:
-                                        symptomTrackerLabels['emotionalRegulation']!,
-                                    field: 'emotionalRegulation',
-                                    value: emotionalRegulation,
-                                  ),
-                                  Text(
-                                    '1 = low, 10 = very strong',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: Colors.grey.shade700,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            SingleChildScrollView(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  buildMealRow(
-                                    label: 'Breakfast quality',
-                                    scoreField: 'breakfastScore',
-                                    scoreValue: breakfastScore,
-                                    timeField: 'breakfastTime',
-                                    timeValue: breakfastTime,
-                                    timeHelpText:
-                                        'When did you have breakfast?',
-                                  ),
-                                  buildMealRow(
-                                    label: 'Lunch quality',
-                                    scoreField: 'lunchScore',
-                                    scoreValue: lunchScore,
-                                    timeField: 'lunchTime',
-                                    timeValue: lunchTime,
-                                    timeHelpText: 'When did you have lunch?',
-                                  ),
-                                  buildMealRow(
-                                    label: 'Dinner quality',
-                                    scoreField: 'dinnerScore',
-                                    scoreValue: dinnerScore,
-                                    timeField: 'dinnerTime',
-                                    timeValue: dinnerTime,
-                                    timeHelpText: 'When did you have dinner?',
-                                  ),
-                                  buildMealRow(
-                                    label: 'Snack 1 quality',
-                                    scoreField: 'snacksScore',
-                                    scoreValue: snacksScore,
-                                    timeField: 'snacksTime',
-                                    timeValue: snacksTime,
-                                    timeHelpText: 'When did you have snack 1?',
-                                  ),
-                                  buildMealRow(
-                                    label: 'Snack 2 quality',
-                                    scoreField: 'snack2Score',
-                                    scoreValue: snack2Score,
-                                    timeField: 'snack2Time',
-                                    timeValue: snack2Time,
-                                    timeHelpText: 'When did you have snack 2?',
-                                  ),
-                                  buildMealRow(
-                                    label: 'Snack 3 quality',
-                                    scoreField: 'snack3Score',
-                                    scoreValue: snack3Score,
-                                    timeField: 'snack3Time',
-                                    timeValue: snack3Time,
-                                    timeHelpText: 'When did you have snack 3?',
-                                  ),
-                                  Text(
-                                    '1 = very poor, 10 = very good',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: Colors.grey.shade700,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            SingleChildScrollView(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  buildMedicationTimeRow(
-                                    label: 'Concerta XL',
-                                    field: 'concertaXlTime',
-                                    value: concertaXlTime,
-                                    pickerHelpText:
-                                        'When did you take Concerta XL?',
-                                    quickTime: '08:00',
-                                    quickLabel: '8:00 AM',
-                                  ),
-                                  buildMedicationTimeRow(
-                                    label: 'Concerta IR',
-                                    field: 'concertaIrTime',
-                                    value: concertaIrTime,
-                                    pickerHelpText:
-                                        'When did you take Concerta IR?',
-                                    quickTime: '16:30',
-                                    quickLabel: '4:30 PM',
-                                  ),
-                                  const SizedBox(height: 8),
-                                  const Text(
-                                    'Other medications',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  LayoutBuilder(
-                                    builder: (context, constraints) {
-                                      const spacing = 6.0;
-                                      const targetColumns = 4;
-                                      if (otherMedicationOptions.isEmpty) {
-                                        return const SizedBox.shrink();
-                                      }
-
-                                      final columns =
-                                          otherMedicationOptions.length <
-                                              targetColumns
-                                          ? otherMedicationOptions.length
-                                          : targetColumns;
-                                      final chipWidth =
-                                          (constraints.maxWidth -
-                                              ((columns - 1) * spacing)) /
-                                          columns;
-
-                                      return Wrap(
-                                        spacing: spacing,
-                                        runSpacing: spacing,
-                                        children: otherMedicationOptions.map((
-                                          med,
-                                        ) {
-                                          return SizedBox(
-                                            width: chipWidth,
-                                            child: FilterChip(
-                                              label: SizedBox(
-                                                width: double.infinity,
-                                                child: Text(
-                                                  med,
-                                                  textAlign: TextAlign.center,
-                                                  maxLines: 2,
-                                                  softWrap: true,
-                                                  style: const TextStyle(
-                                                    fontSize: 11,
-                                                  ),
-                                                ),
-                                              ),
-                                              selected: otherMedicationsTaken
-                                                  .contains(med),
-                                              onSelected: (_) async {
-                                                await toggleTodayOtherMedication(
-                                                  med,
-                                                );
-                                              },
-                                              labelPadding: EdgeInsets.zero,
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 4,
-                                                  ),
-                                              materialTapTargetSize:
-                                                  MaterialTapTargetSize
-                                                      .shrinkWrap,
-                                              visualDensity:
-                                                  VisualDensity.compact,
-                                            ),
-                                          );
-                                        }).toList(),
-                                      );
-                                    },
-                                  ),
-                                ],
-                              ),
-                            ),
-                            SingleChildScrollView(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      const SizedBox(
-                                        width: 90,
-                                        child: Text(
-                                          'Crash start:',
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                      SizedBox(
-                                        width: 52,
-                                        child: Text(
-                                          dopamineCrashStartTime.isEmpty
-                                              ? '--:--'
-                                              : dopamineCrashStartTime,
-                                          style: const TextStyle(
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 6),
-                                      OutlinedButton(
-                                        onPressed: () async {
-                                          await setTodayCrashTimeField(
-                                            'dopamineCrashStartTime',
-                                            'When did the dopamine crash start?',
-                                          );
-                                        },
-                                        style: OutlinedButton.styleFrom(
-                                          visualDensity: VisualDensity.compact,
-                                        ),
-                                        child: const Text('Set'),
-                                      ),
-                                      if (dopamineCrashStartTime.isNotEmpty)
-                                        TextButton(
-                                          onPressed: () async {
-                                            await clearTodayCrashTimeField(
-                                              'dopamineCrashStartTime',
-                                            );
-                                          },
-                                          style: TextButton.styleFrom(
-                                            visualDensity:
-                                                VisualDensity.compact,
-                                          ),
-                                          child: const Text('Clear'),
-                                        ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Row(
-                                    children: [
-                                      const SizedBox(
-                                        width: 90,
-                                        child: Text(
-                                          'Crash end:',
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                      SizedBox(
-                                        width: 52,
-                                        child: Text(
-                                          dopamineCrashEndTime.isEmpty
-                                              ? '--:--'
-                                              : dopamineCrashEndTime,
-                                          style: const TextStyle(
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 6),
-                                      OutlinedButton(
-                                        onPressed: () async {
-                                          await setTodayCrashTimeField(
-                                            'dopamineCrashEndTime',
-                                            'When did the dopamine crash end?',
-                                          );
-                                        },
-                                        style: OutlinedButton.styleFrom(
-                                          visualDensity: VisualDensity.compact,
-                                        ),
-                                        child: const Text('Set'),
-                                      ),
-                                      if (dopamineCrashEndTime.isNotEmpty)
-                                        TextButton(
-                                          onPressed: () async {
-                                            await clearTodayCrashTimeField(
-                                              'dopamineCrashEndTime',
-                                            );
-                                          },
-                                          style: TextButton.styleFrom(
-                                            visualDensity:
-                                                VisualDensity.compact,
-                                          ),
-                                          child: const Text('Clear'),
-                                        ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 10),
-                                  buildCrashSymptomSection(
-                                    title: 'Core symptoms',
-                                    options: dopamineCrashSymptomOptions,
-                                    selected: dopamineCrashSymptoms,
-                                    field: 'dopamineCrashSymptoms',
-                                  ),
-                                  const SizedBox(height: 10),
-                                  buildCrashSymptomSection(
-                                    title: 'Additional symptoms',
-                                    options:
-                                        dopamineCrashAdditionalSymptomOptions,
-                                    selected: dopamineCrashAdditionalSymptoms,
-                                    field: 'dopamineCrashSymptomsAdditional',
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
+          return SymptomTrackerSection(
+            checkin: getTodayDailyCheckin(),
+            symptomTrackerLabels: symptomTrackerLabels,
+            dailyContextOptions: dailyContextOptions,
+            otherMedicationOptions: otherMedicationOptions,
+            dopamineCrashSymptomOptions: dopamineCrashSymptomOptions,
+            dopamineCrashAdditionalSymptomOptions:
+                dopamineCrashAdditionalSymptomOptions,
+            useWideWebOverviewColumns: useWideWebOverviewColumns,
+            onSetTodayDailyRating: setTodayDailyRating,
+            onSetTodayMedicationTime: setTodayMedicationTime,
+            onClearTodayMedicationTime: clearTodayMedicationTime,
+            onSetTodayMedicationQuickTime: setTodayMedicationQuickTime,
+            onToggleTodayOtherMedication: toggleTodayOtherMedication,
+            onSetTodayCrashTimeField: setTodayCrashTimeField,
+            onClearTodayCrashTimeField: clearTodayCrashTimeField,
+            onToggleTodayCrashSymptomField: toggleTodayCrashSymptomField,
+            onToggleTodayContextTag: toggleTodayContextTag,
           );
         }
 
         Widget buildCaptureInboxSection() {
-          return Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.grey.shade300),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: inboxCaptureController,
-                        textInputAction: TextInputAction.done,
-                        onSubmitted: (_) async {
-                          await addInboxEntry();
-                        },
-                        decoration: const InputDecoration(
-                          hintText: 'Quick capture a thought...',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: addInboxEntry,
-                      child: const Text('Add'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
+          return QuickCaptureSection(
+            inboxEntries: inboxEntries,
+            inboxCaptureController: inboxCaptureController,
+            onAddInboxEntry: addInboxEntry,
+            onConvertInboxEntryToTask: convertInboxEntryToTask,
+            onRemoveInboxEntry: removeInboxEntry,
           );
         }
 
         Widget buildDayPlannerSection() {
-          return FutureBuilder<List<OutlookCalendarEvent>>(
-            future: upcomingOutlookEventsFuture ?? _loadUpcomingOutlookEvents(),
-            builder: (context, snapshot) {
-              final events = snapshot.data ?? const <OutlookCalendarEvent>[];
-              final plannerResult = DayPlannerService.buildPlan(
-                tasks: tasks,
-                calendarEvents: events,
-                day: DateTime.now(),
-              );
-
-              return Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.teal.shade50,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.teal.shade200),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            'Plan my day',
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                        Text(
-                          plannerResult.summary,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: Colors.teal.shade700,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    if (plannerResult.entries.isEmpty)
-                      Text(
-                        'Nothing to schedule yet.',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey.shade700,
-                        ),
-                      )
-                    else
-                      SizedBox(
-                        height: 200,
-                        child: ListView.builder(
-                          itemCount: plannerResult.entries.length,
-                          itemBuilder: (context, index) {
-                            final entry = plannerResult.entries[index];
-                            final isTask = entry.type == 'task';
-                            final isBreak = entry.type == 'break';
-                            final isCalendar = entry.type == 'calendar';
-                            final color = isTask
-                                ? Colors.blue.shade700
-                                : isBreak
-                                ? Colors.orange.shade700
-                                : isCalendar
-                                ? Colors.indigo.shade700
-                                : Colors.grey.shade700;
-                            return Padding(
-                              padding: const EdgeInsets.only(bottom: 6),
-                              child: Container(
-                                padding: const EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(10),
-                                  border: Border.all(
-                                    color: color.withAlpha(80),
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Container(
-                                      width: 8,
-                                      height: 30,
-                                      decoration: BoxDecoration(
-                                        color: color,
-                                        borderRadius: BorderRadius.circular(
-                                          999,
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            entry.title,
-                                            style: const TextStyle(
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                          if (entry.subtitle != null)
-                                            Text(
-                                              entry.subtitle!,
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                color: Colors.grey.shade700,
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                    Text(
-                                      '${entry.start.hour.toString().padLeft(2, '0')}:${entry.start.minute.toString().padLeft(2, '0')}–${entry.end.hour.toString().padLeft(2, '0')}:${entry.end.minute.toString().padLeft(2, '0')}',
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: Colors.grey.shade700,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                  ],
-                ),
-              );
+          return DayPlannerSection(
+            upcomingOutlookEventsFuture: upcomingOutlookEventsFuture,
+            loadUpcomingOutlookEvents: _loadUpcomingOutlookEvents,
+            outlookLookAheadDays: outlookLookAheadDays,
+            plannerDayOffset: plannerDayOffset,
+            showWorkInPlanner: showWorkInPlanner,
+            showHomeInPlanner: showHomeInPlanner,
+            showPlannerInPlanner: showPlannerInPlanner,
+            tasks: tasks,
+            isNarrow: isNarrow,
+            useWideWebOverviewColumns: useWideWebOverviewColumns,
+            isWorkTask: _isWorkTask,
+            formatPlannerDate: OutlookFormattingService.formatPlannerDate,
+            onPlannerDayOffsetChanged: (nextOffset) {
+              setState(() {
+                plannerDayOffset = nextOffset;
+              });
+            },
+            onShowWorkInPlannerChanged: (next) {
+              setState(() {
+                showWorkInPlanner = next;
+              });
+            },
+            onShowHomeInPlannerChanged: (next) {
+              setState(() {
+                showHomeInPlanner = next;
+              });
+            },
+            onShowPlannerInPlannerChanged: (next) {
+              setState(() {
+                showPlannerInPlanner = next;
+              });
             },
           );
         }
 
         Widget buildOutlookSection() {
-          return Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: Colors.blue.shade50,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.blue.shade200),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        'Outlook (next $outlookLookAheadDays ${outlookLookAheadDays == 1 ? 'day' : 'days'})',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                    TextButton.icon(
-                      onPressed: importIcsCalendarFile,
-                      icon: const Icon(Icons.upload_file, size: 16),
-                      label: const Text('Import .ics'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Export your work calendar as an .ics file and import it here.',
-                  style: TextStyle(fontSize: 11, color: Colors.grey.shade700),
-                ),
-                const SizedBox(height: 6),
-                FutureBuilder<List<OutlookCalendarEvent>>(
-                  future:
-                      upcomingOutlookEventsFuture ??
-                      _loadUpcomingOutlookEvents(),
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 6),
-                        child: Row(
-                          children: [
-                            SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                            SizedBox(width: 10),
-                            Text('Loading Outlook events...'),
-                          ],
-                        ),
-                      );
-                    }
-
-                    if (snapshot.hasError) {
-                      return Text(
-                        'Outlook not connected yet. Use the cloud sync button above to link permissions.',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey.shade700,
-                        ),
-                      );
-                    }
-
-                    final events =
-                        snapshot.data ?? const <OutlookCalendarEvent>[];
-                    if (events.isEmpty) {
-                      return Text(
-                        'No upcoming calendar events.',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey.shade700,
-                        ),
-                      );
-                    }
-
-                    final eventListMaxHeight = isNarrow ? 220.0 : 280.0;
-                    final eventWidgets = <Widget>[];
-                    DateTime? previousEventDay;
-
-                    for (final event in events) {
-                      final eventStart = event.start?.toLocal();
-                      if (eventStart != null) {
-                        final currentDay = DateTime(
-                          eventStart.year,
-                          eventStart.month,
-                          eventStart.day,
-                        );
-
-                        if (previousEventDay == null ||
-                            currentDay != previousEventDay) {
-                          if (eventWidgets.isNotEmpty) {
-                            eventWidgets.add(const SizedBox(height: 2));
-                          }
-                          eventWidgets.add(_buildOutlookDayDivider(currentDay));
-                          previousEventDay = currentDay;
-                        }
-                      }
-
-                      final isWorkCalendarEvent =
-                          event.calendarSource == 'work';
-                      final cardColor = isWorkCalendarEvent
-                          ? Colors.orange.shade50
-                          : Colors.white;
-                      final borderColor = isWorkCalendarEvent
-                          ? Colors.orange.shade300
-                          : Colors.blue.shade100;
-                      final badgeColor = isWorkCalendarEvent
-                          ? Colors.orange.shade700
-                          : Colors.blue.shade700;
-                      final badgeLabel = isWorkCalendarEvent ? 'Work' : 'Home';
-
-                      eventWidgets.add(
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 6),
-                          child: Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 7,
-                            ),
-                            decoration: BoxDecoration(
-                              color: cardColor,
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(color: borderColor),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        event.subject,
-                                        style: const TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    ),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                        vertical: 3,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: badgeColor.withAlpha(20),
-                                        borderRadius: BorderRadius.circular(
-                                          999,
-                                        ),
-                                      ),
-                                      child: Text(
-                                        badgeLabel,
-                                        style: TextStyle(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w700,
-                                          color: badgeColor,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  _formatOutlookEventTimeRange(event),
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    color: Colors.grey.shade700,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      );
-                    }
-
-                    return SizedBox(
-                      height: eventListMaxHeight,
-                      child: SingleChildScrollView(
-                        child: Column(children: eventWidgets),
-                      ),
-                    );
-                  },
-                ),
-              ],
-            ),
+          return OutlookSection(
+            upcomingOutlookEventsFuture: upcomingOutlookEventsFuture,
+            loadUpcomingOutlookEvents: _loadUpcomingOutlookEvents,
+            isNarrow: isNarrow,
+            outlookLookAheadDays: outlookLookAheadDays,
+            useWideWebOverviewColumns: useWideWebOverviewColumns,
+            importedOutlookSummary: importedOutlookSummary,
+            onImportIcsCalendarFile: importIcsCalendarFile,
+            formatOutlookDayDivider:
+                OutlookFormattingService.formatOutlookDayDivider,
+            formatOutlookEventTimeRange:
+                OutlookFormattingService.formatOutlookEventTimeRange,
+            formatOutlookEventDateRange:
+                OutlookFormattingService.formatOutlookEventDateRange,
+            isMultiDayOutlookEvent:
+                OutlookFormattingService.isMultiDayOutlookEvent,
+            formatImportTimestamp:
+                OutlookFormattingService.formatImportTimestamp,
+            formatImportDate: OutlookFormattingService.formatImportDate,
           );
         }
 
         Widget buildTaskTab(String label) {
-          final isSelected = label == selectedTaskCategory;
-
-          return Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: OutlinedButton(
-              onPressed: () {
-                setState(() {
-                  selectedTaskCategory = label;
-                });
-              },
-              style: OutlinedButton.styleFrom(
-                backgroundColor: isSelected
-                    ? Colors.blue.shade600
-                    : Colors.white,
-                foregroundColor: isSelected
-                    ? Colors.white
-                    : Colors.grey.shade800,
-                side: BorderSide(
-                  color: isSelected
-                      ? Colors.blue.shade600
-                      : Colors.grey.shade300,
-                ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 10,
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-              ),
-              child: Text(
-                label,
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-            ),
+          return TaskTabButton(
+            label: label,
+            isSelected: label == selectedTaskCategory,
+            onTap: () {
+              setState(() {
+                selectedTaskCategory = label;
+              });
+            },
           );
         }
 
-        Widget buildTaskPanel({
-          required String title,
-          required Color color,
-          required Widget headerAction,
-          required Widget body,
-          bool showHeader = true,
-        }) {
-          return Card(
-            color: color,
-            elevation: 0,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (showHeader)
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          title,
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        headerAction,
-                      ],
-                    ),
-                  if (showHeader) const SizedBox(height: 8),
-                  body,
-                ],
-              ),
-            ),
+        Widget buildTaskComposerSection() {
+          return TaskComposerSection(
+            taskController: taskController,
+            onAddTask: addTask,
           );
         }
 
         Widget buildTaskPanels(int index) {
           final task = tasks[index];
-          final selectedTab = taskDetailTabByTask[task] ?? 0;
-
-          Widget buildDetailTabButton({
-            required String label,
-            required int tabIndex,
-          }) {
-            final isSelected = selectedTab == tabIndex;
-
-            return OutlinedButton(
-              onPressed: () async {
-                await selectTaskDetailTab(index, tabIndex);
-              },
-              style: OutlinedButton.styleFrom(
-                minimumSize: const Size(0, 32),
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                visualDensity: VisualDensity.compact,
-                backgroundColor: isSelected
-                    ? Colors.blue.shade600
-                    : Colors.white,
-                foregroundColor: isSelected
-                    ? Colors.white
-                    : Colors.grey.shade800,
-                side: BorderSide(
-                  color: isSelected
-                      ? Colors.blue.shade600
-                      : Colors.grey.shade300,
-                ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              child: Text(
-                label,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w600,
-                  fontSize: 12,
-                ),
-              ),
-            );
-          }
-
-          final subtasksBody = Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (task.subtasks.isNotEmpty)
-                Column(
-                  children: List.generate(task.subtasks.length, (subIndex) {
-                    return SubtaskTile(
-                      index: subIndex + 1,
-                      subtask: task.subtasks[subIndex],
-                      onChanged: (value) {
-                        toggleSubtask(index, subIndex, value);
-                      },
-                      onMoveUp: () {
-                        moveSubtaskUp(index, subIndex);
-                      },
-                      onMoveDown: () {
-                        moveSubtaskDown(index, subIndex);
-                      },
-                      onEdit: () {
-                        editSubtask(index, subIndex);
-                      },
-                      onDelete: () {
-                        showDeleteSubtaskConfirmation(index, subIndex);
-                      },
-                    );
-                  }),
-                ),
-              const SizedBox(height: 10),
-              if (isNarrow)
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    FractionallySizedBox(
-                      widthFactor: 0.5,
-                      child: TextField(
-                        controller: getSubtaskController(index),
-                        style: const TextStyle(fontSize: 10),
-                        textInputAction: TextInputAction.done,
-                        onSubmitted: (_) async {
-                          await addSubtaskFromInput(index);
-                        },
-                        decoration: const InputDecoration(
-                          hintText: 'Add a subtask…',
-                          hintStyle: TextStyle(fontSize: 10),
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                          contentPadding: EdgeInsets.symmetric(
-                            vertical: 12,
-                            horizontal: 12,
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: ElevatedButton(
-                        onPressed: () async {
-                          await addSubtaskFromInput(index);
-                        },
-                        child: const Text(
-                          'Add',
-                          style: TextStyle(fontSize: 10),
-                        ),
-                      ),
-                    ),
-                  ],
-                )
-              else
-                LayoutBuilder(
-                  builder: (context, panelConstraints) {
-                    return Row(
-                      children: [
-                        SizedBox(
-                          width: panelConstraints.maxWidth * 0.5,
-                          child: TextField(
-                            controller: getSubtaskController(index),
-                            style: const TextStyle(fontSize: 10),
-                            textInputAction: TextInputAction.done,
-                            onSubmitted: (_) async {
-                              await addSubtaskFromInput(index);
-                            },
-                            decoration: const InputDecoration(
-                              hintText: 'Add a subtask…',
-                              hintStyle: TextStyle(fontSize: 10),
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                              contentPadding: EdgeInsets.symmetric(
-                                vertical: 12,
-                                horizontal: 12,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        ElevatedButton(
-                          onPressed: () async {
-                            await addSubtaskFromInput(index);
-                          },
-                          child: const Text(
-                            'Add',
-                            style: TextStyle(fontSize: 10),
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: OutlinedButton.icon(
-                  onPressed: isGenerating
-                      ? null
-                      : () {
-                          handleGenerateTaskSubtasks(index);
-                        },
-                  icon: Icon(
-                    Icons.psychology_alt_outlined,
-                    color: isGenerating ? Colors.grey : Colors.blue,
-                    size: 18,
-                  ),
-                  label: const Text(
-                    'Auto generate',
-                    style: TextStyle(fontSize: 10),
-                  ),
-                ),
-              ),
-            ],
-          );
-
-          final starterStepsBody = task.aiSubtasks.isEmpty
-              ? const Text(
-                  'ADHD this will generate automatically when you open this tab.',
-                  style: TextStyle(color: Colors.grey),
-                )
-              : Column(
-                  children: List.generate(task.aiSubtasks.length, (aiIndex) {
-                    final aiSubtask = task.aiSubtasks[aiIndex];
-                    return ListTile(
-                      dense: true,
-                      contentPadding: EdgeInsets.zero,
-                      leading: CircleAvatar(
-                        radius: 12,
-                        backgroundColor: Colors.blue.shade200,
-                        child: Text(
-                          '${aiIndex + 1}',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                      title: Text(aiSubtask.text),
-                    );
-                  }),
-                );
-
-          Widget starterLine({required String label, required String value}) {
-            final displayValue = value.trim().isEmpty ? 'Not set yet' : value;
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.grey.shade700,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    displayValue,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: value.trim().isEmpty
-                          ? Colors.grey.shade500
-                          : Colors.black87,
-                    ),
-                  ),
-                ],
-              ),
-            );
-          }
-
-          final starterScriptBody = Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              starterLine(
-                label: 'First tiny step',
-                value: task.starterTinyStep,
-              ),
-              starterLine(
-                label: 'Setup checklist',
-                value: task.starterSetupChecklist,
-              ),
-              starterLine(
-                label: 'If stuck, do this',
-                value: task.starterIfStuck,
-              ),
-              const SizedBox(height: 4),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: isGenerating
-                        ? null
-                        : () async {
-                            await generateStarterScript(index);
-                          },
-                    icon: const Icon(Icons.auto_awesome),
-                    label: const Text('Generate starter script'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      editStarterScript(index);
-                    },
-                    icon: const Icon(Icons.edit_note),
-                    label: const Text('Edit starter script'),
-                  ),
-                ],
-              ),
-            ],
-          );
-
-          return buildTaskPanel(
-            title: selectedTab == 0
-                ? 'Subtasks'
-                : selectedTab == 1
-                ? 'ADHD this'
-                : 'Starter script',
-            color: selectedTab == 1
-                ? Colors.blue.shade50
-                : Colors.grey.shade100,
-            headerAction: const SizedBox.shrink(),
-            showHeader: false,
-            body: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    buildDetailTabButton(label: 'Subtasks', tabIndex: 0),
-                    const SizedBox(width: 6),
-                    buildDetailTabButton(label: 'ADHD this', tabIndex: 1),
-                    const SizedBox(width: 6),
-                    buildDetailTabButton(label: 'Starter script', tabIndex: 2),
-                    const Spacer(),
-                    if (selectedTab == 1 && task.aiSubtasks.isNotEmpty)
-                      IconButton(
-                        icon: const Icon(Icons.delete, size: 20),
-                        tooltip: 'Delete ADHD this',
-                        onPressed: () {
-                          confirmDeleteStarterSteps(index);
-                        },
-                      ),
-                    if (selectedTab == 1)
-                      IconButton(
-                        icon: Icon(
-                          Icons.refresh,
-                          color: isGenerating ? Colors.grey : Colors.blue,
-                        ),
-                        tooltip: 'Regenerate ADHD this',
-                        onPressed: isGenerating
-                            ? null
-                            : () {
-                                createSubtasks(index, defaultStarterStepCount);
-                              },
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                if (selectedTab == 0)
-                  subtasksBody
-                else if (selectedTab == 1)
-                  starterStepsBody
-                else
-                  starterScriptBody,
-              ],
-            ),
-          );
-        }
-
-        Widget buildTaskList() {
-          if (visibleTaskIndices.isEmpty) {
-            return Center(
-              child: Text(
-                selectedTaskCategory == 'All tasks'
-                    ? 'No tasks yet.'
-                    : 'No tasks in this category.',
-                style: const TextStyle(color: Colors.grey),
-              ),
-            );
-          }
-
-          Widget buildTaskListItem(BuildContext context, int visibleIndex) {
-            final taskIndex = visibleTaskIndices[visibleIndex];
-            final task = tasks[taskIndex];
-            final baseAccentColor = getPriorityColor(task.priority);
-            final accentColor = baseAccentColor.withAlpha(
-              task.done ? 110 : 180,
-            );
-            final cardColor = task.done ? Colors.grey.shade100 : Colors.white;
-            final borderColor = task.done
-                ? Colors.grey.shade300
-                : accentColor.withAlpha(150);
-
-            return Card(
-              key: ValueKey('${taskIndex}_${task.task}'),
-              margin: const EdgeInsets.symmetric(vertical: 8),
-              elevation: 0,
-              color: cardColor,
-              clipBehavior: Clip.antiAlias,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: BorderSide(color: borderColor, width: 1),
-              ),
-              child: Stack(
-                children: [
-                  Positioned(
-                    left: 0,
-                    top: 0,
-                    bottom: 0,
-                    child: Container(width: 5, color: accentColor),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.only(left: 5),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 6),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          TaskTile(
-                            task: task,
-                            dueDateText: formatDueDate(task.dueDate),
-                            progress: RecommendationService.getTaskProgress(
-                              task,
-                            ),
-                            compactView: compactView || !task.expanded,
-                            categories: categories,
-                            category: task.category,
-                            priority: task.priority,
-                            isGenerating: isGenerating,
-                            onToggle: (value) {
-                              toggleTask(taskIndex, value);
-                            },
-                            reorderableIndex: taskIndex,
-                            onPriorityChanged: (value) {
-                              if (value == null) return;
-                              setState(() {
-                                tasks[taskIndex].priority = value;
-                              });
-                              saveTasks();
-                            },
-                            onDueDate: () {
-                              setDueDate(taskIndex);
-                            },
-                            onCategoryChanged: (value) {
-                              if (value == null) return;
-                              setState(() {
-                                tasks[taskIndex].category = value;
-                              });
-                              saveTasks();
-                            },
-                            onToggleExpanded: () {
-                              toggleExpanded(taskIndex);
-                            },
-                            onEdit: () {
-                              editTask(taskIndex);
-                            },
-                            onDelete: () {
-                              showDeleteConfirmation(taskIndex);
-                            },
-                          ),
-                          if (!compactView && task.expanded)
-                            Padding(
-                              padding: const EdgeInsets.only(left: 8, right: 8),
-                              child: buildTaskPanels(taskIndex),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          }
-
-          if (selectedTaskSortMode != TaskListSortMode.manual) {
-            return ListView.builder(
-              controller: taskListScrollController,
-              padding: EdgeInsets.zero,
-              itemCount: visibleTaskIndices.length,
-              itemBuilder: buildTaskListItem,
-            );
-          }
-
-          return ReorderableListView.builder(
-            scrollController: taskListScrollController,
-            padding: EdgeInsets.zero,
-            buildDefaultDragHandles: false,
-            itemCount: visibleTaskIndices.length,
-            onReorderItem: (oldIndex, newIndex) async {
-              setState(() {
-                reorderVisibleTasks(oldIndex, newIndex, visibleTaskIndices);
-              });
-
-              await saveTasks();
+          return TaskPanelsSection(
+            task: task,
+            selectedTab: taskDetailTabByTask[task] ?? 0,
+            isNarrow: isNarrow,
+            isGenerating: isGenerating,
+            defaultStarterStepCount: defaultStarterStepCount,
+            subtaskController: getSubtaskController(index),
+            formatDueDate: formatDueDate,
+            onSelectTab: (tabIndex) async {
+              await selectTaskDetailTab(index, tabIndex);
             },
-            itemBuilder: buildTaskListItem,
+            onReorderSubtasks: (oldIndex, newIndex) async {
+              await reorderSubtasks(index, oldIndex, newIndex);
+            },
+            onToggleSubtask: (subtaskIndex, value) async {
+              await toggleSubtask(index, subtaskIndex, value);
+            },
+            onSetSubtaskDate: (subtaskIndex) async {
+              await setSubtaskDate(index, subtaskIndex);
+            },
+            onEditSubtask: (subtaskIndex) async {
+              await editSubtask(index, subtaskIndex);
+            },
+            onDeleteSubtask: (subtaskIndex) {
+              showDeleteSubtaskConfirmation(index, subtaskIndex);
+            },
+            onAddSubtask: () async {
+              await addSubtaskFromInput(index);
+            },
+            onGenerateTaskSubtasks: () {
+              handleGenerateTaskSubtasks(index);
+            },
+            onConfirmDeleteStarterSteps: () {
+              confirmDeleteStarterSteps(index);
+            },
+            onRegenerateStarterSteps: () {
+              createSubtasks(index, defaultStarterStepCount);
+            },
+            onGenerateStarterScript: () async {
+              await generateStarterScript(index);
+            },
+            onEditStarterScript: () async {
+              await editStarterScript(index);
+            },
           );
         }
 
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const SizedBox(height: 4),
-            if (showOverview)
-              TasksOverviewSection(
-                isNarrow: isNarrow,
-                priorityCardsTotalWidth: priorityCardsTotalWidth,
-                priorityCardCount: priorityCardCount,
-                priorityCardSpacing: priorityCardSpacing,
-                getTopTasks: getTopTasks,
-                buildPriorityCard: buildPriorityCard,
-                prioritizeWorkOnWeekdays: prioritizeWorkOnWeekdays,
-                isWeekday: _isWeekday(DateTime.now()),
-                onToggleWorkdayPriorityMode: toggleWorkdayPriorityMode,
-                buildCaptureInboxSection: buildCaptureInboxSection(),
-                buildOutlookSection: buildOutlookSection(),
-                buildDailyCheckinSection: buildDailyCheckinSection(),
-                buildDayPlannerSection: buildDayPlannerSection(),
-              ),
-            if (showTaskList)
-              TaskListView(
-                showOverview: showOverview,
-                showTaskList: showTaskList,
-                isGenerating: isGenerating,
-                priorityCardsTotalWidth: priorityCardsTotalWidth,
-                taskTabsScrollController: taskTabsScrollController,
-                taskTabs: taskTabs.map(buildTaskTab).toList(),
-                buildTaskListContent: buildTaskList,
-                hasAnyExpandedTask: hasAnyExpandedTask,
-                taskSortLabel: getTaskSortLabel(),
-                onSelectTaskSortMode: (mode) {
-                  setState(() {
-                    selectedTaskSortMode = switch (mode) {
-                      'dueDate' => TaskListSortMode.dueDate,
-                      'priority' => TaskListSortMode.priority,
-                      _ => TaskListSortMode.manual,
-                    };
-                  });
-                },
-                onToggleExpandAll: () async {
-                  if (hasAnyExpandedTask) {
-                    await collapseAllTaskTiles();
-                  } else {
-                    await expandAllTaskTiles();
-                  }
-                },
-              ),
-          ],
+        return TasksViewSection(
+          showOverview: showOverview,
+          showTaskList: showTaskList,
+          isNarrow: isNarrow,
+          priorityCardsTotalWidth: priorityCardsTotalWidth,
+          priorityCardCount: priorityCardCount,
+          priorityCardSpacing: priorityCardSpacing,
+          isGenerating: isGenerating,
+          prioritizeWorkOnWeekdays: prioritizeWorkOnWeekdays,
+          isWeekday: _isWeekday(DateTime.now()),
+          taskTabsScrollController: taskTabsScrollController,
+          taskTabs: taskTabs.map(buildTaskTab).toList(),
+          taskSortLabel: getTaskSortLabel(),
+          groupTasksByPriority: groupTasksByPriority,
+          onGroupByPriorityChanged: (value) {
+            setState(() {
+              groupTasksByPriority = value;
+            });
+          },
+          onSelectTaskSortMode: (mode) {
+            setState(() {
+              selectedTaskSortMode = switch (mode) {
+                'dueDate' => TaskListSortMode.dueDate,
+                'priority' => TaskListSortMode.priority,
+                _ => TaskListSortMode.manual,
+              };
+            });
+          },
+          getTopTasks: getTopTasks,
+          buildPriorityCard: buildPriorityCard,
+          onToggleWorkdayPriorityMode: toggleWorkdayPriorityMode,
+          buildCaptureInboxSection: buildCaptureInboxSection(),
+          buildOutlookSection: buildOutlookSection(),
+          buildDailyCheckinSection: buildDailyCheckinSection(),
+          buildDayPlannerSection: buildDayPlannerSection(),
+          buildTimerSection: buildOverviewCountdownView(),
+          buildTaskComposerSection: buildTaskComposerSection(),
+          buildTaskListContent: () {
+            return TaskListSection(
+              tasks: tasks,
+              visibleTaskIndices: visibleTaskIndices,
+              selectedTaskCategory: selectedTaskCategory,
+              groupTasksByPriority: groupTasksByPriority,
+              selectedTaskSortModeIsManual:
+                  selectedTaskSortMode == TaskListSortMode.manual,
+              selectedTaskPaneIndex: selectedTaskPaneIndex,
+              taskListScrollController: taskListScrollController,
+              getPriorityColor: getPriorityColor,
+              getPriorityLabel: getPriorityLabel,
+              formatDueDate: formatDueDate,
+              buildTaskPanels: buildTaskPanels,
+              onToggleTask: (taskIndex, value) {
+                toggleTask(taskIndex, value);
+              },
+              onToggleExpanded: (taskIndex) {
+                toggleExpanded(taskIndex);
+              },
+              onSelectTaskPaneIndex: (taskIndex) {
+                setState(() {
+                  selectedTaskPaneIndex = taskIndex;
+                });
+              },
+              onEditTask: (taskIndex) {
+                editTask(taskIndex);
+              },
+              onDeleteTask: (taskIndex) {
+                showDeleteConfirmation(taskIndex);
+              },
+              onReorderVisibleTasks:
+                  (oldIndex, newIndex, currentVisibleTaskIndices) async {
+                    setState(() {
+                      reorderVisibleTasks(
+                        oldIndex,
+                        newIndex,
+                        currentVisibleTaskIndices,
+                      );
+                    });
+
+                    await saveTasks();
+                  },
+            );
+          },
         );
       },
     );
   }
 
   Widget buildCountdownView() {
+    return _buildCountdownView(compactMode: false, fixedHeight: null);
+  }
+
+  Widget buildOverviewCountdownView() {
+    return _buildCountdownView(compactMode: true, fixedHeight: null);
+  }
+
+  Widget _buildCountdownView({
+    required bool compactMode,
+    required double? fixedHeight,
+  }) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final timerRunning = focusTimer?.isActive == true;
-        final contentWidth = constraints.maxWidth < 720
-            ? constraints.maxWidth
-            : kWideContentWidth.clamp(0, constraints.maxWidth).toDouble();
+        final contentWidth = compactMode
+            ? (constraints.maxWidth < 720
+                  ? constraints.maxWidth
+                  : kWideContentWidth.clamp(0, constraints.maxWidth).toDouble())
+            : constraints.maxWidth;
         final selectedDurationSeconds = getSelectedFocusTimerDuration()
             .inSeconds
             .toDouble();
@@ -5106,10 +3189,12 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         final phaseLabel = timerRunning
             ? (progress > 0.5 ? 'Settling into focus' : 'Final stretch')
             : 'Ready when you are';
-        final digitalFontSize = contentWidth < 420 ? 58.0 : 84.0;
-        final availableHeight = constraints.maxHeight.isFinite
-            ? constraints.maxHeight
-            : 480.0;
+        final digitalFontSize = compactMode
+            ? (contentWidth < 420 ? 42.0 : 52.0)
+            : (contentWidth < 540 ? 72.0 : 108.0);
+        final availableHeight =
+            fixedHeight ??
+            (constraints.maxHeight.isFinite ? constraints.maxHeight : 480.0);
 
         return CountdownView(
           contentWidth: contentWidth,
@@ -5130,128 +3215,52 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           startFocusTimer: startFocusTimer,
           stopFocusTimer: stopFocusTimer,
           resetFocusTimer: resetFocusTimer,
+          compactMode: compactMode,
         );
       },
     );
   }
 
   Widget buildInsightsView() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final contentWidth = constraints.maxWidth < 720
-            ? constraints.maxWidth
-            : kWideContentWidth.clamp(0, constraints.maxWidth).toDouble();
-
-        final records = dailyCheckinsByDate.entries
-            .map((entry) {
-              final parsedDate = DateTime.tryParse(entry.key);
-              if (parsedDate == null) {
-                return null;
-              }
-
-              final raw = Map<String, dynamic>.from(entry.value);
-              final focus = parseScoreField(raw, 'focus');
-              final restlessness = parseScoreField(raw, 'restlessness');
-              final impulsivity = parseScoreField(raw, 'impulsivity');
-              final overwhelm = parseScoreField(raw, 'overwhelm');
-              final emotionalRegulation = parseScoreField(
-                raw,
-                'emotionalRegulation',
-                legacyValue: raw['emotional regulation'],
-              );
-              final workTaskScore = parseScoreField(
-                raw,
-                'workTaskScore',
-                legacyValue: raw['workProductivity'],
-              );
-              final homeTaskScore = parseScoreField(
-                raw,
-                'homeTaskScore',
-                legacyValue: raw['homeProductivity'],
-              );
-
-              final crashCore = parseStringList(raw['dopamineCrashSymptoms']);
-              final crashExtra = parseStringList(
-                raw['dopamineCrashSymptomsAdditional'],
-              );
-              final crashStart =
-                  (raw['dopamineCrashStartTime'] ??
-                          raw['dopamineCrashTime'] ??
-                          '')
-                      .toString();
-              final crashEnd = (raw['dopamineCrashEndTime'] ?? '').toString();
-
-              return {
-                'date': parsedDate,
-                'focus': focus,
-                'restlessness': restlessness,
-                'impulsivity': impulsivity,
-                'overwhelm': overwhelm,
-                'emotionalRegulation': emotionalRegulation,
-                'workTaskScore': workTaskScore,
-                'homeTaskScore': homeTaskScore,
-                'contextTags': parseStringList(raw['contextTags']),
-                'crashSymptomCount': crashCore.length + crashExtra.length,
-                'hasCrash':
-                    crashStart.trim().isNotEmpty ||
-                    crashEnd.trim().isNotEmpty ||
-                    crashCore.isNotEmpty ||
-                    crashExtra.isNotEmpty,
-              };
-            })
-            .whereType<Map<String, dynamic>>()
-            .toList();
-
-        records.sort((a, b) {
-          final aDate = a['date'] as DateTime;
-          final bDate = b['date'] as DateTime;
-          return aDate.compareTo(bDate);
-        });
-
-        return InsightsView(records: records, contentWidth: contentWidth);
-      },
+    return InsightsSection(
+      dailyCheckinsByDate: dailyCheckinsByDate,
+      parseScoreField: parseScoreField,
+      parseStringList: parseStringList,
+      wideContentWidth: kWideContentWidth,
     );
   }
 
   Widget buildNotesView() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final contentWidth = constraints.maxWidth < 720
-            ? constraints.maxWidth
-            : kWideContentWidth.clamp(0, constraints.maxWidth).toDouble();
-
-        return NotesView(
-          contentWidth: contentWidth,
-          noteEntries: noteEntries,
-          selectedNoteId: selectedNoteId,
-          inboxEntries: inboxEntries,
-          displayNoteTitle: displayNoteTitle,
-          notePreview: notePreview,
-          onAddNote: addNoteEntry,
-          onDeleteSelectedNote: selectedNote == null
-              ? () {}
-              : () {
-                  deleteSelectedNote();
-                },
-          onSelectNote: (noteId) async {
-            selectNoteEntry(noteId);
-          },
-          onEditNote: (entry) async {
-            await openNoteEntryDialog(existing: entry);
-          },
-          onDeleteNote: (noteId) async {
-            await deleteNoteEntryById(noteId);
-          },
-          onEditInboxEntry: (index) async {
-            await editInboxEntry(index);
-          },
-          onConvertInboxEntryToTask: (index) async {
-            await convertInboxEntryToTask(index);
-          },
-          onRemoveInboxEntry: (index) async {
-            await removeInboxEntry(index);
-          },
-        );
+    return NotesSection(
+      wideContentWidth: kWideContentWidth,
+      noteEntries: noteEntries,
+      selectedNoteId: selectedNoteId,
+      inboxEntries: inboxEntries,
+      displayNoteTitle: displayNoteTitle,
+      notePreview: notePreview,
+      onAddNote: addNoteEntry,
+      onDeleteSelectedNote: selectedNote == null
+          ? () {}
+          : () {
+              deleteSelectedNote();
+            },
+      onSelectNote: (noteId) async {
+        selectNoteEntry(noteId);
+      },
+      onEditNote: (entry) async {
+        await openNoteEntryDialog(existing: entry);
+      },
+      onDeleteNote: (noteId) async {
+        await deleteNoteEntryById(noteId);
+      },
+      onEditInboxEntry: (index) async {
+        await editInboxEntry(index);
+      },
+      onConvertInboxEntryToTask: (index) async {
+        await convertInboxEntryToTask(index);
+      },
+      onRemoveInboxEntry: (index) async {
+        await removeInboxEntry(index);
       },
     );
   }
@@ -5351,128 +3360,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           ),
         ),
       ),
-      bottomNavigationBar: selectedMainSectionIndex == 2
-          ? SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(
-                  kPageHorizontalPadding,
-                  0,
-                  kPageHorizontalPadding,
-                  kPageHorizontalPadding,
-                ),
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final isNarrow = constraints.maxWidth < 420;
-                    final contentWidth = constraints.maxWidth < 720
-                        ? constraints.maxWidth
-                        : kWideContentWidth
-                              .clamp(0, constraints.maxWidth)
-                              .toDouble();
-
-                    return Row(
-                      children: [
-                        SizedBox(
-                          width: contentWidth,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.grey.shade100,
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(color: Colors.grey.shade300),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withAlpha(13),
-                                  offset: const Offset(0, -2),
-                                  blurRadius: 8,
-                                ),
-                              ],
-                            ),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Container(
-                                  height: 1,
-                                  decoration: BoxDecoration(
-                                    color: Colors.grey.shade300,
-                                    borderRadius: const BorderRadius.vertical(
-                                      top: Radius.circular(16),
-                                    ),
-                                  ),
-                                ),
-                                Padding(
-                                  padding: const EdgeInsets.all(12),
-                                  child: isNarrow
-                                      ? Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.stretch,
-                                          children: [
-                                            TextField(
-                                              controller: taskController,
-                                              textInputAction:
-                                                  TextInputAction.done,
-                                              onSubmitted: (_) async {
-                                                await addTask();
-                                              },
-                                              decoration: InputDecoration(
-                                                labelText: 'Add a new task',
-                                                border:
-                                                    const OutlineInputBorder(),
-                                                isDense: true,
-                                                contentPadding:
-                                                    const EdgeInsets.symmetric(
-                                                      vertical: 12,
-                                                      horizontal: 12,
-                                                    ),
-                                              ),
-                                            ),
-                                            const SizedBox(height: 10),
-                                            ElevatedButton(
-                                              onPressed: addTask,
-                                              child: const Text('Add'),
-                                            ),
-                                          ],
-                                        )
-                                      : Row(
-                                          children: [
-                                            Expanded(
-                                              child: TextField(
-                                                controller: taskController,
-                                                textInputAction:
-                                                    TextInputAction.done,
-                                                onSubmitted: (_) async {
-                                                  await addTask();
-                                                },
-                                                decoration: InputDecoration(
-                                                  labelText: 'Add a new task',
-                                                  border:
-                                                      const OutlineInputBorder(),
-                                                  isDense: true,
-                                                  contentPadding:
-                                                      const EdgeInsets.symmetric(
-                                                        vertical: 12,
-                                                        horizontal: 12,
-                                                      ),
-                                                ),
-                                              ),
-                                            ),
-                                            const SizedBox(width: 10),
-                                            ElevatedButton(
-                                              onPressed: addTask,
-                                              child: const Text('Add'),
-                                            ),
-                                          ],
-                                        ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ),
-            )
-          : null,
+      bottomNavigationBar: selectedMainSectionIndex == 2 ? null : null,
     );
   }
 }

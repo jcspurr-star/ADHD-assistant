@@ -1,0 +1,67 @@
+import 'package:flutter/material.dart';
+
+import '../models/note_entry.dart';
+import 'notes_view.dart';
+
+class NotesSection extends StatelessWidget {
+  const NotesSection({
+    super.key,
+    required this.wideContentWidth,
+    required this.noteEntries,
+    required this.selectedNoteId,
+    required this.inboxEntries,
+    required this.displayNoteTitle,
+    required this.notePreview,
+    required this.onAddNote,
+    required this.onDeleteSelectedNote,
+    required this.onSelectNote,
+    required this.onEditNote,
+    required this.onDeleteNote,
+    required this.onEditInboxEntry,
+    required this.onConvertInboxEntryToTask,
+    required this.onRemoveInboxEntry,
+  });
+
+  final double wideContentWidth;
+  final List<NoteEntry> noteEntries;
+  final String? selectedNoteId;
+  final List<String> inboxEntries;
+  final String Function(NoteEntry entry) displayNoteTitle;
+  final String Function(NoteEntry entry) notePreview;
+  final Future<void> Function() onAddNote;
+  final VoidCallback onDeleteSelectedNote;
+  final Future<void> Function(String noteId) onSelectNote;
+  final Future<void> Function(NoteEntry entry) onEditNote;
+  final Future<void> Function(String noteId) onDeleteNote;
+  final Future<void> Function(int index) onEditInboxEntry;
+  final Future<void> Function(int index) onConvertInboxEntryToTask;
+  final Future<void> Function(int index) onRemoveInboxEntry;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final contentWidth = constraints.maxWidth < 720
+            ? constraints.maxWidth
+            : wideContentWidth.clamp(0, constraints.maxWidth).toDouble();
+
+        return NotesView(
+          contentWidth: contentWidth,
+          noteEntries: noteEntries,
+          selectedNoteId: selectedNoteId,
+          inboxEntries: inboxEntries,
+          displayNoteTitle: displayNoteTitle,
+          notePreview: notePreview,
+          onAddNote: onAddNote,
+          onDeleteSelectedNote: onDeleteSelectedNote,
+          onSelectNote: onSelectNote,
+          onEditNote: onEditNote,
+          onDeleteNote: onDeleteNote,
+          onEditInboxEntry: onEditInboxEntry,
+          onConvertInboxEntryToTask: onConvertInboxEntryToTask,
+          onRemoveInboxEntry: onRemoveInboxEntry,
+        );
+      },
+    );
+  }
+}

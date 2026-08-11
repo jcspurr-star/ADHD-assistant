@@ -52,6 +52,13 @@ class OutlookCalendarEvent {
 class OneDriveSyncService {
   static final RegExp _dateTimeHasExplicitZone = RegExp(r'(Z|[+-]\d\d:\d\d)$');
 
+  static const Set<String> _workCalendarKeywords = {
+    'work',
+    'office',
+    'business',
+    'job',
+  };
+
   static String get _authorityTenant {
     final trimmed = oneDriveAuthorityTenant.trim();
     return trimmed.isEmpty ? 'consumers' : trimmed;
@@ -59,6 +66,8 @@ class OneDriveSyncService {
 
   static String get _tokenEndpoint =>
       'https://login.microsoftonline.com/$_authorityTenant/oauth2/v2.0/token';
+  static String get _deviceCodeEndpoint =>
+      'https://login.microsoftonline.com/$_authorityTenant/oauth2/v2.0/devicecode';
   static const String _scope =
       'offline_access User.Read Calendars.Read Files.ReadWrite.AppFolder';
   static const String _stateFileName = 'adhd_assistant_app_state.json';
@@ -110,9 +119,65 @@ class OneDriveSyncService {
     return refreshToken != null && refreshToken.trim().isNotEmpty;
   }
 
+  static bool isExpectedWebCallbackUri(Uri uri) {
+    if (!kIsWeb) {
+      return false;
+    }
+
+    var expectedPath = '/outlook-callback';
+    final configuredRedirectUri = oneDriveRedirectUri.trim();
+    if (configuredRedirectUri.isNotEmpty) {
+      final configuredUri = Uri.tryParse(configuredRedirectUri);
+      final configuredPath = configuredUri?.path ?? '';
+      if (configuredPath.isNotEmpty) {
+        expectedPath = configuredPath;
+      }
+    }
+
+    return _normalizePath(uri.path) == _normalizePath(expectedPath);
+  }
+
   static Future<OneDriveDeviceCodeSession> beginDeviceCodeFlow() async {
     if (!isConfigured) {
       throw Exception('Outlook / Microsoft client ID is not configured.');
+    }
+
+    if (!kIsWeb) {
+      final response = await http.post(
+        Uri.parse(_deviceCodeEndpoint),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {'client_id': oneDriveClientId, 'scope': _scope},
+      );
+
+      if (response.statusCode != 200) {
+        final oauthError = _extractOauthError(response.body);
+        throw Exception('Unable to start Microsoft sign-in. $oauthError');
+      }
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final deviceCode = (body['device_code'] ?? '').toString();
+      final userCode = (body['user_code'] ?? '').toString();
+      final verificationUri =
+          (body['verification_uri_complete'] ?? body['verification_uri'] ?? '')
+              .toString();
+
+      if (deviceCode.isEmpty || userCode.isEmpty || verificationUri.isEmpty) {
+        throw Exception(
+          'Microsoft sign-in response did not include a valid device-code session.',
+        );
+      }
+
+      final intervalSeconds = (body['interval'] as num?)?.toInt() ?? 5;
+      final expiresInSeconds = (body['expires_in'] as num?)?.toInt() ?? 900;
+
+      return OneDriveDeviceCodeSession(
+        deviceCode: deviceCode,
+        userCode: userCode,
+        verificationUri: verificationUri,
+        message: (body['message'] ?? '').toString(),
+        intervalSeconds: intervalSeconds,
+        expiresInSeconds: expiresInSeconds,
+      );
     }
 
     final codeVerifier = _generateCodeVerifier();
@@ -149,6 +214,10 @@ class OneDriveSyncService {
   static Future<bool> completeDeviceCodeFlow([
     OneDriveDeviceCodeSession? session,
   ]) async {
+    if (session != null && session.deviceCode.isNotEmpty) {
+      return _completeDesktopDeviceCodeFlow(session);
+    }
+
     final code = Uri.base.queryParameters['code'];
     final error = Uri.base.queryParameters['error'];
     final returnedState = Uri.base.queryParameters['state'];
@@ -196,6 +265,60 @@ class OneDriveSyncService {
     await _storeTokenResponse(body);
     await _clearPendingAuthSession();
     return true;
+  }
+
+  static Future<bool> _completeDesktopDeviceCodeFlow(
+    OneDriveDeviceCodeSession session,
+  ) async {
+    var pollIntervalSeconds = session.intervalSeconds <= 0
+        ? 5
+        : session.intervalSeconds;
+    final deadline = DateTime.now().add(
+      Duration(
+        seconds: session.expiresInSeconds <= 0 ? 900 : session.expiresInSeconds,
+      ),
+    );
+
+    while (DateTime.now().isBefore(deadline)) {
+      final response = await http.post(
+        Uri.parse(_tokenEndpoint),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {
+          'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
+          'client_id': oneDriveClientId,
+          'device_code': session.deviceCode,
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        await _storeTokenResponse(body);
+        return true;
+      }
+
+      final oauthErrorCode = _extractOauthErrorCode(response.body);
+      if (oauthErrorCode == 'authorization_pending') {
+        await Future.delayed(Duration(seconds: pollIntervalSeconds));
+        continue;
+      }
+
+      if (oauthErrorCode == 'slow_down') {
+        pollIntervalSeconds += 5;
+        await Future.delayed(Duration(seconds: pollIntervalSeconds));
+        continue;
+      }
+
+      if (oauthErrorCode == 'authorization_declined' ||
+          oauthErrorCode == 'expired_token' ||
+          oauthErrorCode == 'bad_verification_code') {
+        return false;
+      }
+
+      final oauthError = _extractOauthError(response.body);
+      throw Exception('Unable to finish Microsoft sign-in. $oauthError');
+    }
+
+    return false;
   }
 
   static String buildAuthorizationUrl({
@@ -258,6 +381,19 @@ class OneDriveSyncService {
     }
 
     return 'http://localhost/outlook-callback';
+  }
+
+  static String _normalizePath(String rawPath) {
+    if (rawPath.isEmpty) {
+      return '/';
+    }
+
+    final withLeadingSlash = rawPath.startsWith('/') ? rawPath : '/$rawPath';
+    if (withLeadingSlash.length > 1 && withLeadingSlash.endsWith('/')) {
+      return withLeadingSlash.substring(0, withLeadingSlash.length - 1);
+    }
+
+    return withLeadingSlash;
   }
 
   static Future<void> _persistPendingAuthSession({
@@ -357,6 +493,94 @@ class OneDriveSyncService {
 
     final nowUtc = DateTime.now().toUtc();
     final endUtc = nowUtc.add(lookAhead);
+    final calendars = await _fetchCalendars(accessToken);
+    final calendarEvents = <OutlookCalendarEvent>[];
+
+    if (calendars.isEmpty) {
+      return _fetchDefaultCalendarView(
+        accessToken: accessToken,
+        nowUtc: nowUtc,
+        endUtc: endUtc,
+        maxItems: maxItems,
+      );
+    }
+
+    for (final calendar in calendars) {
+      final calendarId = (calendar['id'] ?? '').toString();
+      if (calendarId.isEmpty) {
+        continue;
+      }
+      final calendarName = (calendar['name'] ?? '').toString();
+      final source = _inferCalendarSource(calendarName);
+
+      final events = await _fetchCalendarViewForCalendar(
+        accessToken: accessToken,
+        calendarId: calendarId,
+        nowUtc: nowUtc,
+        endUtc: endUtc,
+        maxItems: maxItems,
+        calendarSource: source,
+      );
+      calendarEvents.addAll(events);
+    }
+
+    calendarEvents.sort((a, b) {
+      final left =
+          a.start ?? DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+      final right =
+          b.start ?? DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+      return left.compareTo(right);
+    });
+
+    return calendarEvents;
+  }
+
+  static Future<List<Map<String, dynamic>>> _fetchCalendars(
+    String accessToken,
+  ) async {
+    final response = await http.get(
+      Uri.https('graph.microsoft.com', '/v1.0/me/calendars', {
+        r'$select': 'id,name',
+        r'$top': '50',
+      }),
+      headers: {
+        'Authorization': 'Bearer $accessToken',
+        'Accept': 'application/json',
+      },
+    );
+
+    if (response.statusCode == 401) {
+      await signOut();
+      throw Exception(
+        'Your Microsoft session expired or was revoked. Please link again.',
+      );
+    }
+
+    if (response.statusCode == 403) {
+      throw Exception(
+        'Calendar permission denied. Ensure Calendars.Read is granted in your Azure app registration.',
+      );
+    }
+
+    if (response.statusCode != 200) {
+      throw Exception(
+        'Unable to list Outlook calendars. ${_extractGraphError(response.body)}',
+      );
+    }
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    final rawCalendars = body['value'] as List<dynamic>? ?? const [];
+    return rawCalendars
+        .map((item) => Map<String, dynamic>.from(item as Map))
+        .toList();
+  }
+
+  static Future<List<OutlookCalendarEvent>> _fetchDefaultCalendarView({
+    required String accessToken,
+    required DateTime nowUtc,
+    required DateTime endUtc,
+    required int maxItems,
+  }) async {
     final query = {
       'startDateTime': nowUtc.toIso8601String(),
       'endDateTime': endUtc.toIso8601String(),
@@ -394,8 +618,65 @@ class OneDriveSyncService {
     }
 
     final body = jsonDecode(response.body) as Map<String, dynamic>;
-    final rawEvents = (body['value'] as List<dynamic>? ?? const []);
+    final rawEvents = body['value'] as List<dynamic>? ?? const [];
+    return _mapGraphEvents(rawEvents, calendarSource: 'home');
+  }
 
+  static Future<List<OutlookCalendarEvent>> _fetchCalendarViewForCalendar({
+    required String accessToken,
+    required String calendarId,
+    required DateTime nowUtc,
+    required DateTime endUtc,
+    required int maxItems,
+    required String calendarSource,
+  }) async {
+    final query = {
+      'startDateTime': nowUtc.toIso8601String(),
+      'endDateTime': endUtc.toIso8601String(),
+      r'$top': maxItems.toString(),
+      r'$orderby': 'start/dateTime',
+      r'$select': 'id,subject,isAllDay,start,end',
+    };
+
+    final response = await http.get(
+      Uri.https(
+        'graph.microsoft.com',
+        '/v1.0/me/calendars/$calendarId/calendarView',
+        query,
+      ),
+      headers: {
+        'Authorization': 'Bearer $accessToken',
+        'Accept': 'application/json',
+        'Prefer': 'outlook.timezone="UTC"',
+      },
+    );
+
+    if (response.statusCode == 401) {
+      await signOut();
+      throw Exception(
+        'Your Microsoft session expired or was revoked. Please link again.',
+      );
+    }
+
+    if (response.statusCode == 403) {
+      throw Exception(
+        'Calendar permission denied. Ensure Calendars.Read is granted in your Azure app registration.',
+      );
+    }
+
+    if (response.statusCode != 200) {
+      return const <OutlookCalendarEvent>[];
+    }
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    final rawEvents = body['value'] as List<dynamic>? ?? const [];
+    return _mapGraphEvents(rawEvents, calendarSource: calendarSource);
+  }
+
+  static List<OutlookCalendarEvent> _mapGraphEvents(
+    List<dynamic> rawEvents, {
+    required String calendarSource,
+  }) {
     return rawEvents.map((raw) {
       final event = Map<String, dynamic>.from(raw as Map);
       return OutlookCalendarEvent(
@@ -406,9 +687,22 @@ class OneDriveSyncService {
         start: _parseGraphDateTimeField(event['start']),
         end: _parseGraphDateTimeField(event['end']),
         isAllDay: event['isAllDay'] == true,
-        calendarSource: 'home',
+        calendarSource: calendarSource,
       );
     }).toList();
+  }
+
+  static String _inferCalendarSource(String calendarName) {
+    final normalized = calendarName.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return 'home';
+    }
+    for (final keyword in _workCalendarKeywords) {
+      if (normalized.contains(keyword)) {
+        return 'work';
+      }
+    }
+    return 'home';
   }
 
   static Future<String?> _getValidAccessToken() async {
@@ -481,6 +775,15 @@ class OneDriveSyncService {
       return 'Error: $error. $description';
     } catch (_) {
       return 'HTTP response: $rawBody';
+    }
+  }
+
+  static String _extractOauthErrorCode(String rawBody) {
+    try {
+      final body = jsonDecode(rawBody) as Map<String, dynamic>;
+      return (body['error'] ?? '').toString();
+    } catch (_) {
+      return '';
     }
   }
 

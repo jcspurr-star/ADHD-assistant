@@ -2,19 +2,31 @@ class Subtask {
   String text;
   bool done;
   bool aiSuggested;
+  String? doDate;
 
-  Subtask({required this.text, this.done = false, this.aiSuggested = false});
+  Subtask({
+    required this.text,
+    this.done = false,
+    this.aiSuggested = false,
+    this.doDate,
+  });
 
   factory Subtask.fromJson(Map<String, dynamic> json) {
     return Subtask(
       text: json["text"],
       done: json["done"] ?? false,
       aiSuggested: json["aiSuggested"] ?? false,
+      doDate: json["doDate"],
     );
   }
 
   Map<String, dynamic> toJson() {
-    return {"text": text, "done": done, "aiSuggested": aiSuggested};
+    return {
+      "text": text,
+      "done": done,
+      "aiSuggested": aiSuggested,
+      "doDate": doDate,
+    };
   }
 }
 
@@ -26,6 +38,10 @@ class Task {
   List<Subtask> subtasks;
   String priority;
   String? dueDate;
+  String? doDate;
+  int? effortMinutes;
+  int? nextSessionEffortMinutes;
+  String nextAction;
   String category;
   String starterTinyStep;
   String starterSetupChecklist;
@@ -40,6 +56,10 @@ class Task {
     List<Subtask>? subtasks,
     this.priority = "medium",
     this.dueDate,
+    this.doDate,
+    this.effortMinutes,
+    this.nextSessionEffortMinutes,
+    this.nextAction = '',
     this.category = 'None',
     this.starterTinyStep = '',
     this.starterSetupChecklist = '',
@@ -65,6 +85,10 @@ class Task {
           [],
       priority: json["priority"] ?? "medium",
       dueDate: json["dueDate"],
+      doDate: json["doDate"],
+      effortMinutes: json["effortMinutes"],
+      nextSessionEffortMinutes: json["nextSessionEffortMinutes"],
+      nextAction: json["nextAction"] ?? '',
       category: json["category"] ?? 'None',
       starterTinyStep: json["starterTinyStep"] ?? '',
       starterSetupChecklist: json["starterSetupChecklist"] ?? '',
@@ -82,6 +106,10 @@ class Task {
       "subtasks": subtasks.map((s) => s.toJson()).toList(),
       "priority": priority,
       "dueDate": dueDate,
+      "doDate": doDate,
+      "effortMinutes": effortMinutes,
+      "nextSessionEffortMinutes": nextSessionEffortMinutes,
+      "nextAction": nextAction,
       "category": category,
       "starterTinyStep": starterTinyStep,
       "starterSetupChecklist": starterSetupChecklist,

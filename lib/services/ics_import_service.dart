@@ -5,8 +5,9 @@ class IcsImportService {
     final normalized = icsContent
         .replaceAll('\r\n', '\n')
         .replaceAll('\r', '\n');
-    final lines = normalized.split('\n');
+    final lines = _unfoldLines(normalized.split('\n'));
     final events = <OutlookCalendarEvent>[];
+    final calendarSource = _detectCalendarSource(lines);
 
     String? currentUid;
     String? currentSummary;
@@ -34,14 +35,14 @@ class IcsImportService {
             start: start,
             end: end,
             isAllDay: currentIsAllDay,
-            calendarSource: 'work',
+            calendarSource: calendarSource,
           ),
         );
       }
     }
 
     for (final rawLine in lines) {
-      final line = rawLine.trim();
+      final line = rawLine.trimRight();
       if (line.isEmpty) {
         continue;
       }
@@ -65,20 +66,53 @@ class IcsImportService {
         continue;
       }
 
-      if (line.startsWith('UID:')) {
-        currentUid = line.substring(4).trim();
-      } else if (line.startsWith('SUMMARY:')) {
-        currentSummary = _decodeValue(line.substring(8));
-      } else if (line.startsWith('DTSTART')) {
-        currentIsAllDay = line.contains('VALUE=DATE');
+      final separatorIndex = line.indexOf(':');
+      if (separatorIndex == -1) {
+        continue;
+      }
+
+      final propertyWithParams = line.substring(0, separatorIndex);
+      final propertyName = propertyWithParams
+          .split(';')
+          .first
+          .trim()
+          .toUpperCase();
+
+      if (propertyName == 'UID') {
+        currentUid = _extractValue(line);
+      } else if (propertyName == 'SUMMARY') {
+        currentSummary = _decodeValue(_extractValue(line));
+      } else if (propertyName == 'DTSTART') {
+        currentIsAllDay = propertyWithParams.toUpperCase().contains(
+          'VALUE=DATE',
+        );
         currentStart = _extractValue(line);
-      } else if (line.startsWith('DTEND')) {
-        currentIsAllDay = currentIsAllDay || line.contains('VALUE=DATE');
+      } else if (propertyName == 'DTEND') {
+        currentIsAllDay =
+            currentIsAllDay ||
+            propertyWithParams.toUpperCase().contains('VALUE=DATE');
         currentEnd = _extractValue(line);
       }
     }
 
     return events;
+  }
+
+  static List<String> _unfoldLines(List<String> lines) {
+    final unfolded = <String>[];
+
+    for (final line in lines) {
+      if (line.startsWith(' ') || line.startsWith('\t')) {
+        if (unfolded.isEmpty) {
+          continue;
+        }
+        unfolded[unfolded.length - 1] += line.substring(1);
+      } else {
+        unfolded.add(line);
+      }
+    }
+
+    return unfolded;
   }
 
   static String _extractValue(String line) {
@@ -97,6 +131,37 @@ class IcsImportService {
         .replaceAll(r'\\;', ';')
         .replaceAll(r'\\\\', '\\')
         .trim();
+  }
+
+  static String _detectCalendarSource(List<String> lines) {
+    for (final rawLine in lines) {
+      final line = rawLine.trimRight();
+      if (line.isEmpty) {
+        continue;
+      }
+      final separatorIndex = line.indexOf(':');
+      if (separatorIndex == -1) {
+        continue;
+      }
+      final propertyWithParams = line.substring(0, separatorIndex);
+      final propertyName = propertyWithParams
+          .split(';')
+          .first
+          .trim()
+          .toUpperCase();
+      if (propertyName != 'X-WR-CALNAME') {
+        continue;
+      }
+      final value = _decodeValue(_extractValue(line)).toLowerCase();
+      if (value.contains('work') ||
+          value.contains('office') ||
+          value.contains('business')) {
+        return 'work';
+      }
+      return 'home';
+    }
+
+    return 'home';
   }
 
   static DateTime? _parseDateTime(String? value, bool isAllDay) {

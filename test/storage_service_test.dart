@@ -11,7 +11,15 @@ void main() {
     SharedPreferences.setMockInitialValues({});
 
     final tasks = [
-      Task(task: 'Alpha', done: false, expanded: false),
+      Task(
+        task: 'Alpha',
+        done: false,
+        expanded: false,
+        doDate: '2024-01-02',
+        effortMinutes: 240,
+        nextSessionEffortMinutes: 45,
+        subtasks: [Subtask(text: 'Step 1', doDate: '2024-01-02')],
+      ),
       Task(task: 'Beta', done: true, expanded: true, priority: 'high'),
     ];
 
@@ -21,6 +29,10 @@ void main() {
 
     expect(loaded.length, equals(2));
     expect(loaded[0].task, equals('Alpha'));
+    expect(loaded[0].doDate, equals('2024-01-02'));
+    expect(loaded[0].effortMinutes, equals(240));
+    expect(loaded[0].nextSessionEffortMinutes, equals(45));
+    expect(loaded[0].subtasks.first.doDate, equals('2024-01-02'));
     expect(loaded[1].priority, equals('high'));
     expect(loaded[1].done, isTrue);
   });

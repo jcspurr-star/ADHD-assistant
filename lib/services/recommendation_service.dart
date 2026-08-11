@@ -1,6 +1,13 @@
 import 'package:adhd_assistant/models/task.dart';
 
 class RecommendationService {
+  static DateTime? _parseTaskDate(String? raw) {
+    if (raw == null || raw.trim().isEmpty) {
+      return null;
+    }
+    return DateTime.tryParse(raw);
+  }
+
   static int getPriorityScore(String priority) {
     switch (priority) {
       case "high":
@@ -15,17 +22,103 @@ class RecommendationService {
   }
 
   static int getDueDays(Task task) {
-    if (task.dueDate == null) return 100000;
+    final date = _parseTaskDate(task.dueDate);
+    if (date == null) return 100000;
 
-    try {
-      final date = DateTime.parse(task.dueDate!);
-      final now = DateTime.now();
-      final today = DateTime(now.year, now.month, now.day);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final targetDate = DateTime(date.year, date.month, date.day);
 
-      return date.difference(today).inDays;
-    } catch (_) {
-      return 100000;
+    return targetDate.difference(today).inDays;
+  }
+
+  static int getPlanningDays(Task task) {
+    final date =
+        _parseTaskDate(task.doDate) ??
+        _parseTaskDate(task.dueDate) ??
+        _firstPlannedIncompleteSubtaskDate(task);
+    if (date == null) return 100000;
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final targetDate = DateTime(date.year, date.month, date.day);
+
+    return targetDate.difference(today).inDays;
+  }
+
+  static bool isTaskEligibleForToday(Task task, {DateTime? day}) {
+    if (task.done == true) {
+      return false;
     }
+
+    final reference = day ?? DateTime.now();
+    final targetDay = DateTime(reference.year, reference.month, reference.day);
+    final doDate = _parseTaskDate(task.doDate);
+    if (doDate != null) {
+      final normalizedDoDate = DateTime(doDate.year, doDate.month, doDate.day);
+      return !normalizedDoDate.isAfter(targetDay);
+    }
+
+    final currentSubtask = _currentNextSubtask(task, day: targetDay);
+    if (currentSubtask != null &&
+        _parseTaskDate(currentSubtask.doDate) != null) {
+      final subtaskDate = _parseTaskDate(currentSubtask.doDate)!;
+      final normalizedSubtaskDate = DateTime(
+        subtaskDate.year,
+        subtaskDate.month,
+        subtaskDate.day,
+      );
+      return !normalizedSubtaskDate.isAfter(targetDay);
+    }
+
+    return _parseTaskDate(task.dueDate) != null;
+  }
+
+  static DateTime? _firstPlannedIncompleteSubtaskDate(Task task) {
+    DateTime? earliest;
+    for (final subtask in task.subtasks) {
+      if (subtask.done == true) {
+        continue;
+      }
+
+      final date = _parseTaskDate(subtask.doDate);
+      if (date == null) {
+        continue;
+      }
+
+      if (earliest == null || date.isBefore(earliest)) {
+        earliest = date;
+      }
+    }
+    return earliest;
+  }
+
+  static Subtask? _currentNextSubtask(Task task, {DateTime? day}) {
+    final reference = day ?? DateTime.now();
+    final targetDay = DateTime(reference.year, reference.month, reference.day);
+    Subtask? firstUndated;
+    Subtask? firstFutureDated;
+
+    for (final subtask in task.subtasks) {
+      if (subtask.done == true) {
+        continue;
+      }
+
+      final date = _parseTaskDate(subtask.doDate);
+      if (date == null) {
+        firstUndated ??= subtask;
+        continue;
+      }
+
+      final normalizedDate = DateTime(date.year, date.month, date.day);
+      if (!normalizedDate.isAfter(targetDay)) {
+        return subtask;
+      }
+
+      firstFutureDated ??= subtask;
+    }
+
+    return firstUndated ?? firstFutureDated;
   }
 
   static double getTaskProgress(Task task) {
@@ -42,8 +135,8 @@ class RecommendationService {
     if (unfinishedTasks.isEmpty) return null;
 
     unfinishedTasks.sort((a, b) {
-      final dueA = getDueDays(a);
-      final dueB = getDueDays(b);
+      final dueA = getPlanningDays(a);
+      final dueB = getPlanningDays(b);
 
       if (dueA != dueB) return dueA.compareTo(dueB);
 
@@ -68,9 +161,8 @@ class RecommendationService {
     if (task == null) return "🎉 Everything is complete!";
 
     String formatDueDate(String? dueDate) {
-      if (dueDate == null) return "";
-
-      final date = DateTime.parse(dueDate);
+      final date = _parseTaskDate(dueDate);
+      if (date == null) return "";
       final now = DateTime.now();
       final today = DateTime(now.year, now.month, now.day);
       final targetDate = DateTime(date.year, date.month, date.day);
@@ -85,27 +177,29 @@ class RecommendationService {
     }
 
     final dueLabel = formatDueDate(task.dueDate);
+    final doLabel = formatDueDate(task.doDate);
+    final planningLine = doLabel.isNotEmpty ? "\nPlanned: $doLabel" : "";
 
-    if (task.subtasks.isNotEmpty) {
-      final incomplete = task.subtasks.where((s) => s.done != true).toList();
-
-      if (incomplete.isNotEmpty) {
-        final dueLine = dueLabel.isNotEmpty ? "\nDue: $dueLabel" : "";
-        return '''
+    final currentSubtask = _currentNextSubtask(task);
+    if (currentSubtask != null) {
+      final dueLine = dueLabel.isNotEmpty ? "\nDue: $dueLabel" : "";
+      return '''
 Task:
-${task.task}$dueLine
+${task.task}$planningLine$dueLine
 
 Next step:
-${incomplete.first.text}
+${currentSubtask.text}
 ''';
-      }
     }
 
     final dueLine = dueLabel.isNotEmpty ? "\nDue: $dueLabel" : "";
+    final nextActionLine = task.starterTinyStep.trim().isNotEmpty
+        ? '\nNext step:\n${task.starterTinyStep.trim()}\n'
+        : '';
 
     return '''
 Task:
-${task.task}$dueLine
+${task.task}$planningLine$dueLine$nextActionLine
 ''';
   }
 }

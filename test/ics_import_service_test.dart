@@ -35,5 +35,43 @@ END:VCALENDAR''';
       expect(events.last.start, DateTime(2026, 8, 11));
       expect(events.last.end, DateTime(2026, 8, 12));
     });
+
+    test('parses SUMMARY lines with parameters', () {
+      const icsContent = '''BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:evt-3
+DTSTART:20260812T140000Z
+DTEND:20260812T150000Z
+SUMMARY;LANGUAGE=en-gb:Detailed Project Sync
+END:VEVENT
+END:VCALENDAR''';
+
+      final events = IcsImportService.parseEvents(icsContent);
+
+      expect(events.length, 1);
+      expect(events.first.subject, 'Detailed Project Sync');
+    });
+
+    test('unfolds folded SUMMARY lines', () {
+      const icsContent = '''BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:evt-4
+DTSTART:20260813T090000Z
+DTEND:20260813T100000Z
+SUMMARY:Quarterly planning and roadmap
+ continuation details
+END:VEVENT
+END:VCALENDAR''';
+
+      final events = IcsImportService.parseEvents(icsContent);
+
+      expect(events.length, 1);
+      expect(
+        events.first.subject,
+        'Quarterly planning and roadmapcontinuation details',
+      );
+    });
   });
 }

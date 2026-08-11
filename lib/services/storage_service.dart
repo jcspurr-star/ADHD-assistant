@@ -7,6 +7,22 @@ import '../models/task.dart';
 import 'firebase_sync_service.dart';
 import 'one_drive_sync_service.dart';
 
+class ImportedOutlookEventsSummary {
+  final DateTime? lastImportedAt;
+  final DateTime? rangeStart;
+  final DateTime? rangeEnd;
+  final int eventCount;
+
+  const ImportedOutlookEventsSummary({
+    required this.lastImportedAt,
+    required this.rangeStart,
+    required this.rangeEnd,
+    required this.eventCount,
+  });
+
+  bool get hasImport => lastImportedAt != null && eventCount > 0;
+}
+
 class StorageService {
   static const String _tasksKey = 'tasks';
   static const String _notesKey = 'notes';
@@ -22,6 +38,14 @@ class StorageService {
   static const String _priorityCardCountKey = 'priority_card_count';
   static const String _outlookLookAheadDaysKey = 'outlook_look_ahead_days';
   static const String _importedOutlookEventsKey = 'imported_outlook_events';
+  static const String _importedOutlookLastImportedAtUtcKey =
+      'imported_outlook_last_imported_at_utc';
+  static const String _importedOutlookRangeStartUtcKey =
+      'imported_outlook_range_start_utc';
+  static const String _importedOutlookRangeEndUtcKey =
+      'imported_outlook_range_end_utc';
+  static const String _importedOutlookEventCountKey =
+      'imported_outlook_event_count';
   static const String _prioritizeWorkOnWeekdaysKey =
       'prioritize_work_on_weekdays';
   static const String _contextTodayOptionsKey = 'context_today_options';
@@ -57,6 +81,10 @@ class StorageService {
     OneDriveDeviceCodeSession? session,
   ]) {
     return OneDriveSyncService.completeDeviceCodeFlow(session);
+  }
+
+  static bool isExpectedWebOutlookCallbackUri(Uri uri) {
+    return OneDriveSyncService.isExpectedWebCallbackUri(uri);
   }
 
   static Future<void> unlinkOutlook() {
@@ -444,6 +472,22 @@ class StorageService {
   ) async {
     final prefs = await SharedPreferences.getInstance();
     debugPrint('Saving ${events.length} imported calendar events');
+
+    DateTime? rangeStart;
+    DateTime? rangeEnd;
+    for (final event in events) {
+      final eventStart = event.start?.toLocal();
+      if (eventStart == null) {
+        continue;
+      }
+      if (rangeStart == null || eventStart.isBefore(rangeStart)) {
+        rangeStart = eventStart;
+      }
+      if (rangeEnd == null || eventStart.isAfter(rangeEnd)) {
+        rangeEnd = eventStart;
+      }
+    }
+
     final encoded = jsonEncode(
       events.map((event) {
         return {
@@ -457,8 +501,59 @@ class StorageService {
       }).toList(),
     );
     await prefs.setString(_importedOutlookEventsKey, encoded);
+    await prefs.setInt(_importedOutlookEventCountKey, events.length);
+    await prefs.setString(
+      _importedOutlookLastImportedAtUtcKey,
+      DateTime.now().toUtc().toIso8601String(),
+    );
+
+    if (rangeStart == null) {
+      await prefs.remove(_importedOutlookRangeStartUtcKey);
+      await prefs.remove(_importedOutlookRangeEndUtcKey);
+    } else {
+      await prefs.setString(
+        _importedOutlookRangeStartUtcKey,
+        rangeStart.toUtc().toIso8601String(),
+      );
+      await prefs.setString(
+        _importedOutlookRangeEndUtcKey,
+        (rangeEnd ?? rangeStart).toUtc().toIso8601String(),
+      );
+    }
+
     await _touchStateMetadata(prefs);
     unawaited(_pushCurrentStateToCloudIfAvailable());
+  }
+
+  static Future<ImportedOutlookEventsSummary>
+  loadImportedOutlookEventsSummary() async {
+    final prefs = await SharedPreferences.getInstance();
+    final lastImportedAtRaw = prefs.getString(
+      _importedOutlookLastImportedAtUtcKey,
+    );
+    final rangeStartRaw = prefs.getString(_importedOutlookRangeStartUtcKey);
+    final rangeEndRaw = prefs.getString(_importedOutlookRangeEndUtcKey);
+
+    final lastImportedAt = lastImportedAtRaw == null
+        ? null
+        : DateTime.tryParse(lastImportedAtRaw)?.toLocal();
+    final rangeStart = rangeStartRaw == null
+        ? null
+        : DateTime.tryParse(rangeStartRaw)?.toLocal();
+    final rangeEnd = rangeEndRaw == null
+        ? null
+        : DateTime.tryParse(rangeEndRaw)?.toLocal();
+
+    final persistedEventCount = prefs.getInt(_importedOutlookEventCountKey);
+    final eventCount =
+        persistedEventCount ?? (await loadImportedOutlookEvents()).length;
+
+    return ImportedOutlookEventsSummary(
+      lastImportedAt: lastImportedAt,
+      rangeStart: rangeStart,
+      rangeEnd: rangeEnd,
+      eventCount: eventCount,
+    );
   }
 
   static Future<List<OutlookCalendarEvent>> loadImportedOutlookEvents() async {
@@ -482,7 +577,7 @@ class StorageService {
               ? null
               : DateTime.parse(eventMap['end'].toString()).toLocal(),
           isAllDay: eventMap['isAllDay'] == true,
-          calendarSource: (eventMap['calendarSource'] ?? 'work').toString(),
+          calendarSource: (eventMap['calendarSource'] ?? 'home').toString(),
         );
       }).toList();
     } catch (_) {
@@ -496,7 +591,8 @@ class StorageService {
     required int maxItems,
   }) {
     final now = DateTime.now();
-    final cutoff = now.add(lookAhead);
+    final rangeStart = DateTime(now.year, now.month, now.day);
+    final rangeEnd = rangeStart.add(lookAhead).add(const Duration(days: 1));
     final uniqueEvents = <String, OutlookCalendarEvent>{};
 
     for (final event in events) {
@@ -506,20 +602,22 @@ class StorageService {
 
       final eventStart = event.start!.toLocal();
       final eventEnd = event.end?.toLocal();
+      final effectiveEventEnd = eventEnd ?? eventStart;
       final isCurrentOrUpcoming =
-          eventStart.isAfter(now.subtract(const Duration(days: 1))) &&
-          (eventEnd == null ||
-              eventEnd.isAfter(now.subtract(const Duration(minutes: 1)))) &&
-          eventStart.isBefore(cutoff.add(const Duration(days: 1)));
+          !effectiveEventEnd.isBefore(rangeStart) &&
+          eventStart.isBefore(rangeEnd);
 
       if (!isCurrentOrUpcoming) {
         continue;
       }
 
-      final key = event.id.isNotEmpty
-          ? event.id
-          : '${event.subject}|${event.start?.toIso8601String()}|${event.end?.toIso8601String()}';
-      uniqueEvents.putIfAbsent(key, () => event);
+      final key = _calendarEventMergeKey(event);
+      final existing = uniqueEvents[key];
+      if (existing == null) {
+        uniqueEvents[key] = event;
+      } else if (_shouldPreferCandidateEvent(existing, event)) {
+        uniqueEvents[key] = event;
+      }
     }
 
     final sortedEvents = uniqueEvents.values.toList()
@@ -529,7 +627,46 @@ class StorageService {
         return left.compareTo(right);
       });
 
-    return sortedEvents.take(maxItems).toList();
+    return sortedEvents;
+  }
+
+  static bool _shouldPreferCandidateEvent(
+    OutlookCalendarEvent existing,
+    OutlookCalendarEvent candidate,
+  ) {
+    final existingScore = _calendarEventDetailScore(existing);
+    final candidateScore = _calendarEventDetailScore(candidate);
+    if (candidateScore != existingScore) {
+      return candidateScore > existingScore;
+    }
+
+    if (candidate.calendarSource == 'work' &&
+        existing.calendarSource != 'work') {
+      return true;
+    }
+
+    return false;
+  }
+
+  static int _calendarEventDetailScore(OutlookCalendarEvent event) {
+    final subject = event.subject.trim().toLowerCase();
+    if (subject.isEmpty || subject == '(no title)') {
+      return 0;
+    }
+    if (subject == 'busy' || subject == 'private') {
+      return 1;
+    }
+    return 3;
+  }
+
+  static String _calendarEventMergeKey(OutlookCalendarEvent event) {
+    final subject = event.subject.trim().toLowerCase();
+    final normalizedSubject = subject.isEmpty || subject == '(no title)'
+        ? '(no title)'
+        : subject;
+    final startUtc = event.start?.toUtc();
+    final endUtc = (event.end ?? event.start)?.toUtc();
+    return '${event.isAllDay}|$normalizedSubject|${startUtc?.toIso8601String()}|${endUtc?.toIso8601String()}';
   }
 
   static Future<List<Task>> loadTasks() async {
@@ -1260,6 +1397,16 @@ class StorageService {
     final taskSubtaskPrompt = prefs.getString(_taskSubtaskPromptKey) ?? '';
     final priorityCardCount = prefs.getInt(_priorityCardCountKey) ?? 3;
     final outlookLookAheadDays = prefs.getInt(_outlookLookAheadDaysKey) ?? 1;
+    final importedOutlookEventsRaw =
+        prefs.getString(_importedOutlookEventsKey) ?? '[]';
+    final importedOutlookLastImportedAtUtc =
+        prefs.getString(_importedOutlookLastImportedAtUtcKey) ?? '';
+    final importedOutlookRangeStartUtc =
+        prefs.getString(_importedOutlookRangeStartUtcKey) ?? '';
+    final importedOutlookRangeEndUtc =
+        prefs.getString(_importedOutlookRangeEndUtcKey) ?? '';
+    final importedOutlookEventCount =
+        prefs.getInt(_importedOutlookEventCountKey) ?? 0;
     final prioritizeWorkOnWeekdays =
         prefs.getBool(_prioritizeWorkOnWeekdaysKey) ?? true;
     final contextTodayOptionsRaw = prefs.getString(_contextTodayOptionsKey);
@@ -1306,6 +1453,12 @@ class StorageService {
       'task_subtask_prompt': taskSubtaskPrompt,
       'priority_card_count': priorityCardCount,
       'outlook_look_ahead_days': outlookLookAheadDays,
+      'imported_outlook_events':
+          (jsonDecode(importedOutlookEventsRaw) as List<dynamic>),
+      'imported_outlook_last_imported_at_utc': importedOutlookLastImportedAtUtc,
+      'imported_outlook_range_start_utc': importedOutlookRangeStartUtc,
+      'imported_outlook_range_end_utc': importedOutlookRangeEndUtc,
+      'imported_outlook_event_count': importedOutlookEventCount,
       'prioritize_work_on_weekdays': prioritizeWorkOnWeekdays,
       'context_today_options': _decodeStringList(contextTodayOptionsRaw),
       'other_medication_options': _decodeStringList(otherMedicationOptionsRaw),
@@ -1341,6 +1494,17 @@ class StorageService {
     final outlookLookAheadDaysRaw =
         (state['outlook_look_ahead_days'] ?? 1) as num;
     final outlookLookAheadDays = outlookLookAheadDaysRaw.toInt().clamp(1, 7);
+    final importedOutlookEvents =
+        state['imported_outlook_events'] as List<dynamic>? ?? <dynamic>[];
+    final importedOutlookLastImportedAtUtc =
+        (state['imported_outlook_last_imported_at_utc'] ?? '').toString();
+    final importedOutlookRangeStartUtc =
+        (state['imported_outlook_range_start_utc'] ?? '').toString();
+    final importedOutlookRangeEndUtc =
+        (state['imported_outlook_range_end_utc'] ?? '').toString();
+    final importedOutlookEventCountRaw =
+        (state['imported_outlook_event_count'] ?? 0) as num;
+    final importedOutlookEventCount = importedOutlookEventCountRaw.toInt();
     final prioritizeWorkOnWeekdays =
         (state['prioritize_work_on_weekdays'] ?? true) == true;
     final updatedAt =
@@ -1366,6 +1530,38 @@ class StorageService {
     await prefs.setString(_taskSubtaskPromptKey, taskSubtaskPrompt);
     await prefs.setInt(_priorityCardCountKey, priorityCardCount);
     await prefs.setInt(_outlookLookAheadDaysKey, outlookLookAheadDays);
+    await prefs.setString(
+      _importedOutlookEventsKey,
+      jsonEncode(importedOutlookEvents),
+    );
+    if (importedOutlookLastImportedAtUtc.trim().isEmpty) {
+      await prefs.remove(_importedOutlookLastImportedAtUtcKey);
+    } else {
+      await prefs.setString(
+        _importedOutlookLastImportedAtUtcKey,
+        importedOutlookLastImportedAtUtc,
+      );
+    }
+    if (importedOutlookRangeStartUtc.trim().isEmpty) {
+      await prefs.remove(_importedOutlookRangeStartUtcKey);
+    } else {
+      await prefs.setString(
+        _importedOutlookRangeStartUtcKey,
+        importedOutlookRangeStartUtc,
+      );
+    }
+    if (importedOutlookRangeEndUtc.trim().isEmpty) {
+      await prefs.remove(_importedOutlookRangeEndUtcKey);
+    } else {
+      await prefs.setString(
+        _importedOutlookRangeEndUtcKey,
+        importedOutlookRangeEndUtc,
+      );
+    }
+    await prefs.setInt(
+      _importedOutlookEventCountKey,
+      importedOutlookEventCount,
+    );
     await prefs.setBool(_prioritizeWorkOnWeekdaysKey, prioritizeWorkOnWeekdays);
     await prefs.setString(
       _contextTodayOptionsKey,
