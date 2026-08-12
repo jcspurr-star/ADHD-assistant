@@ -101,8 +101,8 @@ class SymptomTrackerSection extends StatelessWidget {
     final otherMedicationsTaken = _parseStringList(
       checkin['otherMedicationsTaken'],
     );
-    final dopamineCrashStartTime =
-        (checkin['dopamineCrashStartTime'] ?? '').toString();
+    final dopamineCrashStartTime = (checkin['dopamineCrashStartTime'] ?? '')
+        .toString();
     final dopamineCrashEndTime = (checkin['dopamineCrashEndTime'] ?? '')
         .toString();
     final dopamineCrashSymptoms = _parseStringList(
@@ -136,7 +136,7 @@ class SymptomTrackerSection extends StatelessWidget {
     ];
 
     final trackerViewportHeight = MediaQuery.of(context).size.height;
-    final trackerTabHeight = useWideWebOverviewColumns
+    final fallbackTrackerTabHeight = useWideWebOverviewColumns
         ? (trackerViewportHeight * 0.36).clamp(250.0, 390.0).toDouble()
         : (trackerViewportHeight * 0.28).clamp(200.0, 288.0).toDouble();
 
@@ -237,9 +237,7 @@ class SymptomTrackerSection extends StatelessWidget {
                             ),
                             selectedColor: accentColor.withAlpha(44),
                             backgroundColor: Colors.white,
-                            side: BorderSide(
-                              color: accentColor.withAlpha(80),
-                            ),
+                            side: BorderSide(color: accentColor.withAlpha(80)),
                             materialTapTargetSize:
                                 MaterialTapTargetSize.shrinkWrap,
                             onSelected: (_) async {
@@ -267,9 +265,7 @@ class SymptomTrackerSection extends StatelessWidget {
                             ),
                             selectedColor: accentColor.withAlpha(44),
                             backgroundColor: Colors.white,
-                            side: BorderSide(
-                              color: accentColor.withAlpha(80),
-                            ),
+                            side: BorderSide(color: accentColor.withAlpha(80)),
                             materialTapTargetSize:
                                 MaterialTapTargetSize.shrinkWrap,
                             onSelected: (_) async {
@@ -322,7 +318,7 @@ class SymptomTrackerSection extends StatelessWidget {
                     ),
                   ),
                   if (trailingControl != null) const SizedBox(width: 8),
-                    ?trailingControl,
+                  ?trailingControl,
                 ],
               );
             },
@@ -364,10 +360,7 @@ class SymptomTrackerSection extends StatelessWidget {
               },
               style: OutlinedButton.styleFrom(
                 visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 6,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               ),
               child: const Text('Set'),
             ),
@@ -817,7 +810,10 @@ class SymptomTrackerSection extends StatelessWidget {
                     dopamineCrashStartTime.isEmpty
                         ? '--:--'
                         : dopamineCrashStartTime,
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 6),
@@ -836,7 +832,9 @@ class SymptomTrackerSection extends StatelessWidget {
                 if (dopamineCrashStartTime.isNotEmpty)
                   TextButton(
                     onPressed: () async {
-                      await onClearTodayCrashTimeField('dopamineCrashStartTime');
+                      await onClearTodayCrashTimeField(
+                        'dopamineCrashStartTime',
+                      );
                     },
                     style: TextButton.styleFrom(
                       visualDensity: VisualDensity.compact,
@@ -858,8 +856,13 @@ class SymptomTrackerSection extends StatelessWidget {
                 SizedBox(
                   width: 52,
                   child: Text(
-                    dopamineCrashEndTime.isEmpty ? '--:--' : dopamineCrashEndTime,
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+                    dopamineCrashEndTime.isEmpty
+                        ? '--:--'
+                        : dopamineCrashEndTime,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 6),
@@ -906,66 +909,108 @@ class SymptomTrackerSection extends StatelessWidget {
       );
     }
 
-    return Container(
-      clipBehavior: Clip.hardEdge,
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: Colors.indigo.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.indigo.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'ADHD symptom tracker',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-                ),
-              ),
-              Icon(
-                Icons.keyboard_arrow_down_rounded,
-                size: 14,
-                color: Colors.indigo.shade400,
-              ),
-            ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final hasBoundedHeight = constraints.maxHeight.isFinite;
+
+        return Container(
+          clipBehavior: Clip.hardEdge,
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Colors.indigo.shade50,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.indigo.shade200),
           ),
-          _buildSubtleScrollHint(Colors.indigo.shade500),
-          const SizedBox(height: 8),
-          DefaultTabController(
-            length: 4,
-            child: Column(
-              children: [
-                TabBar(
-                  labelColor: Colors.indigo.shade700,
-                  unselectedLabelColor: Colors.grey.shade700,
-                  indicatorColor: Colors.indigo.shade700,
-                  tabs: const [
-                    Tab(text: 'General'),
-                    Tab(text: 'Meals'),
-                    Tab(text: 'Medication'),
-                    Tab(text: 'Crash'),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                SizedBox(
-                  height: trackerTabHeight,
-                  child: TabBarView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'ADHD symptom tracker',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    Icons.keyboard_arrow_down_rounded,
+                    size: 14,
+                    color: Colors.indigo.shade400,
+                  ),
+                ],
+              ),
+              _buildSubtleScrollHint(Colors.indigo.shade500),
+              const SizedBox(height: 8),
+              if (hasBoundedHeight)
+                Expanded(
+                  child: DefaultTabController(
+                    length: 4,
+                    child: Column(
+                      children: [
+                        TabBar(
+                          labelColor: Colors.indigo.shade700,
+                          unselectedLabelColor: Colors.grey.shade700,
+                          indicatorColor: Colors.indigo.shade700,
+                          tabs: const [
+                            Tab(text: 'General'),
+                            Tab(text: 'Meals'),
+                            Tab(text: 'Medication'),
+                            Tab(text: 'Crash'),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Expanded(
+                          child: TabBarView(
+                            children: [
+                              buildGeneralTab(),
+                              buildMealsTab(),
+                              buildMedicationTab(),
+                              buildCrashTab(),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else
+                DefaultTabController(
+                  length: 4,
+                  child: Column(
                     children: [
-                      buildGeneralTab(),
-                      buildMealsTab(),
-                      buildMedicationTab(),
-                      buildCrashTab(),
+                      TabBar(
+                        labelColor: Colors.indigo.shade700,
+                        unselectedLabelColor: Colors.grey.shade700,
+                        indicatorColor: Colors.indigo.shade700,
+                        tabs: const [
+                          Tab(text: 'General'),
+                          Tab(text: 'Meals'),
+                          Tab(text: 'Medication'),
+                          Tab(text: 'Crash'),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        height: fallbackTrackerTabHeight,
+                        child: TabBarView(
+                          children: [
+                            buildGeneralTab(),
+                            buildMealsTab(),
+                            buildMedicationTab(),
+                            buildCrashTab(),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
                 ),
-              ],
-            ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 }

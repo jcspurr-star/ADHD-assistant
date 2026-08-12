@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/task.dart';
 import '../services/recommendation_service.dart';
 import 'task_details_pane.dart';
-import 'task_list_item_card.dart';
+import 'task_tile.dart';
 
 class TaskListContent extends StatelessWidget {
   const TaskListContent({
@@ -17,11 +17,18 @@ class TaskListContent extends StatelessWidget {
     required this.taskListScrollController,
     required this.getPriorityColor,
     required this.getPriorityLabel,
+    required this.categories,
     required this.formatDueDate,
     required this.buildTaskPanels,
     required this.onToggleTask,
     required this.onToggleExpanded,
     required this.onSelectTaskPaneIndex,
+    required this.onPriorityChanged,
+    required this.onSetDueDate,
+    required this.onSetPlanDate,
+    required this.onSetTaskEffort,
+    required this.onSetNextSessionEffort,
+    required this.onCategoryChanged,
     required this.onEditTask,
     required this.onDeleteTask,
     required this.onReorderVisibleTasks,
@@ -36,11 +43,18 @@ class TaskListContent extends StatelessWidget {
   final ScrollController taskListScrollController;
   final Color Function(String priority) getPriorityColor;
   final String Function(String priority) getPriorityLabel;
+  final List<String> categories;
   final String Function(String? raw) formatDueDate;
   final Widget Function(int taskIndex) buildTaskPanels;
   final void Function(int taskIndex, bool? value) onToggleTask;
   final void Function(int taskIndex) onToggleExpanded;
   final void Function(int? taskIndex) onSelectTaskPaneIndex;
+  final void Function(int taskIndex, String value) onPriorityChanged;
+  final Future<void> Function(int taskIndex) onSetDueDate;
+  final Future<void> Function(int taskIndex) onSetPlanDate;
+  final Future<void> Function(int taskIndex) onSetTaskEffort;
+  final Future<void> Function(int taskIndex) onSetNextSessionEffort;
+  final void Function(int taskIndex, String value) onCategoryChanged;
   final void Function(int taskIndex) onEditTask;
   final void Function(int taskIndex) onDeleteTask;
   final Future<void> Function(
@@ -71,7 +85,11 @@ class TaskListContent extends StatelessWidget {
       effectiveSelectedTaskIndex = null;
     }
 
-    Widget buildTaskListItem(BuildContext context, int taskIndex) {
+    Widget buildTaskListItem(
+      BuildContext context,
+      int taskIndex, {
+      required int reorderableIndex,
+    }) {
       final task = tasks[taskIndex];
       final baseAccentColor = getPriorityColor(task.priority);
       final cardColor = task.done ? Colors.grey.shade100 : Colors.white;
@@ -82,52 +100,109 @@ class TaskListContent extends StatelessWidget {
           : task.done
           ? Colors.grey.shade300
           : baseAccentColor.withAlpha(150);
-      final gutterWidth = useTwoPaneLayout ? 26.0 : 22.0;
       final gutterColor = task.done
           ? Colors.grey.shade400
           : getPriorityColor(task.priority);
       final dueDateLabel = formatDueDate(task.dueDate);
       final planDateLabel = formatDueDate(task.doDate);
-      final progressPercent =
-          (RecommendationService.getTaskProgress(task) * 100).round();
+      void openTask() {
+        if (useTwoPaneLayout) {
+          onSelectTaskPaneIndex(
+            selectedTaskPaneIndex == taskIndex ? null : taskIndex,
+          );
+        } else {
+          onToggleExpanded(taskIndex);
+        }
+      }
 
-      return TaskListItemCard(
+      return Padding(
         key: ValueKey('${taskIndex}_${task.task}'),
-        task: task,
-        gutterWidth: gutterWidth,
-        gutterColor: gutterColor,
-        cardColor: cardColor,
-        borderColor: borderColor,
-        baseAccentColor: baseAccentColor,
-        isSelected: isSelectedInPane,
-        priorityLabel: getPriorityLabel(task.priority),
-        progressPercent: progressPercent,
-        categoryLabel: task.category == 'None' ? null : task.category,
-        planDateLabel: planDateLabel.isEmpty ? null : planDateLabel,
-        dueDateLabel: dueDateLabel.isEmpty ? null : dueDateLabel,
-        onToggle: (value) {
-          onToggleTask(taskIndex, value);
-        },
-        onOpen: () {
-          if (useTwoPaneLayout) {
-            onSelectTaskPaneIndex(
-              selectedTaskPaneIndex == taskIndex ? null : taskIndex,
-            );
-          } else {
-            onToggleExpanded(taskIndex);
-          }
-        },
-        onEdit: () {
-          onEditTask(taskIndex);
-        },
-        onDelete: () {
-          onDeleteTask(taskIndex);
-        },
-        showReorderDrag: !groupTasksByPriority && manualSortMode,
-        reorderIndex: taskIndex,
-        expandedContent: !useTwoPaneLayout && task.expanded
-            ? buildTaskPanels(taskIndex)
-            : null,
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Container(
+          decoration: BoxDecoration(
+            color: cardColor,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: borderColor,
+              width: isSelectedInPane ? 1.6 : 1,
+            ),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Stack(
+            children: [
+              Positioned(
+                left: 0,
+                top: 0,
+                bottom: 0,
+                child: Container(width: 6, color: gutterColor),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(left: 6),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      TaskTile(
+                        task: task,
+                        dueDateText: dueDateLabel,
+                        planDateText: planDateLabel,
+                        nextSessionEffortMinutes: task.nextSessionEffortMinutes,
+                        totalEffortMinutes: task.effortMinutes,
+                        progress: RecommendationService.getTaskProgress(task),
+                        categories: categories,
+                        category: task.category,
+                        priority: task.priority,
+                        isGenerating: false,
+                        onToggle: (value) {
+                          onToggleTask(taskIndex, value);
+                        },
+                        reorderableIndex: reorderableIndex,
+                        onOpen: openTask,
+                        onPriorityChanged: (value) {
+                          if (value == null) {
+                            return;
+                          }
+                          onPriorityChanged(taskIndex, value);
+                        },
+                        onDueDate: () {
+                          onSetDueDate(taskIndex);
+                        },
+                        onPlanDate: () {
+                          onSetPlanDate(taskIndex);
+                        },
+                        onTotalEffortChanged: (_) {
+                          onSetTaskEffort(taskIndex);
+                        },
+                        onNextSessionEffortChanged: (_) {
+                          onSetNextSessionEffort(taskIndex);
+                        },
+                        onCategoryChanged: (value) {
+                          if (value == null) {
+                            return;
+                          }
+                          onCategoryChanged(taskIndex, value);
+                        },
+                        onEdit: () {
+                          onEditTask(taskIndex);
+                        },
+                        onDelete: () {
+                          onDeleteTask(taskIndex);
+                        },
+                        allowReorderDrag:
+                            !groupTasksByPriority && manualSortMode,
+                      ),
+                      if (!useTwoPaneLayout && task.expanded) ...[
+                        const SizedBox(height: 8),
+                        buildTaskPanels(taskIndex),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       );
     }
 
@@ -137,7 +212,11 @@ class TaskListContent extends StatelessWidget {
         padding: EdgeInsets.zero,
         itemCount: indices.length,
         itemBuilder: (context, listIndex) {
-          return buildTaskListItem(context, indices[listIndex]);
+          return buildTaskListItem(
+            context,
+            indices[listIndex],
+            reorderableIndex: listIndex,
+          );
         },
       );
     }
@@ -173,7 +252,11 @@ class TaskListContent extends StatelessWidget {
         padding: EdgeInsets.zero,
         itemCount: groupedOrder.length,
         itemBuilder: (context, listIndex) {
-          return buildTaskListItem(context, groupedOrder[listIndex]);
+          return buildTaskListItem(
+            context,
+            groupedOrder[listIndex],
+            reorderableIndex: listIndex,
+          );
         },
       );
     } else if (!manualSortMode) {
@@ -188,7 +271,11 @@ class TaskListContent extends StatelessWidget {
           await onReorderVisibleTasks(oldIndex, newIndex, visibleTaskIndices);
         },
         itemBuilder: (context, listIndex) {
-          return buildTaskListItem(context, visibleTaskIndices[listIndex]);
+          return buildTaskListItem(
+            context,
+            visibleTaskIndices[listIndex],
+            reorderableIndex: listIndex,
+          );
         },
       );
     }

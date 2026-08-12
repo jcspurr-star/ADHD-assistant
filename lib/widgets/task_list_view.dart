@@ -36,143 +36,136 @@ class TaskListView extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final useFullWidth = constraints.maxWidth >= 1100;
-        final contentWidth = useFullWidth
-            ? constraints.maxWidth
-            : priorityCardsTotalWidth
-                  .clamp(0.0, constraints.maxWidth)
-                  .toDouble();
-        final chromeHeight =
-            (showOverview ? 27.0 : 0.0) +
-            120.0 +
-            12.0 +
-            44.0 +
-            10.0 +
-            (isGenerating ? 36.0 : 0.0);
-        final hasBoundedHeight = constraints.maxHeight.isFinite;
-        final computedListHeight = hasBoundedHeight
-            ? (constraints.maxHeight - chromeHeight).clamp(180.0, 5000.0)
-            : 520.0;
+    final screenSize = MediaQuery.sizeOf(context);
+    final useFullWidth = screenSize.width >= 1100;
+    final contentWidth = useFullWidth
+        ? screenSize.width
+        : priorityCardsTotalWidth.clamp(0.0, screenSize.width).toDouble();
 
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (showOverview) const SizedBox(height: 16),
-            if (showOverview)
-              const Divider(height: 1, thickness: 1, color: Colors.grey),
-            if (showOverview) const SizedBox(height: 10),
-            buildTaskComposerSection,
-            const SizedBox(height: 12),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: SizedBox(
-                width: contentWidth,
-                child: SizedBox(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (showOverview) const SizedBox(height: 16),
+        if (showOverview)
+          const Divider(height: 1, thickness: 1, color: Colors.grey),
+        if (showOverview) const SizedBox(height: 10),
+        buildTaskComposerSection,
+        const SizedBox(height: 12),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: SizedBox(
+            width: contentWidth,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
                   height: 44,
                   child: SingleChildScrollView(
                     controller: taskTabsScrollController,
                     scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        ...taskTabs,
-                        const SizedBox(width: 8),
-                        PopupMenuButton<String>(
-                          tooltip: 'Sort task list',
-                          onSelected: onSelectTaskSortMode,
-                          itemBuilder: (context) => const [
-                            PopupMenuItem<String>(
-                              value: 'manual',
-                              child: Text('Standard order'),
-                            ),
-                            PopupMenuItem<String>(
-                              value: 'dueDate',
-                              child: Text('Sort by due date'),
-                            ),
-                            PopupMenuItem<String>(
-                              value: 'priority',
-                              child: Text('Sort by priority'),
-                            ),
-                          ],
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 8,
-                            ),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.grey.shade400),
-                              color: Colors.white,
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  Icons.sort,
-                                  size: 16,
-                                  color: Colors.black87,
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  taskSortLabel,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.black87,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        FilterChip(
-                          label: const Text('Group by priority'),
-                          selected: groupByPriority,
-                          onSelected: onGroupByPriorityChanged,
-                          visualDensity: VisualDensity.compact,
-                        ),
-                      ],
-                    ),
+                    child: Row(children: taskTabs),
                   ),
                 ),
-              ),
-            ),
-            const SizedBox(height: 10),
-            if (isGenerating)
-              const Padding(
-                padding: EdgeInsets.only(bottom: 16),
-                child: Row(
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                    PopupMenuButton<String>(
+                      tooltip: 'Sort task list',
+                      onSelected: onSelectTaskSortMode,
+                      itemBuilder: (context) => const [
+                        PopupMenuItem<String>(
+                          value: 'manual',
+                          child: Text('Standard order'),
+                        ),
+                        PopupMenuItem<String>(
+                          value: 'dueDate',
+                          child: Text('Sort by due date'),
+                        ),
+                        PopupMenuItem<String>(
+                          value: 'priority',
+                          child: Text('Sort by priority'),
+                        ),
+                      ],
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.grey.shade400),
+                          color: Colors.white,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.sort,
+                              size: 16,
+                              color: Colors.black87,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              taskSortLabel,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.black87,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
-                    SizedBox(width: 12),
-                    Text('Generating starter steps...'),
+                    FilterChip(
+                      label: const Text('Group by priority'),
+                      selected: groupByPriority,
+                      onSelected: onGroupByPriorityChanged,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    Text(
+                      'Drag handles show in Standard order when grouping is off.',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.grey.shade700,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ],
                 ),
-              ),
-            if (hasBoundedHeight)
-              Expanded(
-                child: SizedBox(
-                  width: contentWidth,
-                  child: buildTaskListContent(),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        if (isGenerating)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 16),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
                 ),
-              )
-            else
-              SizedBox(
-                height: computedListHeight,
-                child: SizedBox(
-                  width: contentWidth,
-                  child: buildTaskListContent(),
-                ),
-              ),
-          ],
-        );
-      },
+                SizedBox(width: 12),
+                Text('Generating starter steps...'),
+              ],
+            ),
+          ),
+        Expanded(
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: SizedBox(
+              width: contentWidth,
+              child: buildTaskListContent(),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

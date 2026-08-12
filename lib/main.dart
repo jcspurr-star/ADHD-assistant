@@ -213,7 +213,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   static const List<int> focusTimerPresets = [5, 10, 25, 50];
 
   bool isGenerating = false;
-  bool groupTasksByPriority = true;
+  bool groupTasksByPriority = false;
   int? selectedTaskPaneIndex;
   TaskListSortMode selectedTaskSortMode = TaskListSortMode.manual;
   int selectedMainSectionIndex = 0;
@@ -3117,6 +3117,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               taskListScrollController: taskListScrollController,
               getPriorityColor: getPriorityColor,
               getPriorityLabel: getPriorityLabel,
+              categories: categories,
               formatDueDate: formatDueDate,
               buildTaskPanels: buildTaskPanels,
               onToggleTask: (taskIndex, value) {
@@ -3129,6 +3130,30 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                 setState(() {
                   selectedTaskPaneIndex = taskIndex;
                 });
+              },
+              onPriorityChanged: (taskIndex, value) {
+                setState(() {
+                  tasks[taskIndex].priority = value;
+                });
+                saveTasks();
+              },
+              onSetDueDate: (taskIndex) async {
+                await setDueDate(taskIndex);
+              },
+              onSetPlanDate: (taskIndex) async {
+                await setDoDate(taskIndex);
+              },
+              onSetTaskEffort: (taskIndex) async {
+                await setTaskEffort(taskIndex);
+              },
+              onSetNextSessionEffort: (taskIndex) async {
+                await setNextSessionEffort(taskIndex);
+              },
+              onCategoryChanged: (taskIndex, value) {
+                setState(() {
+                  tasks[taskIndex].category = value;
+                });
+                saveTasks();
               },
               onEditTask: (taskIndex) {
                 editTask(taskIndex);
