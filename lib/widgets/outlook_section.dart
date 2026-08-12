@@ -13,6 +13,7 @@ class OutlookSection extends StatelessWidget {
     required this.useWideWebOverviewColumns,
     required this.importedOutlookSummary,
     required this.onImportIcsCalendarFile,
+    required this.onClearImportedOutlookEvents,
     required this.formatOutlookDayDivider,
     required this.formatOutlookEventTimeRange,
     required this.formatOutlookEventDateRange,
@@ -28,6 +29,7 @@ class OutlookSection extends StatelessWidget {
   final bool useWideWebOverviewColumns;
   final ImportedOutlookEventsSummary importedOutlookSummary;
   final VoidCallback onImportIcsCalendarFile;
+  final VoidCallback onClearImportedOutlookEvents;
   final String Function(DateTime day) formatOutlookDayDivider;
   final String Function(OutlookCalendarEvent event) formatOutlookEventTimeRange;
   final String Function(BuildContext context, OutlookCalendarEvent event)
@@ -549,27 +551,139 @@ class OutlookSection extends StatelessWidget {
                                 }),
                                 if (hasAllDayOverflow)
                                   Expanded(
-                                    child: Container(
-                                      height: 80,
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                        vertical: 7,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: neutralColor.withAlpha(44),
-                                        borderRadius: BorderRadius.circular(8),
-                                        border: Border.all(
-                                          color: neutralColor.withAlpha(150),
+                                    child: InkWell(
+                                      borderRadius: BorderRadius.circular(8),
+                                      onTap: () async {
+                                        final hiddenEvents = allDayEvents
+                                            .skip(visibleAllDayEvents.length)
+                                            .toList();
+                                        await showDialog<void>(
+                                          context: context,
+                                          builder: (dialogContext) {
+                                            return AlertDialog(
+                                              title: Text(
+                                                'All-day events (${formatOutlookDayDivider(day)})',
+                                              ),
+                                              content: SizedBox(
+                                                width: 420,
+                                                child: ListView.separated(
+                                                  shrinkWrap: true,
+                                                  itemCount: hiddenEvents.length,
+                                                  separatorBuilder:
+                                                      (context, index) =>
+                                                          const SizedBox(
+                                                            height: 8,
+                                                          ),
+                                                  itemBuilder:
+                                                      (context, index) {
+                                                        final hiddenEvent =
+                                                            hiddenEvents[index];
+                                                        final isWork =
+                                                            hiddenEvent.calendarSource ==
+                                                            'work';
+                                                        return Row(
+                                                          crossAxisAlignment:
+                                                              CrossAxisAlignment
+                                                                  .start,
+                                                          children: [
+                                                            Container(
+                                                              width: 9,
+                                                              height: 9,
+                                                              margin:
+                                                                  const EdgeInsets.only(
+                                                                    top: 5,
+                                                                  ),
+                                                              decoration: BoxDecoration(
+                                                                shape: BoxShape
+                                                                    .circle,
+                                                                color: isWork
+                                                                    ? const Color(
+                                                                        0xFF008E7A,
+                                                                      )
+                                                                    : const Color(
+                                                                        0xFF1E63D0,
+                                                                      ),
+                                                              ),
+                                                            ),
+                                                            const SizedBox(
+                                                              width: 8,
+                                                            ),
+                                                            Expanded(
+                                                              child: Text(
+                                                                hiddenEvent
+                                                                    .subject,
+                                                                style:
+                                                                    const TextStyle(
+                                                                      fontSize:
+                                                                          13,
+                                                                      fontWeight:
+                                                                          FontWeight
+                                                                              .w600,
+                                                                    ),
+                                                              ),
+                                                            ),
+                                                            const SizedBox(
+                                                              width: 8,
+                                                            ),
+                                                            Text(
+                                                              isWork
+                                                                  ? 'Work'
+                                                                  : 'Home',
+                                                              style: TextStyle(
+                                                                fontSize: 11,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w700,
+                                                                color: isWork
+                                                                    ? const Color(
+                                                                        0xFF008E7A,
+                                                                      )
+                                                                    : const Color(
+                                                                        0xFF1E63D0,
+                                                                      ),
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        );
+                                                      },
+                                                ),
+                                              ),
+                                              actions: [
+                                                TextButton(
+                                                  onPressed: () {
+                                                    Navigator.pop(
+                                                      dialogContext,
+                                                    );
+                                                  },
+                                                  child: const Text('Close'),
+                                                ),
+                                              ],
+                                            );
+                                          },
+                                        );
+                                      },
+                                      child: Container(
+                                        height: 80,
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 7,
                                         ),
-                                      ),
-                                      child: Text(
-                                        '+$hiddenAllDayCount more',
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w700,
-                                          color: neutralColor,
+                                        decoration: BoxDecoration(
+                                          color: neutralColor.withAlpha(44),
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border.all(
+                                            color: neutralColor.withAlpha(150),
+                                          ),
+                                        ),
+                                        child: Text(
+                                          '+$hiddenAllDayCount more',
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w700,
+                                            color: neutralColor,
+                                          ),
                                         ),
                                       ),
                                     ),
@@ -699,6 +813,11 @@ class OutlookSection extends StatelessWidget {
                 onPressed: onImportIcsCalendarFile,
                 icon: const Icon(Icons.upload_file, size: 16),
                 label: const Text('Import .ics'),
+              ),
+              TextButton.icon(
+                onPressed: onClearImportedOutlookEvents,
+                icon: const Icon(Icons.clear_all, size: 16),
+                label: const Text('Clear'),
               ),
             ],
           ),

@@ -159,10 +159,7 @@ class TaskListView extends StatelessWidget {
         Expanded(
           child: Align(
             alignment: Alignment.centerLeft,
-            child: SizedBox(
-              width: contentWidth,
-              child: buildTaskListContent(),
-            ),
+            child: SizedBox(width: contentWidth, child: buildTaskListContent()),
           ),
         ),
       ],

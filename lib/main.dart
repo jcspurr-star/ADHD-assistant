@@ -512,12 +512,18 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
 
       if (kIsWeb) {
         content = await IcsFileLoader.pickAndReadContent();
-        status = 'No calendar file was selected.';
       } else {
         final loadResult =
             await WorkCalendarAutoImportLoader.loadWithDiagnostics();
         content = loadResult.content;
         status = loadResult.status;
+
+        if (content == null || content.trim().isEmpty) {
+          content = await IcsFileLoader.pickAndReadContent();
+          status = content == null || content.trim().isEmpty
+              ? loadResult.status
+              : 'Loaded ICS content from selected file.';
+        }
       }
 
       if (content == null || content.trim().isEmpty) {
@@ -528,7 +534,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         return;
       }
 
-      await _importIcsCalendarContent(content);
+      await _importIcsCalendarContent(
+        content,
+        forceCalendarSource: 'work',
+      );
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -537,7 +546,59 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     }
   }
 
-  Future<void> _importIcsCalendarContent(String? content) async {
+  Future<void> clearImportedOutlookEvents() async {
+    final confirmed =
+        await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) {
+            return AlertDialog(
+              title: const Text('Clear imported calendar data'),
+              content: const Text(
+                'This will remove all imported Outlook/ICS events from this app. Continue?',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext, false);
+                  },
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext, true);
+                  },
+                  child: const Text(
+                    'Clear',
+                    style: TextStyle(color: Colors.red),
+                  ),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+
+    if (!confirmed) {
+      return;
+    }
+
+    await StorageService.saveImportedOutlookEvents(const []);
+    await _loadImportedOutlookSummary();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Imported Outlook data cleared.')),
+    );
+  }
+
+  Future<void> _importIcsCalendarContent(
+    String? content, {
+    String? forceCalendarSource,
+  }) async {
     if (content == null || content.trim().isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -546,7 +607,21 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       return;
     }
 
-    final importedEvents = IcsImportService.parseEvents(content);
+    final parsedEvents = IcsImportService.parseEvents(content);
+    final importedEvents = forceCalendarSource == null
+        ? parsedEvents
+        : parsedEvents
+              .map(
+                (event) => OutlookCalendarEvent(
+                  id: event.id,
+                  subject: event.subject,
+                  start: event.start,
+                  end: event.end,
+                  isAllDay: event.isAllDay,
+                  calendarSource: forceCalendarSource,
+                ),
+              )
+              .toList();
 
     if (importedEvents.isEmpty) {
       if (!mounted) return;
@@ -561,18 +636,122 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     debugPrint('Imported ${importedEvents.length} events from ICS content');
     final existingImportedEvents =
         await StorageService.loadImportedOutlookEvents();
-    await StorageService.saveImportedOutlookEvents([
-      ...existingImportedEvents,
-      ...importedEvents,
-    ]);
+    final baselineImportedEvents = forceCalendarSource == null
+        ? existingImportedEvents
+        : existingImportedEvents
+              .where(
+                (event) =>
+                    event.calendarSource != forceCalendarSource &&
+                    event.calendarSource != 'home',
+              )
+              .toList();
+    final importResult = _applyImportedEventsBySource(
+      baselineImportedEvents,
+      importedEvents,
+    );
+
+    await StorageService.saveImportedOutlookEvents(importResult.eventsToSave);
     await _loadImportedOutlookSummary();
     if (!mounted) return;
     setState(() {
       upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
     });
+
+    final movedSuffix = importResult.movedCount > 0
+        ? ' ${importResult.movedCount} moved.'
+        : '';
+    final removedSuffix = importResult.removedCount > 0
+        ? ' ${importResult.removedCount} removed.'
+        : '';
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Imported ${importedEvents.length} event(s).')),
+      SnackBar(
+        content: Text(
+          'Imported ${importedEvents.length} event(s).$movedSuffix$removedSuffix',
+        ),
+      ),
     );
+  }
+
+  ({List<OutlookCalendarEvent> eventsToSave, int movedCount, int removedCount})
+  _applyImportedEventsBySource(
+    List<OutlookCalendarEvent> existing,
+    List<OutlookCalendarEvent> incoming,
+  ) {
+    final incomingBySource = <String, List<OutlookCalendarEvent>>{};
+    for (final event in incoming) {
+      incomingBySource.putIfAbsent(event.calendarSource, () => []).add(event);
+    }
+
+    var movedCount = 0;
+    var removedCount = 0;
+
+    for (final sourceEntry in incomingBySource.entries) {
+      final source = sourceEntry.key;
+      final priorForSource = existing
+          .where((event) => event.calendarSource == source)
+          .toList();
+      final nextForSource = sourceEntry.value;
+
+      final priorByKey = <String, OutlookCalendarEvent>{
+        for (final event in priorForSource)
+          _calendarEventIdentityKey(event): event,
+      };
+      final nextByKey = <String, OutlookCalendarEvent>{
+        for (final event in nextForSource)
+          _calendarEventIdentityKey(event): event,
+      };
+
+      for (final entry in nextByKey.entries) {
+        final before = priorByKey[entry.key];
+        if (before == null) {
+          continue;
+        }
+
+        final after = entry.value;
+        final startChanged = !_sameMoment(before.start, after.start);
+        final endChanged = !_sameMoment(before.end, after.end);
+        if (startChanged || endChanged) {
+          movedCount += 1;
+        }
+      }
+
+      for (final priorKey in priorByKey.keys) {
+        if (!nextByKey.containsKey(priorKey)) {
+          removedCount += 1;
+        }
+      }
+    }
+
+    final replacedSources = incomingBySource.keys.toSet();
+    final retainedExisting = existing
+        .where((event) => !replacedSources.contains(event.calendarSource))
+        .toList();
+
+    return (
+      eventsToSave: [...retainedExisting, ...incoming],
+      movedCount: movedCount,
+      removedCount: removedCount,
+    );
+  }
+
+  String _calendarEventIdentityKey(OutlookCalendarEvent event) {
+    final id = event.id.trim().toLowerCase();
+    if (id.isNotEmpty && !id.startsWith('event-')) {
+      return 'id:$id';
+    }
+
+    final subject = event.subject.trim().toLowerCase();
+    return 'subject:$subject|allDay:${event.isAllDay}';
+  }
+
+  bool _sameMoment(DateTime? a, DateTime? b) {
+    if (a == null && b == null) {
+      return true;
+    }
+    if (a == null || b == null) {
+      return false;
+    }
+    return a.toUtc().isAtSameMomentAs(b.toUtc());
   }
 
   void _refreshUpcomingOutlookEvents() {
@@ -668,25 +847,32 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   }
 
   Future<void> openNoteEntryDialog({NoteEntry? existing}) async {
-    final titleController = TextEditingController(text: existing?.title ?? '');
-    final contentController = TextEditingController(
-      text: existing?.content ?? '',
-    );
+    var draftTitle = existing?.title ?? '';
+    var draftContent = existing?.content ?? '';
 
     final result = await showDialog<Map<String, String>>(
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
-          title: Text(existing == null ? 'New note' : 'Edit note'),
+          title: Text(
+            existing == null
+                ? 'New note'
+                : existing.kind == 'recipe'
+                ? 'Edit recipe'
+                : 'Edit note',
+          ),
           content: SizedBox(
             width: 520,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(
-                  controller: titleController,
+                TextFormField(
+                  initialValue: existing?.title ?? '',
                   autofocus: true,
                   maxLines: 1,
+                  onChanged: (value) {
+                    draftTitle = value;
+                  },
                   decoration: const InputDecoration(
                     labelText: 'Title',
                     border: OutlineInputBorder(),
@@ -694,10 +880,13 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                   ),
                 ),
                 const SizedBox(height: 10),
-                TextField(
-                  controller: contentController,
+                TextFormField(
+                  initialValue: existing?.content ?? '',
                   minLines: 4,
                   maxLines: 8,
+                  onChanged: (value) {
+                    draftContent = value;
+                  },
                   textAlignVertical: TextAlignVertical.top,
                   decoration: const InputDecoration(
                     hintText: 'Write your note...',
@@ -718,8 +907,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             TextButton(
               onPressed: () {
                 Navigator.pop(dialogContext, {
-                  'title': titleController.text,
-                  'content': contentController.text,
+                  'title': draftTitle,
+                  'content': draftContent,
                 });
               },
               child: const Text('Save'),
@@ -728,9 +917,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         );
       },
     );
-
-    titleController.dispose();
-    contentController.dispose();
 
     if (result == null) {
       return;
@@ -766,6 +952,52 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
 
   Future<void> addNoteEntry() async {
     await openNoteEntryDialog();
+  }
+
+  Future<void> addNoteEntryWithTitle(String rawTitle) async {
+    final title = rawTitle.trim();
+    if (title.isEmpty) {
+      return;
+    }
+
+    final now = DateTime.now().toUtc().toIso8601String();
+    setState(() {
+      final newEntry = NoteEntry(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        title: title,
+        content: '',
+        updatedAtUtc: now,
+        kind: 'note',
+      );
+      noteEntries.insert(0, newEntry);
+      selectedNoteId = newEntry.id;
+    });
+
+    syncNoteControllers();
+    await persistNoteEntries();
+  }
+
+  Future<void> addRecipeEntryWithTitle(String rawTitle) async {
+    final title = rawTitle.trim();
+    if (title.isEmpty) {
+      return;
+    }
+
+    final now = DateTime.now().toUtc().toIso8601String();
+    setState(() {
+      final newEntry = NoteEntry(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        title: title,
+        content: '',
+        updatedAtUtc: now,
+        kind: 'recipe',
+      );
+      noteEntries.insert(0, newEntry);
+      selectedNoteId = newEntry.id;
+    });
+
+    syncNoteControllers();
+    await persistNoteEntries();
   }
 
   Future<void> deleteNoteEntryById(String noteId) async {
@@ -823,6 +1055,41 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       return;
     }
     await deleteNoteEntryById(current.id);
+  }
+
+  Future<void> convertNoteEntryToTask(String noteId) async {
+    final note = noteEntries.where((entry) => entry.id == noteId).firstOrNull;
+    if (note == null || note.kind == 'recipe') {
+      return;
+    }
+
+    final taskTitle = displayNoteTitle(note).trim();
+    if (taskTitle.isEmpty) {
+      return;
+    }
+
+    final taskCategory = categories.isNotEmpty ? categories.first : 'None';
+
+    setState(() {
+      tasks.add(
+        Task(
+          task: taskTitle,
+          done: false,
+          expanded: false,
+          priority: 'medium',
+          category: taskCategory,
+        ),
+      );
+      subtaskControllers.add(TextEditingController());
+      noteEntries.removeWhere((entry) => entry.id == noteId);
+      if (selectedNoteId == noteId) {
+        selectedNoteId = null;
+      }
+    });
+
+    syncNoteControllers();
+    await saveTasks();
+    await persistNoteEntries();
   }
 
   void selectNoteEntry(String noteId) {
@@ -1845,6 +2112,35 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     });
 
     await saveTasks();
+    await saveInboxEntries();
+  }
+
+  Future<void> convertInboxEntryToNote(int index) async {
+    if (index < 0 || index >= inboxEntries.length) {
+      return;
+    }
+
+    final entry = inboxEntries[index].trim();
+    if (entry.isEmpty) {
+      return;
+    }
+
+    final now = DateTime.now().toUtc().toIso8601String();
+    setState(() {
+      final newEntry = NoteEntry(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        title: entry,
+        content: '',
+        updatedAtUtc: now,
+        kind: 'note',
+      );
+      noteEntries.insert(0, newEntry);
+      selectedNoteId = newEntry.id;
+      inboxEntries.removeAt(index);
+    });
+
+    syncNoteControllers();
+    await persistNoteEntries();
     await saveInboxEntries();
   }
 
@@ -2935,7 +3231,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             inboxEntries: inboxEntries,
             inboxCaptureController: inboxCaptureController,
             onAddInboxEntry: addInboxEntry,
-            onConvertInboxEntryToTask: convertInboxEntryToTask,
+            onConvertInboxEntryToNote: convertInboxEntryToNote,
             onRemoveInboxEntry: removeInboxEntry,
           );
         }
@@ -2986,6 +3282,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             useWideWebOverviewColumns: useWideWebOverviewColumns,
             importedOutlookSummary: importedOutlookSummary,
             onImportIcsCalendarFile: importIcsCalendarFile,
+            onClearImportedOutlookEvents: clearImportedOutlookEvents,
             formatOutlookDayDivider:
                 OutlookFormattingService.formatOutlookDayDivider,
             formatOutlookEventTimeRange:
@@ -3263,23 +3560,29 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       inboxEntries: inboxEntries,
       displayNoteTitle: displayNoteTitle,
       notePreview: notePreview,
-      onAddNote: addNoteEntry,
-      onDeleteSelectedNote: selectedNote == null
-          ? () {}
-          : () {
-              deleteSelectedNote();
-            },
+      onCreateNoteWithTitle: (title) async {
+        await addNoteEntryWithTitle(title);
+      },
+      onCreateRecipeWithTitle: (title) async {
+        await addRecipeEntryWithTitle(title);
+      },
       onSelectNote: (noteId) async {
         selectNoteEntry(noteId);
       },
       onEditNote: (entry) async {
         await openNoteEntryDialog(existing: entry);
       },
+      onConvertNoteToTask: (noteId) async {
+        await convertNoteEntryToTask(noteId);
+      },
       onDeleteNote: (noteId) async {
         await deleteNoteEntryById(noteId);
       },
       onEditInboxEntry: (index) async {
         await editInboxEntry(index);
+      },
+      onConvertInboxEntryToNote: (index) async {
+        await convertInboxEntryToNote(index);
       },
       onConvertInboxEntryToTask: (index) async {
         await convertInboxEntryToTask(index);

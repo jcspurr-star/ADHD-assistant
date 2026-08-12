@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/note_entry.dart';
 
-class NotesView extends StatelessWidget {
+class NotesView extends StatefulWidget {
   const NotesView({
     super.key,
     required this.contentWidth,
@@ -11,12 +11,14 @@ class NotesView extends StatelessWidget {
     required this.inboxEntries,
     required this.displayNoteTitle,
     required this.notePreview,
-    required this.onAddNote,
-    required this.onDeleteSelectedNote,
+    required this.onCreateNoteWithTitle,
+    required this.onCreateRecipeWithTitle,
     required this.onSelectNote,
     required this.onEditNote,
+    required this.onConvertNoteToTask,
     required this.onDeleteNote,
     required this.onEditInboxEntry,
+    required this.onConvertInboxEntryToNote,
     required this.onConvertInboxEntryToTask,
     required this.onRemoveInboxEntry,
   });
@@ -27,14 +29,82 @@ class NotesView extends StatelessWidget {
   final List<String> inboxEntries;
   final String Function(NoteEntry entry) displayNoteTitle;
   final String Function(NoteEntry entry) notePreview;
-  final VoidCallback onAddNote;
-  final VoidCallback onDeleteSelectedNote;
+  final Future<void> Function(String title) onCreateNoteWithTitle;
+  final Future<void> Function(String title) onCreateRecipeWithTitle;
   final Future<void> Function(String noteId) onSelectNote;
   final Future<void> Function(NoteEntry entry) onEditNote;
+  final Future<void> Function(String noteId) onConvertNoteToTask;
   final Future<void> Function(String noteId) onDeleteNote;
   final Future<void> Function(int index) onEditInboxEntry;
+  final Future<void> Function(int index) onConvertInboxEntryToNote;
   final Future<void> Function(int index) onConvertInboxEntryToTask;
   final Future<void> Function(int index) onRemoveInboxEntry;
+
+  @override
+  State<NotesView> createState() => _NotesViewState();
+}
+
+class _NotesViewState extends State<NotesView> {
+  late final TextEditingController _newNoteTitleController;
+  late final TextEditingController _newRecipeTitleController;
+  bool _creatingNote = false;
+  bool _creatingRecipe = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _newNoteTitleController = TextEditingController();
+    _newRecipeTitleController = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _newNoteTitleController.dispose();
+    _newRecipeTitleController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submitNewNote() async {
+    if (_creatingNote) {
+      return;
+    }
+    final title = _newNoteTitleController.text.trim();
+    if (title.isEmpty) {
+      return;
+    }
+    setState(() {
+      _creatingNote = true;
+    });
+    await widget.onCreateNoteWithTitle(title);
+    _newNoteTitleController.clear();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _creatingNote = false;
+    });
+  }
+
+  Future<void> _submitNewRecipe() async {
+    if (_creatingRecipe) {
+      return;
+    }
+    final title = _newRecipeTitleController.text.trim();
+    if (title.isEmpty) {
+      return;
+    }
+    setState(() {
+      _creatingRecipe = true;
+    });
+    await widget.onCreateRecipeWithTitle(title);
+    _newRecipeTitleController.clear();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _creatingRecipe = false;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -45,25 +115,87 @@ class NotesView extends StatelessWidget {
         Align(
           alignment: Alignment.centerLeft,
           child: SizedBox(
-            width: contentWidth,
+            width: widget.contentWidth,
             child: Row(
               children: [
                 const Text(
                   'Notes',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.add),
-                  tooltip: 'Add note',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: onAddNote,
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: SizedBox(
+            width: widget.contentWidth,
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                SizedBox(
+                  width: 280,
+                  child: TextField(
+                    controller: _newNoteTitleController,
+                    onSubmitted: (_) async {
+                      await _submitNewNote();
+                    },
+                    decoration: InputDecoration(
+                      hintText: 'New Note',
+                      isDense: true,
+                      border: const OutlineInputBorder(),
+                      suffixIcon: IconButton(
+                        tooltip: 'Create note',
+                        icon: _creatingNote
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.add),
+                        onPressed: _creatingNote
+                            ? null
+                            : () async {
+                                await _submitNewNote();
+                              },
+                      ),
+                    ),
+                  ),
                 ),
-                IconButton(
-                  icon: const Icon(Icons.delete_outline),
-                  tooltip: 'Delete note',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: onDeleteSelectedNote,
+                SizedBox(
+                  width: 280,
+                  child: TextField(
+                    controller: _newRecipeTitleController,
+                    onSubmitted: (_) async {
+                      await _submitNewRecipe();
+                    },
+                    decoration: InputDecoration(
+                      hintText: 'New Recipe',
+                      isDense: true,
+                      border: const OutlineInputBorder(),
+                      suffixIcon: IconButton(
+                        tooltip: 'Create recipe',
+                        icon: _creatingRecipe
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.restaurant_menu),
+                        onPressed: _creatingRecipe
+                            ? null
+                            : () async {
+                                await _submitNewRecipe();
+                              },
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -73,7 +205,7 @@ class NotesView extends StatelessWidget {
         Align(
           alignment: Alignment.centerLeft,
           child: SizedBox(
-            width: contentWidth,
+            width: widget.contentWidth,
             child: Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
@@ -89,7 +221,7 @@ class NotesView extends StatelessWidget {
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 6),
-                  if (inboxEntries.isEmpty)
+                  if (widget.inboxEntries.isEmpty)
                     Text(
                       'No captured items yet.',
                       style: TextStyle(
@@ -97,17 +229,17 @@ class NotesView extends StatelessWidget {
                         color: Colors.grey.shade700,
                       ),
                     ),
-                  if (inboxEntries.isNotEmpty)
+                  if (widget.inboxEntries.isNotEmpty)
                     SizedBox(
                       height: 140,
                       child: ListView.builder(
-                        itemCount: inboxEntries.length,
+                        itemCount: widget.inboxEntries.length,
                         itemBuilder: (context, index) {
                           return ListTile(
                             dense: true,
                             contentPadding: EdgeInsets.zero,
                             title: Text(
-                              inboxEntries[index],
+                              widget.inboxEntries[index],
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(fontSize: 13),
@@ -119,7 +251,20 @@ class NotesView extends StatelessWidget {
                                   icon: const Icon(Icons.edit, size: 18),
                                   tooltip: 'Edit',
                                   onPressed: () async {
-                                    await onEditInboxEntry(index);
+                                    await widget.onEditInboxEntry(index);
+                                  },
+                                ),
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.post_add,
+                                    size: 18,
+                                    color: Colors.blueGrey,
+                                  ),
+                                  tooltip: 'Convert to note',
+                                  onPressed: () async {
+                                    await widget.onConvertInboxEntryToNote(
+                                      index,
+                                    );
                                   },
                                 ),
                                 IconButton(
@@ -129,7 +274,9 @@ class NotesView extends StatelessWidget {
                                   ),
                                   tooltip: 'Convert to task',
                                   onPressed: () async {
-                                    await onConvertInboxEntryToTask(index);
+                                    await widget.onConvertInboxEntryToTask(
+                                      index,
+                                    );
                                   },
                                 ),
                                 IconButton(
@@ -139,7 +286,7 @@ class NotesView extends StatelessWidget {
                                   ),
                                   tooltip: 'Delete',
                                   onPressed: () async {
-                                    await onRemoveInboxEntry(index);
+                                    await widget.onRemoveInboxEntry(index);
                                   },
                                 ),
                               ],
@@ -158,7 +305,7 @@ class NotesView extends StatelessWidget {
           child: Align(
             alignment: Alignment.centerLeft,
             child: SizedBox(
-              width: contentWidth,
+              width: widget.contentWidth,
               child: Card(
                 elevation: 0,
                 shape: RoundedRectangleBorder(
@@ -178,26 +325,27 @@ class NotesView extends StatelessWidget {
   }
 
   Widget buildNotesList() {
-    if (noteEntries.isEmpty) {
+    if (widget.noteEntries.isEmpty) {
       return Center(
         child: Text(
-          'No notes yet. Tap + to create one.',
+          'No notes yet. Add a title above to create one.',
           style: TextStyle(color: Colors.grey.shade600),
         ),
       );
     }
 
     return ListView.separated(
-      itemCount: noteEntries.length,
+      itemCount: widget.noteEntries.length,
       separatorBuilder: (context, index) => const SizedBox(height: 8),
       itemBuilder: (context, index) {
-        final entry = noteEntries[index];
-        final isSelected = entry.id == selectedNoteId;
+        final entry = widget.noteEntries[index];
+        final isSelected = entry.id == widget.selectedNoteId;
+        final isRecipe = entry.kind == 'recipe';
         return InkWell(
           borderRadius: BorderRadius.circular(10),
           onTap: () async {
-            await onSelectNote(entry.id);
-            await onEditNote(entry);
+            await widget.onSelectNote(entry.id);
+            await widget.onEditNote(entry);
           },
           child: Container(
             padding: const EdgeInsets.all(10),
@@ -214,42 +362,87 @@ class NotesView extends StatelessWidget {
                 Row(
                   children: [
                     Expanded(
-                      child: Text(
-                        displayNoteTitle(entry),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w700,
-                          fontSize: 13,
-                        ),
+                      child: Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              widget.displayNoteTitle(entry),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: isRecipe
+                                  ? Colors.orange.shade50
+                                  : Colors.blue.shade50,
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(
+                                color: isRecipe
+                                    ? Colors.orange.shade200
+                                    : Colors.blue.shade200,
+                              ),
+                            ),
+                            child: Text(
+                              isRecipe ? 'Recipe' : 'Note',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: isRecipe
+                                    ? Colors.orange.shade800
+                                    : Colors.blue.shade800,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.edit, size: 18),
-                      tooltip: 'Edit note',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () async {
-                        await onSelectNote(entry.id);
-                        await onEditNote(entry);
-                      },
-                    ),
+                    if (!isRecipe)
+                      IconButton(
+                        icon: const Icon(Icons.playlist_add, size: 18),
+                        tooltip: 'Convert note to task',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () async {
+                          await widget.onConvertNoteToTask(entry.id);
+                        },
+                      ),
                     IconButton(
                       icon: const Icon(Icons.delete_outline, size: 18),
-                      tooltip: 'Delete note',
+                      tooltip: isRecipe ? 'Delete recipe' : 'Delete note',
                       visualDensity: VisualDensity.compact,
                       onPressed: () async {
-                        await onDeleteNote(entry.id);
+                        await widget.onDeleteNote(entry.id);
                       },
                     ),
                   ],
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  notePreview(entry),
+                  widget.notePreview(entry),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
                 ),
+                if (isRecipe) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'Recipes stay separate from task conversion.',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.orange.shade800,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

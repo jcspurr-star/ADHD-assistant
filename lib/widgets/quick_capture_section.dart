@@ -6,14 +6,14 @@ class QuickCaptureSection extends StatelessWidget {
     required this.inboxEntries,
     required this.inboxCaptureController,
     required this.onAddInboxEntry,
-    required this.onConvertInboxEntryToTask,
+    required this.onConvertInboxEntryToNote,
     required this.onRemoveInboxEntry,
   });
 
   final List<String> inboxEntries;
   final TextEditingController inboxCaptureController;
   final Future<void> Function() onAddInboxEntry;
-  final Future<void> Function(int index) onConvertInboxEntryToTask;
+  final Future<void> Function(int index) onConvertInboxEntryToNote;
   final Future<void> Function(int index) onRemoveInboxEntry;
 
   @override
@@ -114,15 +114,14 @@ class QuickCaptureSection extends StatelessWidget {
                         ),
                       ),
                       IconButton(
-                        tooltip: 'Convert to task',
-                        visualDensity: VisualDensity.compact,
-                        constraints: const BoxConstraints(
-                          minWidth: 28,
-                          minHeight: 28,
+                        icon: const Icon(
+                          Icons.post_add,
+                          size: 18,
+                          color: Colors.blueGrey,
                         ),
-                        icon: const Icon(Icons.task_alt, size: 16),
+                        tooltip: 'Convert to note',
                         onPressed: () async {
-                          await onConvertInboxEntryToTask(index);
+                          await onConvertInboxEntryToNote(index);
                         },
                       ),
                       IconButton(

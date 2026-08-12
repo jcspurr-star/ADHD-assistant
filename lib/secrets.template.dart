@@ -14,11 +14,6 @@ const String oneDriveRedirectUri = 'https://your-app.web.app/outlook-callback';
 // Desktop/native builds can auto-read a local ICS file path.
 const String workCalendarAutoImportPath =
     r'C:\Users\jspurr\OneDrive - Ordnance Survey\MyCalendar.ics';
-// Web builds cannot read local disk paths directly. Set this to an HTTPS URL
-// to an ICS feed if you want automatic import on web.
-// OneDrive/SharePoint tip: use a share URL to the .ics file and prefer a
-// direct-download form (for example adding ?download=1).
-const String workCalendarAutoImportUrl = '';
 
 const String firebaseProjectId = 'YOUR_FIREBASE_PROJECT_ID';
 const String firebaseApiKey = 'YOUR_FIREBASE_API_KEY';

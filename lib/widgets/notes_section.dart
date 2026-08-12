@@ -12,12 +12,14 @@ class NotesSection extends StatelessWidget {
     required this.inboxEntries,
     required this.displayNoteTitle,
     required this.notePreview,
-    required this.onAddNote,
-    required this.onDeleteSelectedNote,
+    required this.onCreateNoteWithTitle,
+    required this.onCreateRecipeWithTitle,
     required this.onSelectNote,
     required this.onEditNote,
+    required this.onConvertNoteToTask,
     required this.onDeleteNote,
     required this.onEditInboxEntry,
+    required this.onConvertInboxEntryToNote,
     required this.onConvertInboxEntryToTask,
     required this.onRemoveInboxEntry,
   });
@@ -28,12 +30,14 @@ class NotesSection extends StatelessWidget {
   final List<String> inboxEntries;
   final String Function(NoteEntry entry) displayNoteTitle;
   final String Function(NoteEntry entry) notePreview;
-  final Future<void> Function() onAddNote;
-  final VoidCallback onDeleteSelectedNote;
+  final Future<void> Function(String title) onCreateNoteWithTitle;
+  final Future<void> Function(String title) onCreateRecipeWithTitle;
   final Future<void> Function(String noteId) onSelectNote;
   final Future<void> Function(NoteEntry entry) onEditNote;
+  final Future<void> Function(String noteId) onConvertNoteToTask;
   final Future<void> Function(String noteId) onDeleteNote;
   final Future<void> Function(int index) onEditInboxEntry;
+  final Future<void> Function(int index) onConvertInboxEntryToNote;
   final Future<void> Function(int index) onConvertInboxEntryToTask;
   final Future<void> Function(int index) onRemoveInboxEntry;
 
@@ -52,12 +56,14 @@ class NotesSection extends StatelessWidget {
           inboxEntries: inboxEntries,
           displayNoteTitle: displayNoteTitle,
           notePreview: notePreview,
-          onAddNote: onAddNote,
-          onDeleteSelectedNote: onDeleteSelectedNote,
+          onCreateNoteWithTitle: onCreateNoteWithTitle,
+          onCreateRecipeWithTitle: onCreateRecipeWithTitle,
           onSelectNote: onSelectNote,
           onEditNote: onEditNote,
+          onConvertNoteToTask: onConvertNoteToTask,
           onDeleteNote: onDeleteNote,
           onEditInboxEntry: onEditInboxEntry,
+          onConvertInboxEntryToNote: onConvertInboxEntryToNote,
           onConvertInboxEntryToTask: onConvertInboxEntryToTask,
           onRemoveInboxEntry: onRemoveInboxEntry,
         );
