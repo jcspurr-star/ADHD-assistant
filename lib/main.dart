@@ -534,10 +534,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         return;
       }
 
-      await _importIcsCalendarContent(
-        content,
-        forceCalendarSource: 'work',
-      );
+      await _importIcsCalendarContent(content, forceCalendarSource: 'work');
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

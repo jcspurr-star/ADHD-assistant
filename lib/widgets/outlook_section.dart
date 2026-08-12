@@ -568,84 +568,82 @@ class OutlookSection extends StatelessWidget {
                                                 width: 420,
                                                 child: ListView.separated(
                                                   shrinkWrap: true,
-                                                  itemCount: hiddenEvents.length,
+                                                  itemCount:
+                                                      hiddenEvents.length,
                                                   separatorBuilder:
                                                       (context, index) =>
                                                           const SizedBox(
                                                             height: 8,
                                                           ),
-                                                  itemBuilder:
-                                                      (context, index) {
-                                                        final hiddenEvent =
-                                                            hiddenEvents[index];
-                                                        final isWork =
-                                                            hiddenEvent.calendarSource ==
-                                                            'work';
-                                                        return Row(
-                                                          crossAxisAlignment:
-                                                              CrossAxisAlignment
-                                                                  .start,
-                                                          children: [
-                                                            Container(
-                                                              width: 9,
-                                                              height: 9,
-                                                              margin:
-                                                                  const EdgeInsets.only(
-                                                                    top: 5,
+                                                  itemBuilder: (context, index) {
+                                                    final hiddenEvent =
+                                                        hiddenEvents[index];
+                                                    final isWork =
+                                                        hiddenEvent
+                                                            .calendarSource ==
+                                                        'work';
+                                                    return Row(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
+                                                      children: [
+                                                        Container(
+                                                          width: 9,
+                                                          height: 9,
+                                                          margin:
+                                                              const EdgeInsets.only(
+                                                                top: 5,
+                                                              ),
+                                                          decoration: BoxDecoration(
+                                                            shape:
+                                                                BoxShape.circle,
+                                                            color: isWork
+                                                                ? const Color(
+                                                                    0xFF008E7A,
+                                                                  )
+                                                                : const Color(
+                                                                    0xFF1E63D0,
                                                                   ),
-                                                              decoration: BoxDecoration(
-                                                                shape: BoxShape
-                                                                    .circle,
-                                                                color: isWork
-                                                                    ? const Color(
-                                                                        0xFF008E7A,
-                                                                      )
-                                                                    : const Color(
-                                                                        0xFF1E63D0,
-                                                                      ),
-                                                              ),
-                                                            ),
-                                                            const SizedBox(
-                                                              width: 8,
-                                                            ),
-                                                            Expanded(
-                                                              child: Text(
-                                                                hiddenEvent
-                                                                    .subject,
-                                                                style:
-                                                                    const TextStyle(
-                                                                      fontSize:
-                                                                          13,
-                                                                      fontWeight:
-                                                                          FontWeight
-                                                                              .w600,
-                                                                    ),
-                                                              ),
-                                                            ),
-                                                            const SizedBox(
-                                                              width: 8,
-                                                            ),
-                                                            Text(
-                                                              isWork
-                                                                  ? 'Work'
-                                                                  : 'Home',
-                                                              style: TextStyle(
-                                                                fontSize: 11,
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .w700,
-                                                                color: isWork
-                                                                    ? const Color(
-                                                                        0xFF008E7A,
-                                                                      )
-                                                                    : const Color(
-                                                                        0xFF1E63D0,
-                                                                      ),
-                                                              ),
-                                                            ),
-                                                          ],
-                                                        );
-                                                      },
+                                                          ),
+                                                        ),
+                                                        const SizedBox(
+                                                          width: 8,
+                                                        ),
+                                                        Expanded(
+                                                          child: Text(
+                                                            hiddenEvent.subject,
+                                                            style:
+                                                                const TextStyle(
+                                                                  fontSize: 13,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w600,
+                                                                ),
+                                                          ),
+                                                        ),
+                                                        const SizedBox(
+                                                          width: 8,
+                                                        ),
+                                                        Text(
+                                                          isWork
+                                                              ? 'Work'
+                                                              : 'Home',
+                                                          style: TextStyle(
+                                                            fontSize: 11,
+                                                            fontWeight:
+                                                                FontWeight.w700,
+                                                            color: isWork
+                                                                ? const Color(
+                                                                    0xFF008E7A,
+                                                                  )
+                                                                : const Color(
+                                                                    0xFF1E63D0,
+                                                                  ),
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    );
+                                                  },
                                                 ),
                                               ),
                                               actions: [
@@ -670,7 +668,9 @@ class OutlookSection extends StatelessWidget {
                                         ),
                                         decoration: BoxDecoration(
                                           color: neutralColor.withAlpha(44),
-                                          borderRadius: BorderRadius.circular(8),
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
                                           border: Border.all(
                                             color: neutralColor.withAlpha(150),
                                           ),
