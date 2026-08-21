@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 class MainContentView extends StatelessWidget {
@@ -6,6 +5,8 @@ class MainContentView extends StatelessWidget {
     super.key,
     required this.selectedMainSectionIndex,
     required this.buildTasksView,
+    required this.buildHomeDashboard,
+    required this.buildCombinedHomePlanner,
     required this.buildCountdownView,
     required this.buildInsightsView,
     required this.buildNotesView,
@@ -17,31 +18,27 @@ class MainContentView extends StatelessWidget {
     required bool showTaskList,
   })
   buildTasksView;
+  final Widget Function() buildHomeDashboard;
+  final Widget Function() buildCombinedHomePlanner;
   final Widget Function() buildCountdownView;
   final Widget Function() buildInsightsView;
   final Widget Function() buildNotesView;
 
   @override
   Widget build(BuildContext context) {
-    if (kIsWeb && selectedMainSectionIndex == 0) {
-      return SingleChildScrollView(
-        child: buildTasksView(showOverview: true, showTaskList: false),
-      );
-    }
-
     switch (selectedMainSectionIndex) {
       case 0:
-        return SingleChildScrollView(
-          child: buildTasksView(showOverview: true, showTaskList: false),
-        );
+        return buildCombinedHomePlanner();
       case 1:
         return buildCountdownView();
       case 2:
         return buildTasksView(showOverview: false, showTaskList: true);
       case 3:
         return buildInsightsView();
-      default:
+      case 4:
         return buildNotesView();
+      default:
+        return buildHomeDashboard();
     }
   }
 }

@@ -5,10 +5,12 @@ class TaskComposerSection extends StatelessWidget {
     super.key,
     required this.taskController,
     required this.onAddTask,
+    required this.onAddTaskWithSubtask,
   });
 
   final TextEditingController taskController;
   final Future<void> Function() onAddTask;
+  final Future<void> Function() onAddTaskWithSubtask;
 
   @override
   Widget build(BuildContext context) {
@@ -60,6 +62,15 @@ class TaskComposerSection extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(height: 12),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: ActionChip(
+                          avatar: const Icon(Icons.playlist_add, size: 16),
+                          label: const Text('Add task with subtask'),
+                          onPressed: onAddTaskWithSubtask,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
                       if (narrowComposer) ...[
                         TextField(
                           controller: taskController,

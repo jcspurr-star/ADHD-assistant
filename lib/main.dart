@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -6,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 import 'models/note_entry.dart';
 import 'models/task.dart';
+import 'models/activity_recommendation.dart';
 import 'services/storage_service.dart';
 import 'services/gemini_service.dart';
 import 'services/recommendation_service.dart';
@@ -19,6 +21,7 @@ import 'services/work_calendar_auto_import_loader.dart';
 import 'dialogs/step_count_dialog.dart';
 import 'dialogs/edit_task_dialog.dart';
 import 'dialogs/edit_subtask_dialog.dart';
+import 'dialogs/add_subtask_dialog.dart';
 import 'dialogs/task_field_dialogs.dart';
 import 'settings_page.dart';
 import 'widgets/backup_recovery_dialog.dart';
@@ -29,6 +32,10 @@ import 'widgets/main_content_view.dart';
 import 'widgets/main_section_tabs.dart';
 import 'widgets/notes_section.dart';
 import 'widgets/day_planner_section.dart';
+import 'widgets/activity_history_page.dart';
+import 'services/day_planner_service.dart';
+import 'services/activity_tracking_service.dart';
+import 'services/planner_execution_service.dart';
 import 'widgets/outlook_section.dart';
 import 'widgets/priority_task_card.dart';
 import 'widgets/quick_capture_section.dart';
@@ -166,14 +173,12 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   List<String> dailyContextOptions = [
     'Home',
     'WFH',
-    'WFO',
     'Out and about',
     'Holiday',
     'Sick',
     'Bad sleep',
     'Good sleep',
     'Social day',
-    'Exercise day',
     'Travel day',
     'Low stress',
     'Mid stress',
@@ -203,6 +208,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   List<Task> tasks = [];
   List<String> inboxEntries = [];
   List<NoteEntry> noteEntries = [];
+  List<ActivityLogEntry> activityLogs = [];
+  WeeklyActivityTotals weeklyActivityTotals = const WeeklyActivityTotals();
   Map<String, Map<String, dynamic>> dailyCheckinsByDate = {};
   String? selectedNoteId;
   List<String> categories = ['None'];
@@ -221,7 +228,12 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   int priorityCardCount = 3;
   int outlookLookAheadDays = 1;
   int plannerDayOffset = 0;
+  int plannerWorkdayStartMinutes = 9 * 60;
+  int plannerWorkdayEndMinutes = 17 * 60;
   bool prioritizeWorkOnWeekdays = true;
+  bool gymAvailable = false;
+  bool wfhAvailable = false;
+  bool eveningAvailable = false;
   bool showWorkInPlanner = true;
   bool showHomeInPlanner = true;
   bool showPlannerInPlanner = true;
@@ -308,6 +320,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   Future<void> loadTasks() async {
     try {
       final loadedTasks = await StorageService.loadTasks();
+      final loadedActivityLogs = await ActivityTrackingService.loadLogs();
       final loadedInboxEntries = await StorageService.loadInboxEntries();
       final loadedNoteEntries = await StorageService.loadNoteEntries();
       final loadedDailyCheckinsByDate =
@@ -331,6 +344,14 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           await StorageService.loadOutlookLookAheadDays();
       final loadedPrioritizeWorkOnWeekdays =
           await StorageService.loadPrioritizeWorkOnWeekdays();
+      final loadedGymAvailable = await StorageService.loadGymAvailable();
+      final loadedWfhAvailable = await StorageService.loadWfhAvailable();
+      final loadedEveningAvailable =
+          await StorageService.loadEveningAvailable();
+      final loadedPlannerWorkdayStartMinutes =
+          await StorageService.loadPlannerWorkdayStartMinutes();
+      final loadedPlannerWorkdayEndMinutes =
+          await StorageService.loadPlannerWorkdayEndMinutes();
 
       List<String> resolveOptionList(
         List<String>? loaded,
@@ -349,7 +370,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       final resolvedContextTodayOptions = resolveOptionList(
         loadedContextTodayOptions,
         dailyContextOptions,
-      );
+      )..remove('Exercise day');
       final resolvedOtherMedicationOptions = resolveOptionList(
         loadedOtherMedicationOptions,
         otherMedicationOptions,
@@ -367,6 +388,13 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       final resolvedOutlookLookAheadDays = loadedOutlookLookAheadDays ?? 1;
       final resolvedPrioritizeWorkOnWeekdays =
           loadedPrioritizeWorkOnWeekdays ?? true;
+      final resolvedGymAvailable = loadedGymAvailable ?? false;
+      final resolvedWfhAvailable = loadedWfhAvailable ?? false;
+      final resolvedEveningAvailable = loadedEveningAvailable ?? false;
+      final resolvedPlannerWorkdayStartMinutes =
+          loadedPlannerWorkdayStartMinutes ?? 9 * 60;
+      final resolvedPlannerWorkdayEndMinutes =
+          loadedPlannerWorkdayEndMinutes ?? 17 * 60;
 
       if (!mounted) return;
       setState(() {
@@ -389,7 +417,16 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           (resolvedOutlookLookAheadDays - 1).clamp(0, 31),
         );
         prioritizeWorkOnWeekdays = resolvedPrioritizeWorkOnWeekdays;
+        gymAvailable = resolvedGymAvailable;
+        wfhAvailable = resolvedWfhAvailable;
+        eveningAvailable = resolvedEveningAvailable;
+        plannerWorkdayStartMinutes = resolvedPlannerWorkdayStartMinutes;
+        plannerWorkdayEndMinutes = resolvedPlannerWorkdayEndMinutes;
         tasks = loadedTasks;
+        activityLogs = loadedActivityLogs;
+        weeklyActivityTotals = ActivityTrackingService.calculateWeeklyTotals(
+          loadedActivityLogs,
+        );
         inboxEntries = loadedInboxEntries;
         noteEntries = loadedNoteEntries;
         dailyCheckinsByDate = loadedDailyCheckinsByDate;
@@ -797,6 +834,82 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
 
   Future<void> saveDailyCheckinsByDate() async {
     await StorageService.saveDailyCheckinsByDate(dailyCheckinsByDate);
+  }
+
+  Set<ActivityPillar> completedActivityPillarsToday() {
+    final today = DateTime.now();
+    return activityLogs
+        .where((entry) {
+          final completedAt = entry.completedAt.toLocal();
+          return completedAt.year == today.year &&
+              completedAt.month == today.month &&
+              completedAt.day == today.day;
+        })
+        .map((entry) => entry.pillar)
+        .toSet();
+  }
+
+  int getDaysSinceLastMobility() {
+    final mobilityLogs =
+        activityLogs
+            .where((entry) => entry.pillar == ActivityPillar.mobility)
+            .toList()
+          ..sort((a, b) => b.completedAt.compareTo(a.completedAt));
+    if (mobilityLogs.isEmpty) return 999;
+    final last = mobilityLogs.first.completedAt.toLocal();
+    final today = DateTime.now();
+    return DateTime(
+      today.year,
+      today.month,
+      today.day,
+    ).difference(DateTime(last.year, last.month, last.day)).inDays;
+  }
+
+  Future<void> completeActivityRecommendation(
+    ActivityRecommendation recommendation,
+  ) async {
+    final entry = ActivityLogEntry(
+      id: 'activity-${DateTime.now().microsecondsSinceEpoch}',
+      pillar: recommendation.pillar,
+      completedAt: DateTime.now(),
+      source: ActivitySource.recommendation,
+      minutes:
+          recommendation.pillar == ActivityPillar.walking ||
+              recommendation.pillar == ActivityPillar.standing
+          ? recommendation.estimatedDuration.inMinutes
+          : null,
+    );
+    final nextLogs = [...activityLogs, entry];
+    setState(() {
+      activityLogs = nextLogs;
+      weeklyActivityTotals = ActivityTrackingService.calculateWeeklyTotals(
+        nextLogs,
+      );
+    });
+    await StorageService.saveActivityLogs(nextLogs);
+  }
+
+  Future<void> saveActivityLogsFromHistory(
+    List<ActivityLogEntry> nextLogs,
+  ) async {
+    setState(() {
+      activityLogs = List<ActivityLogEntry>.from(nextLogs);
+      weeklyActivityTotals = ActivityTrackingService.calculateWeeklyTotals(
+        activityLogs,
+      );
+    });
+    await StorageService.saveActivityLogs(activityLogs);
+  }
+
+  Future<void> openActivityHistory() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => ActivityHistoryPage(
+          initialLogs: activityLogs,
+          onLogsChanged: saveActivityLogsFromHistory,
+        ),
+      ),
+    );
   }
 
   NoteEntry? get selectedNote {
@@ -1422,10 +1535,203 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   }
 
   String getTodayDateKey() {
-    final now = DateTime.now();
-    final month = now.month.toString().padLeft(2, '0');
-    final day = now.day.toString().padLeft(2, '0');
-    return '${now.year}-$month-$day';
+    return getDateKey(DateTime.now());
+  }
+
+  String getDateKey(DateTime date) {
+    final month = date.month.toString().padLeft(2, '0');
+    final day = date.day.toString().padLeft(2, '0');
+    return '${date.year}-$month-$day';
+  }
+
+  Set<String> preferredConcurrentEntryIdsForDate(DateTime date) {
+    final raw =
+        dailyCheckinsByDate[getDateKey(date)]?['preferredConcurrentEntryIds'];
+    return parseStringList(raw).toSet();
+  }
+
+  Set<String> removedPlannerEntryIdsForDate(DateTime date) {
+    final raw =
+        dailyCheckinsByDate[getDateKey(date)]?['removedPlannerEntryIds'];
+    return parseStringList(raw).toSet();
+  }
+
+  Future<void> setRemovedPlannerEntryIds(DateTime date, Set<String> ids) async {
+    final dateKey = getDateKey(date);
+    final current = Map<String, dynamic>.from(
+      dailyCheckinsByDate[dateKey] ?? defaultDailyCheckin(),
+    );
+    current['removedPlannerEntryIds'] = ids.toList()..sort();
+    current['trackerVersion'] = 2;
+    setState(() {
+      dailyCheckinsByDate[dateKey] = current;
+    });
+    await saveDailyCheckinsByDate();
+  }
+
+  Future<void> setPreferredConcurrentEntryIds(
+    DateTime date,
+    Set<String> ids,
+  ) async {
+    final dateKey = getDateKey(date);
+    final current = Map<String, dynamic>.from(
+      dailyCheckinsByDate[dateKey] ?? defaultDailyCheckin(),
+    );
+    current['preferredConcurrentEntryIds'] = ids.toList()..sort();
+    current['trackerVersion'] = 2;
+    setState(() {
+      dailyCheckinsByDate[dateKey] = current;
+    });
+    await saveDailyCheckinsByDate();
+  }
+
+  Map<String, PlannerEntryOverride> plannerEntryOverridesForDate(
+    DateTime date,
+  ) {
+    final raw = dailyCheckinsByDate[getDateKey(date)]?['plannerEntryOverrides'];
+    final overrides = <String, PlannerEntryOverride>{};
+    for (final encoded in parseStringList(raw)) {
+      try {
+        final decoded = jsonDecode(encoded) as Map<String, dynamic>;
+        final id = decoded['id'] as String?;
+        if (id == null) continue;
+        overrides[id] = PlannerEntryOverride(
+          startMinutes: decoded['startMinutes'] as int?,
+          endMinutes: decoded['endMinutes'] as int?,
+          locked: decoded['locked'] as bool? ?? false,
+        );
+      } catch (_) {
+        continue;
+      }
+    }
+    return overrides;
+  }
+
+  Map<String, ExecutionState> plannerExecutionStatesForDate(DateTime date) {
+    final raw =
+        dailyCheckinsByDate[getDateKey(date)]?['plannerExecutionStates'];
+    return PlannerExecutionService.statesFromEncoded(parseStringList(raw));
+  }
+
+  Future<void> setPlannerExecutionState(
+    DateTime date,
+    String entryId,
+    ExecutionState state,
+  ) async {
+    final dateKey = getDateKey(date);
+    final current = Map<String, dynamic>.from(
+      dailyCheckinsByDate[dateKey] ?? defaultDailyCheckin(),
+    );
+    final states = plannerExecutionStatesForDate(date);
+    states[entryId] = state;
+    current['plannerExecutionStates'] = PlannerExecutionService.toEncoded(
+      states,
+    );
+    current['trackerVersion'] = 2;
+    setState(() {
+      dailyCheckinsByDate[dateKey] = current;
+    });
+    await saveDailyCheckinsByDate();
+  }
+
+  Future<void> executePlannerEntry(
+    DateTime date,
+    DayPlannerEntry entry,
+    ExecutionState state,
+  ) async {
+    if (entry.type == 'calendar') return;
+
+    if (state == ExecutionState.completed && entry.type == 'task') {
+      final taskIndex = entry.task == null
+          ? -1
+          : tasks.indexWhere((task) => identical(task, entry.task));
+      if (taskIndex >= 0) {
+        await toggleTask(taskIndex, true);
+      }
+    }
+
+    if (state == ExecutionState.completed && entry.type == 'movement') {
+      final normalized = '${entry.title} ${entry.subtitle ?? ''}'.toLowerCase();
+      final pillar = normalized.contains('stand')
+          ? ActivityPillar.standing
+          : ActivityPillar.walking;
+      final log = ActivityLogEntry(
+        id: 'activity-${DateTime.now().microsecondsSinceEpoch}',
+        pillar: pillar,
+        completedAt: DateTime.now(),
+        minutes: entry.end.difference(entry.start).inMinutes,
+        source: ActivitySource.plannerTimeline,
+      );
+      final nextLogs = [...activityLogs, log];
+      setState(() {
+        activityLogs = nextLogs;
+        weeklyActivityTotals = ActivityTrackingService.calculateWeeklyTotals(
+          nextLogs,
+        );
+      });
+      await StorageService.saveActivityLogs(nextLogs);
+    }
+
+    await setPlannerExecutionState(date, entry.id, state);
+  }
+
+  Future<void> _savePlannerEntryOverrides(
+    DateTime date,
+    Map<String, PlannerEntryOverride> overrides,
+  ) async {
+    final dateKey = getDateKey(date);
+    final current = Map<String, dynamic>.from(
+      dailyCheckinsByDate[dateKey] ?? defaultDailyCheckin(),
+    );
+    current['plannerEntryOverrides'] = overrides.entries
+        .map(
+          (entry) => jsonEncode({
+            'id': entry.key,
+            'startMinutes': entry.value.startMinutes,
+            'endMinutes': entry.value.endMinutes,
+            'locked': entry.value.locked,
+          }),
+        )
+        .toList();
+    current['trackerVersion'] = 2;
+    setState(() {
+      dailyCheckinsByDate[dateKey] = current;
+    });
+    await saveDailyCheckinsByDate();
+  }
+
+  Future<void> setPlannerEntryTime(
+    DateTime date,
+    String entryId,
+    int startMinutes,
+    int endMinutes,
+  ) async {
+    final overrides = plannerEntryOverridesForDate(date);
+    final existing = overrides[entryId];
+    overrides[entryId] = PlannerEntryOverride(
+      startMinutes: startMinutes,
+      endMinutes: endMinutes,
+      locked: existing?.locked ?? false,
+    );
+    await _savePlannerEntryOverrides(date, overrides);
+  }
+
+  Future<void> setPlannerEntryLocked(
+    DateTime date,
+    String entryId,
+    bool locked,
+  ) async {
+    final overrides = plannerEntryOverridesForDate(date);
+    final existing = overrides[entryId];
+    if (existing == null && !locked) {
+      return;
+    }
+    overrides[entryId] = PlannerEntryOverride(
+      startMinutes: existing?.startMinutes,
+      endMinutes: existing?.endMinutes,
+      locked: locked,
+    );
+    await _savePlannerEntryOverrides(date, overrides);
   }
 
   Map<String, dynamic> defaultDailyCheckin() {
@@ -1458,6 +1764,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       'dopamineCrashSymptoms': <String>[],
       'dopamineCrashSymptomsAdditional': <String>[],
       'contextTags': <String>[],
+      'preferredConcurrentEntryIds': <String>[],
+      'removedPlannerEntryIds': <String>[],
+      'plannerEntryOverrides': <String>[],
+      'plannerExecutionStates': <String>[],
     };
   }
 
@@ -2004,6 +2314,19 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     }
   }
 
+  Future<void> addTaskWithSubtask() async {
+    if (taskController.text.trim().isEmpty) return;
+    await addTask();
+    if (!mounted || tasks.isEmpty) return;
+    final subtaskText = await showAddSubtaskDialog(context);
+    if (subtaskText == null || subtaskText.trim().isEmpty) return;
+    setState(() {
+      tasks.last.subtasks.add(Subtask(text: subtaskText.trim()));
+      tasks.last.expanded = true;
+    });
+    await saveTasks();
+  }
+
   Future<void> addInboxEntry() async {
     final text = inboxCaptureController.text.trim();
     if (text.isEmpty) {
@@ -2505,6 +2828,27 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     await StorageService.savePrioritizeWorkOnWeekdays(nextValue);
   }
 
+  Future<void> setGymAvailable(bool enabled) async {
+    setState(() {
+      gymAvailable = enabled;
+    });
+    await StorageService.saveGymAvailable(enabled);
+  }
+
+  Future<void> setWfhAvailable(bool enabled) async {
+    setState(() {
+      wfhAvailable = enabled;
+    });
+    await StorageService.saveWfhAvailable(enabled);
+  }
+
+  Future<void> setEveningAvailable(bool enabled) async {
+    setState(() {
+      eveningAvailable = enabled;
+    });
+    await StorageService.saveEveningAvailable(enabled);
+  }
+
   Future<void> createSubtasks(int index, int stepCount) async {
     final sourceText = getStarterStepSourceText(index);
 
@@ -2886,45 +3230,20 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     );
   }
 
-  Future<void> setTaskEffort(int index) async {
-    const effortOptions = <int>[5, 15, 30, 45, 60, 90, 120, 180, 240, 360, 480];
-    final selected = await TaskFieldDialogs.showEffortDialog(
-      context: context,
-      title: 'Whole-task effort estimate',
-      description: 'Roughly how much total time will the whole task take?',
-      options: effortOptions,
-      formatEffortLabel: formatEffortLabel,
-      allowClear: tasks[index].effortMinutes != null,
-    );
-
-    if (selected == null) {
-      return;
-    }
-
+  Future<void> setTaskEffort(int index, int? selected) async {
     setState(() {
-      tasks[index].effortMinutes = selected < 0 ? null : selected;
+      tasks[index].effortMinutes = selected == null || selected < 0
+          ? null
+          : selected;
     });
     await saveTasks();
   }
 
-  Future<void> setNextSessionEffort(int index) async {
-    const effortOptions = <int>[5, 15, 30, 45, 60, 90, 120, 180, 240];
-    final selected = await TaskFieldDialogs.showEffortDialog(
-      context: context,
-      title: 'Next-session effort estimate',
-      description:
-          'How long should the next focused work session for this task be?',
-      options: effortOptions,
-      formatEffortLabel: formatEffortLabel,
-      allowClear: tasks[index].nextSessionEffortMinutes != null,
-    );
-
-    if (selected == null) {
-      return;
-    }
-
+  Future<void> setNextSessionEffort(int index, int? selected) async {
     setState(() {
-      tasks[index].nextSessionEffortMinutes = selected < 0 ? null : selected;
+      tasks[index].nextSessionEffortMinutes = selected == null || selected < 0
+          ? null
+          : selected;
     });
     await saveTasks();
   }
@@ -3220,6 +3539,14 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             onClearTodayCrashTimeField: clearTodayCrashTimeField,
             onToggleTodayCrashSymptomField: toggleTodayCrashSymptomField,
             onToggleTodayContextTag: toggleTodayContextTag,
+            wfhAvailable: wfhAvailable,
+            onWfhAvailableChanged: (next) {
+              unawaited(setWfhAvailable(next));
+            },
+            gymAvailable: gymAvailable,
+            onGymAvailableChanged: (next) {
+              unawaited(setGymAvailable(next));
+            },
           );
         }
 
@@ -3233,8 +3560,14 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           );
         }
 
-        Widget buildDayPlannerSection() {
+        Widget buildDayPlannerSection({bool dashboardMode = false}) {
           return DayPlannerSection(
+            dashboardMode: dashboardMode,
+            onOpenPlanner: () {
+              setState(() {
+                selectedMainSectionIndex = 0;
+              });
+            },
             upcomingOutlookEventsFuture: upcomingOutlookEventsFuture,
             loadUpcomingOutlookEvents: _loadUpcomingOutlookEvents,
             outlookLookAheadDays: outlookLookAheadDays,
@@ -3242,6 +3575,29 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             showWorkInPlanner: showWorkInPlanner,
             showHomeInPlanner: showHomeInPlanner,
             showPlannerInPlanner: showPlannerInPlanner,
+            gymAvailable: gymAvailable,
+            wfhAvailable: wfhAvailable,
+            eveningAvailable: eveningAvailable,
+            weeklyActivityTotals: weeklyActivityTotals,
+            daysSinceLastMobility: getDaysSinceLastMobility(),
+            gymCompletedToday: completedActivityPillarsToday().contains(
+              ActivityPillar.gym,
+            ),
+            completedActivityPillarsToday: completedActivityPillarsToday(),
+            executionStates: plannerExecutionStatesForDate(
+              DateTime.now().add(Duration(days: plannerDayOffset)),
+            ),
+            preferredConcurrentEntryIds: preferredConcurrentEntryIdsForDate(
+              DateTime.now().add(Duration(days: plannerDayOffset)),
+            ),
+            removedPlannerEntryIds: removedPlannerEntryIdsForDate(
+              DateTime.now().add(Duration(days: plannerDayOffset)),
+            ),
+            plannerEntryOverrides: plannerEntryOverridesForDate(
+              DateTime.now().add(Duration(days: plannerDayOffset)),
+            ),
+            workdayStartMinutes: plannerWorkdayStartMinutes,
+            workdayEndMinutes: plannerWorkdayEndMinutes,
             tasks: tasks,
             isNarrow: isNarrow,
             useWideWebOverviewColumns: useWideWebOverviewColumns,
@@ -3266,6 +3622,57 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               setState(() {
                 showPlannerInPlanner = next;
               });
+            },
+            onGymAvailableChanged: (next) {
+              unawaited(setGymAvailable(next));
+            },
+            onWfhAvailableChanged: (next) {
+              unawaited(setWfhAvailable(next));
+            },
+            onEveningAvailableChanged: (next) {
+              unawaited(setEveningAvailable(next));
+            },
+            onCompleteRecommendation: (recommendation) {
+              unawaited(completeActivityRecommendation(recommendation));
+            },
+            onViewActivityHistory: openActivityHistory,
+            onPreferredConcurrentEntryIdsChanged: (ids) {
+              final date = DateTime.now().add(Duration(days: plannerDayOffset));
+              unawaited(setPreferredConcurrentEntryIds(date, ids));
+            },
+            onRemovePlannerEntry: (entryId) {
+              final date = DateTime.now().add(Duration(days: plannerDayOffset));
+              final next = removedPlannerEntryIdsForDate(date)..add(entryId);
+              unawaited(setRemovedPlannerEntryIds(date, next));
+            },
+            onEditPlannerEntryTime: (entryId, startMinutes, endMinutes) {
+              final date = DateTime.now().add(Duration(days: plannerDayOffset));
+              unawaited(
+                setPlannerEntryTime(date, entryId, startMinutes, endMinutes),
+              );
+            },
+            onTogglePlannerEntryLock: (entryId, locked) {
+              final date = DateTime.now().add(Duration(days: plannerDayOffset));
+              unawaited(setPlannerEntryLocked(date, entryId, locked));
+            },
+            onExecutePlannerEntry: (entry, state) {
+              final date = DateTime.now().add(Duration(days: plannerDayOffset));
+              unawaited(executePlannerEntry(date, entry, state));
+            },
+            onOpenTask: (task) {
+              unawaited(openTaskFromPriorityCard(task));
+            },
+            onWorkdayHoursChanged: (hours) {
+              setState(() {
+                plannerWorkdayStartMinutes = hours.$1;
+                plannerWorkdayEndMinutes = hours.$2;
+              });
+              unawaited(
+                StorageService.savePlannerWorkdayHours(
+                  startMinutes: hours.$1,
+                  endMinutes: hours.$2,
+                ),
+              );
             },
           );
         }
@@ -3310,6 +3717,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           return TaskComposerSection(
             taskController: taskController,
             onAddTask: addTask,
+            onAddTaskWithSubtask: addTaskWithSubtask,
           );
         }
 
@@ -3437,11 +3845,11 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               onSetPlanDate: (taskIndex) async {
                 await setDoDate(taskIndex);
               },
-              onSetTaskEffort: (taskIndex) async {
-                await setTaskEffort(taskIndex);
+              onSetTaskEffort: (taskIndex, minutes) async {
+                await setTaskEffort(taskIndex, minutes);
               },
-              onSetNextSessionEffort: (taskIndex) async {
-                await setNextSessionEffort(taskIndex);
+              onSetNextSessionEffort: (taskIndex, minutes) async {
+                await setNextSessionEffort(taskIndex, minutes);
               },
               onCategoryChanged: (taskIndex, value) {
                 setState(() {
@@ -3546,6 +3954,30 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       parseScoreField: parseScoreField,
       parseStringList: parseStringList,
       wideContentWidth: kWideContentWidth,
+      todayCheckin: getTodayDailyCheckin(),
+      symptomTrackerLabels: symptomTrackerLabels,
+      dailyContextOptions: dailyContextOptions,
+      otherMedicationOptions: otherMedicationOptions,
+      dopamineCrashSymptomOptions: dopamineCrashSymptomOptions,
+      dopamineCrashAdditionalSymptomOptions:
+          dopamineCrashAdditionalSymptomOptions,
+      onSetTodayDailyRating: setTodayDailyRating,
+      onSetTodayMedicationTime: setTodayMedicationTime,
+      onClearTodayMedicationTime: clearTodayMedicationTime,
+      onSetTodayMedicationQuickTime: setTodayMedicationQuickTime,
+      onToggleTodayOtherMedication: toggleTodayOtherMedication,
+      onSetTodayCrashTimeField: setTodayCrashTimeField,
+      onClearTodayCrashTimeField: clearTodayCrashTimeField,
+      onToggleTodayCrashSymptomField: toggleTodayCrashSymptomField,
+      onToggleTodayContextTag: toggleTodayContextTag,
+      wfhAvailable: wfhAvailable,
+      onWfhAvailableChanged: (next) {
+        unawaited(setWfhAvailable(next));
+      },
+      gymAvailable: gymAvailable,
+      onGymAvailableChanged: (next) {
+        unawaited(setGymAvailable(next));
+      },
     );
   }
 
@@ -3647,6 +4079,169 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     );
   }
 
+  Widget _buildPlannerExperience({required bool dashboardMode}) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isNarrow = constraints.maxWidth < 720;
+        final useWideWebOverviewColumns =
+            !isNarrow && constraints.maxWidth >= 1200;
+        final planner = DayPlannerSection(
+          dashboardMode: dashboardMode,
+          onOpenPlanner: () => setState(() => selectedMainSectionIndex = 0),
+          upcomingOutlookEventsFuture: upcomingOutlookEventsFuture,
+          loadUpcomingOutlookEvents: _loadUpcomingOutlookEvents,
+          outlookLookAheadDays: outlookLookAheadDays,
+          plannerDayOffset: plannerDayOffset,
+          showWorkInPlanner: showWorkInPlanner,
+          showHomeInPlanner: showHomeInPlanner,
+          showPlannerInPlanner: showPlannerInPlanner,
+          gymAvailable: gymAvailable,
+          wfhAvailable: wfhAvailable,
+          eveningAvailable: eveningAvailable,
+          weeklyActivityTotals: weeklyActivityTotals,
+          daysSinceLastMobility: getDaysSinceLastMobility(),
+          gymCompletedToday: completedActivityPillarsToday().contains(
+            ActivityPillar.gym,
+          ),
+          completedActivityPillarsToday: completedActivityPillarsToday(),
+          executionStates: plannerExecutionStatesForDate(
+            DateTime.now().add(Duration(days: plannerDayOffset)),
+          ),
+          preferredConcurrentEntryIds: preferredConcurrentEntryIdsForDate(
+            DateTime.now().add(Duration(days: plannerDayOffset)),
+          ),
+          removedPlannerEntryIds: removedPlannerEntryIdsForDate(
+            DateTime.now().add(Duration(days: plannerDayOffset)),
+          ),
+          plannerEntryOverrides: plannerEntryOverridesForDate(
+            DateTime.now().add(Duration(days: plannerDayOffset)),
+          ),
+          workdayStartMinutes: plannerWorkdayStartMinutes,
+          workdayEndMinutes: plannerWorkdayEndMinutes,
+          tasks: tasks,
+          isNarrow: isNarrow,
+          useWideWebOverviewColumns: useWideWebOverviewColumns,
+          isWorkTask: _isWorkTask,
+          formatPlannerDate: OutlookFormattingService.formatPlannerDate,
+          onPlannerDayOffsetChanged: (value) =>
+              setState(() => plannerDayOffset = value),
+          onShowWorkInPlannerChanged: (value) =>
+              setState(() => showWorkInPlanner = value),
+          onShowHomeInPlannerChanged: (value) =>
+              setState(() => showHomeInPlanner = value),
+          onShowPlannerInPlannerChanged: (value) =>
+              setState(() => showPlannerInPlanner = value),
+          onGymAvailableChanged: (value) => unawaited(setGymAvailable(value)),
+          onWfhAvailableChanged: (value) => unawaited(setWfhAvailable(value)),
+          onEveningAvailableChanged: (value) =>
+              unawaited(setEveningAvailable(value)),
+          onCompleteRecommendation: (value) =>
+              unawaited(completeActivityRecommendation(value)),
+          onViewActivityHistory: openActivityHistory,
+          onPreferredConcurrentEntryIdsChanged: (ids) {
+            final date = DateTime.now().add(Duration(days: plannerDayOffset));
+            unawaited(setPreferredConcurrentEntryIds(date, ids));
+          },
+          onRemovePlannerEntry: (entryId) {
+            final date = DateTime.now().add(Duration(days: plannerDayOffset));
+            unawaited(
+              setRemovedPlannerEntryIds(
+                date,
+                removedPlannerEntryIdsForDate(date)..add(entryId),
+              ),
+            );
+          },
+          onWorkdayHoursChanged: (hours) {
+            setState(() {
+              plannerWorkdayStartMinutes = hours.$1;
+              plannerWorkdayEndMinutes = hours.$2;
+            });
+            unawaited(
+              StorageService.savePlannerWorkdayHours(
+                startMinutes: hours.$1,
+                endMinutes: hours.$2,
+              ),
+            );
+          },
+          onEditPlannerEntryTime: (entryId, start, end) {
+            final date = DateTime.now().add(Duration(days: plannerDayOffset));
+            unawaited(setPlannerEntryTime(date, entryId, start, end));
+          },
+          onTogglePlannerEntryLock: (entryId, locked) {
+            final date = DateTime.now().add(Duration(days: plannerDayOffset));
+            unawaited(setPlannerEntryLocked(date, entryId, locked));
+          },
+          onExecutePlannerEntry: (entry, state) {
+            final date = DateTime.now().add(Duration(days: plannerDayOffset));
+            unawaited(executePlannerEntry(date, entry, state));
+          },
+          onOpenTask: (task) => unawaited(openTaskFromPriorityCard(task)),
+        );
+        if (dashboardMode) {
+          return planner;
+        }
+        if (constraints.hasBoundedHeight) {
+          return SizedBox(height: constraints.maxHeight, child: planner);
+        }
+        return SizedBox(
+          height: MediaQuery.sizeOf(context).height - 32,
+          child: planner,
+        );
+      },
+    );
+  }
+
+  Widget _buildCombinedHomePlanner() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isWide = constraints.maxWidth >= 900;
+        if (!isWide) {
+          return SingleChildScrollView(
+            child: Column(
+              children: [
+                SizedBox(
+                  height: constraints.maxHeight,
+                  child: _buildPlannerExperience(dashboardMode: true),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: constraints.maxHeight,
+                  child: _buildPlannerExperience(dashboardMode: false),
+                ),
+              ],
+            ),
+          );
+        }
+
+        final combinedHeight = constraints.hasBoundedHeight
+            ? constraints.maxHeight
+            : MediaQuery.sizeOf(context).height - 120;
+        return SizedBox(
+          height: combinedHeight,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: _buildPlannerExperience(dashboardMode: true),
+                ),
+              ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 6),
+                  child: SizedBox.expand(
+                    child: _buildPlannerExperience(dashboardMode: false),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -3676,6 +4271,9 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                 child: MainContentView(
                   selectedMainSectionIndex: selectedMainSectionIndex,
                   buildTasksView: buildTasksView,
+                  buildHomeDashboard: () =>
+                      _buildPlannerExperience(dashboardMode: true),
+                  buildCombinedHomePlanner: _buildCombinedHomePlanner,
                   buildCountdownView: buildCountdownView,
                   buildInsightsView: buildInsightsView,
                   buildNotesView: buildNotesView,

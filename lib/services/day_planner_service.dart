@@ -1,5 +1,8 @@
+import '../models/activity_recommendation.dart';
 import '../models/task.dart';
+import 'movement_recommendation_service.dart';
 import 'one_drive_sync_service.dart';
+import 'planner_execution_service.dart';
 
 class DayPlannerEntry {
   DayPlannerEntry({
@@ -11,6 +14,9 @@ class DayPlannerEntry {
     this.subtitle,
     this.task,
     this.isAllDay = false,
+    this.isConcurrent = false,
+    this.isLocked = false,
+    this.executionState = ExecutionState.pending,
   });
 
   final String id;
@@ -21,13 +27,59 @@ class DayPlannerEntry {
   final String? subtitle;
   final Task? task;
   final bool isAllDay;
+  final bool isConcurrent;
+  // True when the user manually pinned this entry's time; the planner won't move it.
+  final bool isLocked;
+  final ExecutionState executionState;
+
+  DayPlannerEntry copyWith({
+    DateTime? start,
+    DateTime? end,
+    bool? isLocked,
+    ExecutionState? executionState,
+  }) {
+    return DayPlannerEntry(
+      id: id,
+      title: title,
+      type: type,
+      start: start ?? this.start,
+      end: end ?? this.end,
+      subtitle: subtitle,
+      task: task,
+      isAllDay: isAllDay,
+      isConcurrent: isConcurrent,
+      isLocked: isLocked ?? this.isLocked,
+      executionState: executionState ?? this.executionState,
+    );
+  }
+}
+
+/// A user-provided manual time override for a planner entry, keyed by entry id.
+class PlannerEntryOverride {
+  const PlannerEntryOverride({
+    this.startMinutes,
+    this.endMinutes,
+    this.locked = false,
+  });
+
+  /// Minutes since midnight for the overridden start time, or null to keep the planned start.
+  final int? startMinutes;
+
+  /// Minutes since midnight for the overridden end time, or null to keep the planned end.
+  final int? endMinutes;
+  final bool locked;
 }
 
 class DayPlannerResult {
-  DayPlannerResult({required this.entries, required this.summary});
+  DayPlannerResult({
+    required this.entries,
+    required this.summary,
+    this.recommendations = const <ActivityRecommendation>[],
+  });
 
   final List<DayPlannerEntry> entries;
   final String summary;
+  final List<ActivityRecommendation> recommendations;
 }
 
 class DayPlannerService {
@@ -114,9 +166,30 @@ class DayPlannerService {
     required List<Task> tasks,
     required List<OutlookCalendarEvent> calendarEvents,
     required DateTime day,
+    DayContext? dayContext,
+    WeeklyActivityTotals weeklyTotals = const WeeklyActivityTotals(),
+    bool gymCompletedToday = false,
+    int daysSinceLastMobility = 0,
+    int workdayStartMinutes = 9 * 60,
+    int workdayEndMinutes = 17 * 60,
+    Set<String> preferredConcurrentEntryIds = const <String>{},
+    Map<String, PlannerEntryOverride> entryOverrides =
+        const <String, PlannerEntryOverride>{},
+    Map<String, ExecutionState> executionStates =
+        const <String, ExecutionState>{},
   }) {
-    final dayStart = DateTime(day.year, day.month, day.day, 8, 0);
-    final dayEnd = DateTime(day.year, day.month, day.day, 20, 0);
+    final normalizedStart = workdayStartMinutes.clamp(0, 23 * 60 + 59);
+    final normalizedEnd = workdayEndMinutes.clamp(1, 24 * 60);
+    final dayStart = _dateAtMinutes(day, normalizedStart);
+    final dayEnd = _dateAtMinutes(day, normalizedEnd);
+    final displayStart = DateTime(day.year, day.month, day.day);
+    final displayEnd = displayStart.add(const Duration(days: 1));
+    if (!dayEnd.isAfter(dayStart)) {
+      return DayPlannerResult(
+        entries: const <DayPlannerEntry>[],
+        summary: 'Set an end time after the start time.',
+      );
+    }
     final entries = <DayPlannerEntry>[];
 
     final todaysEvents =
@@ -128,7 +201,7 @@ class DayPlannerService {
           final eventDay = DateTime(start.year, start.month, start.day);
           final targetDay = DateTime(day.year, day.month, day.day);
           return eventDay == targetDay ||
-              (start.isBefore(dayEnd) && end.isAfter(dayStart));
+              (start.isBefore(displayEnd) && end.isAfter(displayStart));
         }).toList()..sort((a, b) {
           final aStart = a.start?.toLocal();
           final bStart = b.start?.toLocal();
@@ -147,17 +220,19 @@ class DayPlannerService {
         event.isAllDay,
       );
 
-      var adjustedStart = eventStart.isBefore(dayStart) ? dayStart : eventStart;
-      var adjustedEnd = eventEnd.isAfter(dayEnd) ? dayEnd : eventEnd;
+      var adjustedStart = eventStart.isBefore(displayStart)
+          ? displayStart
+          : eventStart;
+      var adjustedEnd = eventEnd.isAfter(displayEnd) ? displayEnd : eventEnd;
 
       if (!event.isAllDay && !adjustedEnd.isAfter(adjustedStart)) {
         final minimumEnd = adjustedStart.add(_minimumEventDuration);
-        if (minimumEnd.isAfter(dayEnd)) {
-          if (adjustedStart.isAfter(dayEnd)) {
+        if (minimumEnd.isAfter(displayEnd)) {
+          if (adjustedStart.isAfter(displayEnd)) {
             continue;
           }
-          if (adjustedStart.isAtSameMomentAs(dayEnd)) {
-            adjustedStart = dayEnd.subtract(_minimumEventDuration);
+          if (adjustedStart.isAtSameMomentAs(displayEnd)) {
+            adjustedStart = displayEnd.subtract(_minimumEventDuration);
           }
           adjustedEnd = dayEnd;
         } else {
@@ -338,7 +413,25 @@ class DayPlannerService {
     final merged = <DayPlannerEntry>[];
     merged.addAll(entries);
     merged.addAll(plannedTaskEntries);
-    merged.sort((a, b) => a.start.compareTo(b.start));
+    final movementEntries = _buildMovementEntries(
+      day: day,
+      dayContext: dayContext,
+      occupiedEntries: merged,
+      dayStart: dayStart,
+      dayEnd: dayEnd,
+      preferredConcurrentEntryIds: preferredConcurrentEntryIds,
+    );
+    merged.addAll(movementEntries);
+    final overridden = entryOverrides.isEmpty
+        ? merged
+        : _applyEntryOverrides(merged, entryOverrides, dayStart, dayEnd);
+    for (var index = 0; index < overridden.length; index++) {
+      final entry = overridden[index];
+      overridden[index] = entry.copyWith(
+        executionState: executionStates[entry.id] ?? ExecutionState.pending,
+      );
+    }
+    overridden.sort((a, b) => a.start.compareTo(b.start));
 
     final summarySegments = <String>[];
     if (plannedTaskEntries.isNotEmpty) {
@@ -351,6 +444,13 @@ class DayPlannerService {
         '${plannedTaskEntries.where((entry) => entry.type == 'break').length} break${plannedTaskEntries.where((entry) => entry.type == 'break').length == 1 ? '' : 's'}',
       );
     }
+    if (movementEntries.isNotEmpty) {
+      final movementMinutes = movementEntries.fold<int>(
+        0,
+        (total, entry) => total + entry.end.difference(entry.start).inMinutes,
+      );
+      summarySegments.add('$movementMinutes min movement');
+    }
     if (todaysEvents.isNotEmpty) {
       summarySegments.add(
         '${todaysEvents.length} calendar item${todaysEvents.length == 1 ? '' : 's'}',
@@ -358,11 +458,287 @@ class DayPlannerService {
     }
 
     return DayPlannerResult(
-      entries: merged,
+      entries: overridden,
       summary: summarySegments.isEmpty
           ? 'A light day is ready.'
           : summarySegments.join(' • '),
+      recommendations: dayContext == null
+          ? const <ActivityRecommendation>[]
+          : MovementRecommendationService.generateRecommendations(
+              dayContext: dayContext,
+              weeklyTotals: weeklyTotals,
+              gymCompletedToday: gymCompletedToday,
+              daysSinceLastMobility: daysSinceLastMobility,
+            ),
     );
+  }
+
+  static List<DayPlannerEntry> _buildMovementEntries({
+    required DateTime day,
+    required DayContext? dayContext,
+    required List<DayPlannerEntry> occupiedEntries,
+    required DateTime dayStart,
+    required DateTime dayEnd,
+    required Set<String> preferredConcurrentEntryIds,
+  }) {
+    if (dayContext == null) {
+      return const <DayPlannerEntry>[];
+    }
+
+    final targets = MovementRecommendationService.resolveDayTypeTargets(
+      dayContext,
+    );
+    final mode = dayContext.workLocation == WorkLocation.home
+        ? 'home'
+        : 'office';
+    final standingBlockMinutes = (targets.standingMinutes.minMinutes / 2)
+        .round()
+        .clamp(15, 60);
+    final walkingBlockMinutes = (targets.walkingMinutes.minMinutes / 2)
+        .round()
+        .clamp(10, 45);
+    final entries = <DayPlannerEntry>[];
+    final blockDurations = mode == 'home'
+        ? [
+            (standingBlockMinutes, 'Stand at your desk', 'Standing desk'),
+            (walkingBlockMinutes, 'Walk while you work', 'Walking pad'),
+            (standingBlockMinutes, 'Stand at your desk', 'Standing desk'),
+            (walkingBlockMinutes, 'Walk while you work', 'Walking pad'),
+          ]
+        : [
+            (walkingBlockMinutes, 'Walk break', 'Office movement'),
+            (walkingBlockMinutes, 'Walk break', 'Office movement'),
+            (walkingBlockMinutes, 'Walk break', 'Office movement'),
+          ];
+
+    final occupied =
+        occupiedEntries
+            .where((entry) => !entry.isAllDay && entry.type != 'buffer')
+            .toList()
+          ..sort((a, b) => a.start.compareTo(b.start));
+    for (var blockIndex = 0; blockIndex < blockDurations.length; blockIndex++) {
+      final block = blockDurations[blockIndex];
+      final duration = Duration(minutes: block.$1);
+      final movementLabel = block.$3;
+      final concurrentEntry = _findConcurrentEntry(
+        occupied,
+        duration,
+        mode,
+        preferredConcurrentEntryIds,
+        dayStart,
+        dayEnd,
+      );
+      if (concurrentEntry != null) {
+        final concurrentStart = concurrentEntry.start.isBefore(dayStart)
+            ? dayStart
+            : concurrentEntry.start;
+        final concurrentEnd =
+            concurrentStart.add(duration).isBefore(concurrentEntry.end)
+            ? concurrentStart.add(duration)
+            : concurrentEntry.end;
+        if (concurrentEnd.difference(concurrentStart) >= duration) {
+          final concurrentTitle = concurrentEntry.title;
+          entries.add(
+            DayPlannerEntry(
+              id: 'movement-$mode-${entries.length}',
+              title: block.$2,
+              type: 'movement',
+              start: concurrentStart,
+              end: concurrentEnd,
+              subtitle: '$movementLabel • During $concurrentTitle',
+              isConcurrent: true,
+            ),
+          );
+          occupied.remove(concurrentEntry);
+          continue;
+        }
+      }
+      final target = dayStart.add(
+        Duration(
+          minutes:
+              ((dayEnd.difference(dayStart).inMinutes * (blockIndex + 1)) /
+                      (blockDurations.length + 1))
+                  .round(),
+        ),
+      );
+      final placedStart = _findNearestFreeStart(
+        occupied,
+        duration,
+        target,
+        dayStart,
+        dayEnd,
+      );
+      if (placedStart == null) break;
+
+      final end = placedStart.add(duration);
+      entries.add(
+        DayPlannerEntry(
+          id: 'movement-$mode-${entries.length}',
+          title: block.$2,
+          type: 'movement',
+          start: placedStart,
+          end: end,
+          subtitle: movementLabel,
+        ),
+      );
+      occupied.add(entries.last);
+      occupied.sort((a, b) => a.start.compareTo(b.start));
+    }
+
+    return entries;
+  }
+
+  static List<DayPlannerEntry> _applyEntryOverrides(
+    List<DayPlannerEntry> entries,
+    Map<String, PlannerEntryOverride> overrides,
+    DateTime dayStart,
+    DateTime dayEnd,
+  ) {
+    return entries.map((entry) {
+      final override = overrides[entry.id];
+      if (override == null) {
+        return entry;
+      }
+      var newStart = override.startMinutes != null
+          ? _dateAtMinutes(dayStart, override.startMinutes!)
+          : entry.start;
+      var newEnd = override.endMinutes != null
+          ? _dateAtMinutes(dayStart, override.endMinutes!)
+          : entry.end;
+      if (newStart.isBefore(dayStart)) newStart = dayStart;
+      if (newEnd.isAfter(dayEnd)) newEnd = dayEnd;
+      if (!newEnd.isAfter(newStart)) {
+        newEnd = newStart.add(const Duration(minutes: 5));
+      }
+      return entry.copyWith(
+        start: newStart,
+        end: newEnd,
+        isLocked: override.locked,
+      );
+    }).toList();
+  }
+
+  static DateTime _dateAtMinutes(DateTime day, int minutes) {
+    final dayOffset = minutes ~/ (24 * 60);
+    final minuteOfDay = minutes % (24 * 60);
+    return DateTime(
+      day.year,
+      day.month,
+      day.day + dayOffset,
+      minuteOfDay ~/ 60,
+      minuteOfDay % 60,
+    );
+  }
+
+  static DayPlannerEntry? _findConcurrentEntry(
+    List<DayPlannerEntry> occupied,
+    Duration duration,
+    String mode,
+    Set<String> preferredConcurrentEntryIds,
+    DateTime dayStart,
+    DateTime dayEnd,
+  ) {
+    for (final entry in occupied) {
+      if (entry.isAllDay || entry.isConcurrent) continue;
+      if (!entry.start.isBefore(dayEnd) || !entry.end.isAfter(dayStart)) {
+        continue;
+      }
+      if (entry.end.difference(entry.start) < duration) continue;
+      final isPreferred = preferredConcurrentEntryIds.contains(entry.id);
+      if (entry.type == 'calendar' &&
+          (isPreferred ||
+              (preferredConcurrentEntryIds.isEmpty &&
+                  _calendarAllowsConcurrentMovement(entry.title, mode)))) {
+        return entry;
+      }
+      if (entry.type == 'task' &&
+          preferredConcurrentEntryIds.isEmpty &&
+          _taskAllowsConcurrentMovement(entry.title)) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  static DateTime? _findNearestFreeStart(
+    List<DayPlannerEntry> occupied,
+    Duration duration,
+    DateTime target,
+    DateTime dayStart,
+    DateTime dayEnd,
+  ) {
+    final boundaries = <DateTime>[dayStart, dayEnd];
+    for (final entry in occupied) {
+      if (entry.isAllDay || entry.type == 'buffer') continue;
+      if (entry.end.isAfter(dayStart) && entry.start.isBefore(dayEnd)) {
+        boundaries.add(entry.start.isBefore(dayStart) ? dayStart : entry.start);
+        boundaries.add(entry.end.isAfter(dayEnd) ? dayEnd : entry.end);
+      }
+    }
+    boundaries.sort();
+
+    DateTime? best;
+    Duration? bestDistance;
+    for (var index = 0; index < boundaries.length - 1; index++) {
+      final gapStart = boundaries[index];
+      final gapEnd = boundaries[index + 1];
+      if (gapEnd.difference(gapStart) < duration) continue;
+      final latestStart = gapEnd.subtract(duration);
+      final candidate = target.isBefore(gapStart)
+          ? gapStart
+          : target.isAfter(latestStart)
+          ? latestStart
+          : target;
+      final distance = candidate.difference(target).abs();
+      if (bestDistance == null || distance < bestDistance) {
+        best = candidate;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
+  static bool _calendarAllowsConcurrentMovement(String title, String mode) {
+    final normalized = title.toLowerCase();
+    const sharedMeetingWords = [
+      'call',
+      'catch up',
+      'catch-up',
+      'check-in',
+      'check in',
+      'one to one',
+      '1:1',
+      'stand-up',
+      'stand up',
+      'sync',
+      'review',
+      'interview',
+      'webinar',
+      'briefing',
+    ];
+    if (!sharedMeetingWords.any(normalized.contains)) return false;
+    if (mode == 'office') {
+      return normalized.contains('call') ||
+          normalized.contains('catch') ||
+          normalized.contains('1:1') ||
+          normalized.contains('check');
+    }
+    return true;
+  }
+
+  static bool _taskAllowsConcurrentMovement(String title) {
+    final normalized = title.toLowerCase();
+    const lowLoadTaskWords = [
+      'call',
+      'phone',
+      'listen',
+      'read',
+      'inbox',
+      'admin',
+      'file',
+      'sort',
+    ];
+    return lowLoadTaskWords.any(normalized.contains);
   }
 
   static Duration _estimateTaskDuration(Task task) {

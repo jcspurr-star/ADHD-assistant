@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/note_entry.dart';
 import '../models/task.dart';
+import '../models/activity_recommendation.dart';
 import 'firebase_sync_service.dart';
 import 'one_drive_sync_service.dart';
 
@@ -28,6 +29,7 @@ class StorageService {
   static const String _notesKey = 'notes';
   static const String _noteEntriesKey = 'note_entries';
   static const String _inboxEntriesKey = 'inbox_entries';
+  static const String _activityLogsKey = 'activity_logs';
   static const String _dailyCheckinsByDateKey = 'daily_checkins_by_date';
   static const String _legacySymptomRatingsByDateKey =
       'symptom_ratings_by_date';
@@ -46,8 +48,15 @@ class StorageService {
       'imported_outlook_range_end_utc';
   static const String _importedOutlookEventCountKey =
       'imported_outlook_event_count';
+  static const String _plannerWorkdayStartMinutesKey =
+      'planner_workday_start_minutes';
+  static const String _plannerWorkdayEndMinutesKey =
+      'planner_workday_end_minutes';
   static const String _prioritizeWorkOnWeekdaysKey =
       'prioritize_work_on_weekdays';
+  static const String _gymAvailableKey = 'gym_available';
+  static const String _wfhAvailableKey = 'wfh_available';
+  static const String _eveningAvailableKey = 'evening_available';
   static const String _contextTodayOptionsKey = 'context_today_options';
   static const String _otherMedicationOptionsKey = 'other_medication_options';
   static const String _dopamineCrashSymptomOptionsKey =
@@ -525,6 +534,34 @@ class StorageService {
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }
 
+  static Future<List<ActivityLogEntry>> loadActivityLogs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_activityLogsKey);
+    if (raw == null || raw.trim().isEmpty) return <ActivityLogEntry>[];
+    try {
+      final decoded = jsonDecode(raw) as List<dynamic>;
+      return decoded
+          .map(
+            (entry) => ActivityLogEntry.fromJson(
+              Map<String, dynamic>.from(entry as Map),
+            ),
+          )
+          .toList();
+    } catch (_) {
+      return <ActivityLogEntry>[];
+    }
+  }
+
+  static Future<void> saveActivityLogs(List<ActivityLogEntry> logs) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _activityLogsKey,
+      jsonEncode(logs.map((entry) => entry.toJson()).toList()),
+    );
+    await _touchStateMetadata(prefs);
+    unawaited(_pushCurrentStateToCloudIfAvailable());
+  }
+
   static Future<ImportedOutlookEventsSummary>
   loadImportedOutlookEventsSummary() async {
     final prefs = await SharedPreferences.getInstance();
@@ -917,6 +954,36 @@ class StorageService {
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }
 
+  static Future<int?> loadPlannerWorkdayStartMinutes() async {
+    final prefs = await SharedPreferences.getInstance();
+    final value = prefs.getInt(_plannerWorkdayStartMinutesKey);
+    return value != null && value >= 0 && value < 24 * 60 ? value : null;
+  }
+
+  static Future<int?> loadPlannerWorkdayEndMinutes() async {
+    final prefs = await SharedPreferences.getInstance();
+    final value = prefs.getInt(_plannerWorkdayEndMinutesKey);
+    return value != null && value > 0 && value <= 24 * 60 ? value : null;
+  }
+
+  static Future<void> savePlannerWorkdayHours({
+    required int startMinutes,
+    required int endMinutes,
+  }) async {
+    if (startMinutes < 0 ||
+        startMinutes >= 24 * 60 ||
+        endMinutes <= 0 ||
+        endMinutes > 24 * 60 ||
+        endMinutes <= startMinutes) {
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_plannerWorkdayStartMinutesKey, startMinutes);
+    await prefs.setInt(_plannerWorkdayEndMinutesKey, endMinutes);
+    await _touchStateMetadata(prefs);
+    unawaited(_pushCurrentStateToCloudIfAvailable());
+  }
+
   static Future<bool?> loadPrioritizeWorkOnWeekdays() async {
     final prefs = await SharedPreferences.getInstance();
     if (!prefs.containsKey(_prioritizeWorkOnWeekdaysKey)) {
@@ -928,6 +995,51 @@ class StorageService {
   static Future<void> savePrioritizeWorkOnWeekdays(bool enabled) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_prioritizeWorkOnWeekdaysKey, enabled);
+    await _touchStateMetadata(prefs);
+    unawaited(_pushCurrentStateToCloudIfAvailable());
+  }
+
+  static Future<bool?> loadGymAvailable() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!prefs.containsKey(_gymAvailableKey)) {
+      return null;
+    }
+    return prefs.getBool(_gymAvailableKey);
+  }
+
+  static Future<void> saveGymAvailable(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_gymAvailableKey, enabled);
+    await _touchStateMetadata(prefs);
+    unawaited(_pushCurrentStateToCloudIfAvailable());
+  }
+
+  static Future<bool?> loadWfhAvailable() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!prefs.containsKey(_wfhAvailableKey)) {
+      return null;
+    }
+    return prefs.getBool(_wfhAvailableKey);
+  }
+
+  static Future<void> saveWfhAvailable(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_wfhAvailableKey, enabled);
+    await _touchStateMetadata(prefs);
+    unawaited(_pushCurrentStateToCloudIfAvailable());
+  }
+
+  static Future<bool?> loadEveningAvailable() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!prefs.containsKey(_eveningAvailableKey)) {
+      return null;
+    }
+    return prefs.getBool(_eveningAvailableKey);
+  }
+
+  static Future<void> saveEveningAvailable(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_eveningAvailableKey, enabled);
     await _touchStateMetadata(prefs);
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }
@@ -1389,6 +1501,7 @@ class StorageService {
     final notes = prefs.getString(_notesKey) ?? '';
     final noteEntriesRaw = prefs.getString(_noteEntriesKey);
     final inboxEntriesRaw = prefs.getString(_inboxEntriesKey);
+    final activityLogsRaw = prefs.getString(_activityLogsKey);
     final dailyCheckinsByDateRaw =
         prefs.getString(_dailyCheckinsByDateKey) ??
         prefs.getString(_legacySymptomRatingsByDateKey);
@@ -1397,6 +1510,10 @@ class StorageService {
     final taskSubtaskPrompt = prefs.getString(_taskSubtaskPromptKey) ?? '';
     final priorityCardCount = prefs.getInt(_priorityCardCountKey) ?? 3;
     final outlookLookAheadDays = prefs.getInt(_outlookLookAheadDaysKey) ?? 1;
+    final plannerWorkdayStartMinutes =
+        prefs.getInt(_plannerWorkdayStartMinutesKey) ?? 9 * 60;
+    final plannerWorkdayEndMinutes =
+        prefs.getInt(_plannerWorkdayEndMinutesKey) ?? 17 * 60;
     final importedOutlookEventsRaw =
         prefs.getString(_importedOutlookEventsKey) ?? '[]';
     final importedOutlookLastImportedAtUtc =
@@ -1446,6 +1563,9 @@ class StorageService {
       'notes': notes,
       'note_entries': noteEntriesJson,
       'inbox_entries': inboxEntriesJson,
+      'activity_logs': activityLogsRaw == null
+          ? <dynamic>[]
+          : (jsonDecode(activityLogsRaw) as List<dynamic>),
       'daily_checkins_by_date': dailyCheckinsByDateJson,
       'symptom_ratings_by_date': dailyCheckinsByDateJson,
       'categories': categoriesJson,
@@ -1453,6 +1573,8 @@ class StorageService {
       'task_subtask_prompt': taskSubtaskPrompt,
       'priority_card_count': priorityCardCount,
       'outlook_look_ahead_days': outlookLookAheadDays,
+      'planner_workday_start_minutes': plannerWorkdayStartMinutes,
+      'planner_workday_end_minutes': plannerWorkdayEndMinutes,
       'imported_outlook_events':
           (jsonDecode(importedOutlookEventsRaw) as List<dynamic>),
       'imported_outlook_last_imported_at_utc': importedOutlookLastImportedAtUtc,
@@ -1482,6 +1604,8 @@ class StorageService {
     final noteEntries = _noteEntriesFromState(state, notes);
     final inboxEntries =
         state['inbox_entries'] as List<dynamic>? ?? <dynamic>[];
+    final activityLogs =
+        state['activity_logs'] as List<dynamic>? ?? <dynamic>[];
     final dailyCheckinsByDate =
         state['daily_checkins_by_date'] as Map<String, dynamic>? ??
         state['symptom_ratings_by_date'] as Map<String, dynamic>? ??
@@ -1494,6 +1618,14 @@ class StorageService {
     final outlookLookAheadDaysRaw =
         (state['outlook_look_ahead_days'] ?? 1) as num;
     final outlookLookAheadDays = outlookLookAheadDaysRaw.toInt().clamp(1, 7);
+    final plannerWorkdayStartMinutes =
+        ((state['planner_workday_start_minutes'] ?? 9 * 60) as num)
+            .toInt()
+            .clamp(0, 24 * 60 - 1);
+    final plannerWorkdayEndMinutes =
+        ((state['planner_workday_end_minutes'] ?? 17 * 60) as num)
+            .toInt()
+            .clamp(1, 24 * 60);
     final importedOutlookEvents =
         state['imported_outlook_events'] as List<dynamic>? ?? <dynamic>[];
     final importedOutlookLastImportedAtUtc =
@@ -1517,6 +1649,7 @@ class StorageService {
     await prefs.setString(_notesKey, notes);
     await prefs.setString(_noteEntriesKey, jsonEncode(noteEntries));
     await prefs.setString(_inboxEntriesKey, jsonEncode(inboxEntries));
+    await prefs.setString(_activityLogsKey, jsonEncode(activityLogs));
     await prefs.setString(
       _dailyCheckinsByDateKey,
       jsonEncode(dailyCheckinsByDate),
@@ -1530,6 +1663,16 @@ class StorageService {
     await prefs.setString(_taskSubtaskPromptKey, taskSubtaskPrompt);
     await prefs.setInt(_priorityCardCountKey, priorityCardCount);
     await prefs.setInt(_outlookLookAheadDaysKey, outlookLookAheadDays);
+    if (plannerWorkdayEndMinutes > plannerWorkdayStartMinutes) {
+      await prefs.setInt(
+        _plannerWorkdayStartMinutesKey,
+        plannerWorkdayStartMinutes,
+      );
+      await prefs.setInt(
+        _plannerWorkdayEndMinutesKey,
+        plannerWorkdayEndMinutes,
+      );
+    }
     await prefs.setString(
       _importedOutlookEventsKey,
       jsonEncode(importedOutlookEvents),

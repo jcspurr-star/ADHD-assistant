@@ -246,9 +246,9 @@ class TasksOverviewSection extends StatelessWidget {
 
     if (showWebRightColumnLayout) {
       const topRowHeight = 275.0;
-      final bottomRowHeight = (MediaQuery.of(context).size.height * 0.58).clamp(
+      final bottomRowHeight = (MediaQuery.of(context).size.height * 0.64).clamp(
         430.0,
-        560.0,
+        680.0,
       );
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

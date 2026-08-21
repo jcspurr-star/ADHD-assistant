@@ -19,6 +19,10 @@ class SymptomTrackerSection extends StatelessWidget {
     required this.onClearTodayCrashTimeField,
     required this.onToggleTodayCrashSymptomField,
     required this.onToggleTodayContextTag,
+    required this.wfhAvailable,
+    required this.onWfhAvailableChanged,
+    required this.gymAvailable,
+    required this.onGymAvailableChanged,
   });
 
   final Map<String, dynamic> checkin;
@@ -42,6 +46,10 @@ class SymptomTrackerSection extends StatelessWidget {
   final Future<void> Function(String field, String symptom)
   onToggleTodayCrashSymptomField;
   final Future<void> Function(String tag) onToggleTodayContextTag;
+  final bool wfhAvailable;
+  final ValueChanged<bool> onWfhAvailableChanged;
+  final bool gymAvailable;
+  final ValueChanged<bool> onGymAvailableChanged;
 
   List<String> _parseStringList(dynamic value) {
     if (value is List) {
@@ -114,7 +122,7 @@ class SymptomTrackerSection extends StatelessWidget {
     final contextTags = _parseStringList(checkin['contextTags']);
 
     final fixedContextColumns = <List<String>>[
-      ['Good sleep', 'Bad sleep', 'Exercise day'],
+      ['Good sleep', 'Bad sleep', 'Gym'],
       ['Home', 'WFH', 'WFO'],
       ['Low stress', 'Mid stress', 'High stress'],
     ];
@@ -307,11 +315,25 @@ class SymptomTrackerSection extends StatelessWidget {
                           buildNaChip(),
                         ];
 
+                        final allRatingChips = [
+                          ...ratingValues.map(
+                            (rating) => buildRatingChip(rating),
+                          ),
+                          buildNaChip(),
+                        ];
+                        final canUseSingleRow =
+                            useWideWebOverviewColumns &&
+                            chipConstraints.maxWidth >= 500;
+
                         return Column(
                           children: [
-                            buildChipRow(topRowChips),
-                            SizedBox(height: gridSpacing),
-                            buildChipRow(bottomRowChips),
+                            if (canUseSingleRow)
+                              buildChipRow(allRatingChips)
+                            else ...[
+                              buildChipRow(topRowChips),
+                              SizedBox(height: gridSpacing),
+                              buildChipRow(bottomRowChips),
+                            ],
                           ],
                         );
                       },
@@ -563,9 +585,20 @@ class SymptomTrackerSection extends StatelessWidget {
                                           style: const TextStyle(fontSize: 10),
                                         ),
                                       ),
-                                      selected: contextTags.contains(tag),
+                                      selected: switch (tag) {
+                                        'WFH' => wfhAvailable,
+                                        'WFO' => !wfhAvailable,
+                                        'Gym' => gymAvailable,
+                                        _ => contextTags.contains(tag),
+                                      },
                                       onSelected: (_) async {
-                                        await onToggleTodayContextTag(tag);
+                                        if (tag == 'WFH' || tag == 'WFO') {
+                                          onWfhAvailableChanged(!wfhAvailable);
+                                        } else if (tag == 'Gym') {
+                                          onGymAvailableChanged(!gymAvailable);
+                                        } else {
+                                          await onToggleTodayContextTag(tag);
+                                        }
                                       },
                                       labelPadding: EdgeInsets.zero,
                                       padding: const EdgeInsets.symmetric(

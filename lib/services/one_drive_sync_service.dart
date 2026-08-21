@@ -52,13 +52,6 @@ class OutlookCalendarEvent {
 class OneDriveSyncService {
   static final RegExp _dateTimeHasExplicitZone = RegExp(r'(Z|[+-]\d\d:\d\d)$');
 
-  static const Set<String> _workCalendarKeywords = {
-    'work',
-    'office',
-    'business',
-    'job',
-  };
-
   static String get _authorityTenant {
     final trimmed = oneDriveAuthorityTenant.trim();
     return trimmed.isEmpty ? 'consumers' : trimmed;
@@ -493,86 +486,12 @@ class OneDriveSyncService {
 
     final nowUtc = DateTime.now().toUtc();
     final endUtc = nowUtc.add(lookAhead);
-    final calendars = await _fetchCalendars(accessToken);
-    final calendarEvents = <OutlookCalendarEvent>[];
-
-    if (calendars.isEmpty) {
-      return _fetchDefaultCalendarView(
-        accessToken: accessToken,
-        nowUtc: nowUtc,
-        endUtc: endUtc,
-        maxItems: maxItems,
-      );
-    }
-
-    for (final calendar in calendars) {
-      final calendarId = (calendar['id'] ?? '').toString();
-      if (calendarId.isEmpty) {
-        continue;
-      }
-      final calendarName = (calendar['name'] ?? '').toString();
-      final source = _inferCalendarSource(calendarName);
-
-      final events = await _fetchCalendarViewForCalendar(
-        accessToken: accessToken,
-        calendarId: calendarId,
-        nowUtc: nowUtc,
-        endUtc: endUtc,
-        maxItems: maxItems,
-        calendarSource: source,
-      );
-      calendarEvents.addAll(events);
-    }
-
-    calendarEvents.sort((a, b) {
-      final left =
-          a.start ?? DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
-      final right =
-          b.start ?? DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
-      return left.compareTo(right);
-    });
-
-    return calendarEvents;
-  }
-
-  static Future<List<Map<String, dynamic>>> _fetchCalendars(
-    String accessToken,
-  ) async {
-    final response = await http.get(
-      Uri.https('graph.microsoft.com', '/v1.0/me/calendars', {
-        r'$select': 'id,name',
-        r'$top': '50',
-      }),
-      headers: {
-        'Authorization': 'Bearer $accessToken',
-        'Accept': 'application/json',
-      },
+    return _fetchDefaultCalendarView(
+      accessToken: accessToken,
+      nowUtc: nowUtc,
+      endUtc: endUtc,
+      maxItems: maxItems,
     );
-
-    if (response.statusCode == 401) {
-      await signOut();
-      throw Exception(
-        'Your Microsoft session expired or was revoked. Please link again.',
-      );
-    }
-
-    if (response.statusCode == 403) {
-      throw Exception(
-        'Calendar permission denied. Ensure Calendars.Read is granted in your Azure app registration.',
-      );
-    }
-
-    if (response.statusCode != 200) {
-      throw Exception(
-        'Unable to list Outlook calendars. ${_extractGraphError(response.body)}',
-      );
-    }
-
-    final body = jsonDecode(response.body) as Map<String, dynamic>;
-    final rawCalendars = body['value'] as List<dynamic>? ?? const [];
-    return rawCalendars
-        .map((item) => Map<String, dynamic>.from(item as Map))
-        .toList();
   }
 
   static Future<List<OutlookCalendarEvent>> _fetchDefaultCalendarView({
@@ -622,57 +541,6 @@ class OneDriveSyncService {
     return _mapGraphEvents(rawEvents, calendarSource: 'home');
   }
 
-  static Future<List<OutlookCalendarEvent>> _fetchCalendarViewForCalendar({
-    required String accessToken,
-    required String calendarId,
-    required DateTime nowUtc,
-    required DateTime endUtc,
-    required int maxItems,
-    required String calendarSource,
-  }) async {
-    final query = {
-      'startDateTime': nowUtc.toIso8601String(),
-      'endDateTime': endUtc.toIso8601String(),
-      r'$top': maxItems.toString(),
-      r'$orderby': 'start/dateTime',
-      r'$select': 'id,subject,isAllDay,start,end',
-    };
-
-    final response = await http.get(
-      Uri.https(
-        'graph.microsoft.com',
-        '/v1.0/me/calendars/$calendarId/calendarView',
-        query,
-      ),
-      headers: {
-        'Authorization': 'Bearer $accessToken',
-        'Accept': 'application/json',
-        'Prefer': 'outlook.timezone="UTC"',
-      },
-    );
-
-    if (response.statusCode == 401) {
-      await signOut();
-      throw Exception(
-        'Your Microsoft session expired or was revoked. Please link again.',
-      );
-    }
-
-    if (response.statusCode == 403) {
-      throw Exception(
-        'Calendar permission denied. Ensure Calendars.Read is granted in your Azure app registration.',
-      );
-    }
-
-    if (response.statusCode != 200) {
-      return const <OutlookCalendarEvent>[];
-    }
-
-    final body = jsonDecode(response.body) as Map<String, dynamic>;
-    final rawEvents = body['value'] as List<dynamic>? ?? const [];
-    return _mapGraphEvents(rawEvents, calendarSource: calendarSource);
-  }
-
   static List<OutlookCalendarEvent> _mapGraphEvents(
     List<dynamic> rawEvents, {
     required String calendarSource,
@@ -690,19 +558,6 @@ class OneDriveSyncService {
         calendarSource: calendarSource,
       );
     }).toList();
-  }
-
-  static String _inferCalendarSource(String calendarName) {
-    final normalized = calendarName.trim().toLowerCase();
-    if (normalized.isEmpty) {
-      return 'home';
-    }
-    for (final keyword in _workCalendarKeywords) {
-      if (normalized.contains(keyword)) {
-        return 'work';
-      }
-    }
-    return 'home';
   }
 
   static Future<String?> _getValidAccessToken() async {

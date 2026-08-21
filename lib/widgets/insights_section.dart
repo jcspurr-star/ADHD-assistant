@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'insights_view.dart';
+import 'symptom_tracker_section.dart';
 
 typedef ParseScoreField =
     int Function(Map<String, dynamic> raw, String key, {dynamic legacyValue});
@@ -12,12 +13,54 @@ class InsightsSection extends StatelessWidget {
     required this.parseScoreField,
     required this.parseStringList,
     required this.wideContentWidth,
+    required this.todayCheckin,
+    required this.symptomTrackerLabels,
+    required this.dailyContextOptions,
+    required this.otherMedicationOptions,
+    required this.dopamineCrashSymptomOptions,
+    required this.dopamineCrashAdditionalSymptomOptions,
+    required this.onSetTodayDailyRating,
+    required this.onSetTodayMedicationTime,
+    required this.onClearTodayMedicationTime,
+    required this.onSetTodayMedicationQuickTime,
+    required this.onToggleTodayOtherMedication,
+    required this.onSetTodayCrashTimeField,
+    required this.onClearTodayCrashTimeField,
+    required this.onToggleTodayCrashSymptomField,
+    required this.onToggleTodayContextTag,
+    required this.wfhAvailable,
+    required this.onWfhAvailableChanged,
+    required this.gymAvailable,
+    required this.onGymAvailableChanged,
   });
 
   final Map<String, Map<String, dynamic>> dailyCheckinsByDate;
   final ParseScoreField parseScoreField;
   final List<String> Function(dynamic value) parseStringList;
   final double wideContentWidth;
+  final Map<String, dynamic> todayCheckin;
+  final Map<String, String> symptomTrackerLabels;
+  final List<String> dailyContextOptions;
+  final List<String> otherMedicationOptions;
+  final List<String> dopamineCrashSymptomOptions;
+  final List<String> dopamineCrashAdditionalSymptomOptions;
+  final Future<void> Function(String field, int value) onSetTodayDailyRating;
+  final Future<void> Function(String field, String helpText)
+  onSetTodayMedicationTime;
+  final Future<void> Function(String field) onClearTodayMedicationTime;
+  final Future<void> Function(String field, String value)
+  onSetTodayMedicationQuickTime;
+  final Future<void> Function(String medication) onToggleTodayOtherMedication;
+  final Future<void> Function(String field, String helpText)
+  onSetTodayCrashTimeField;
+  final Future<void> Function(String field) onClearTodayCrashTimeField;
+  final Future<void> Function(String field, String symptom)
+  onToggleTodayCrashSymptomField;
+  final Future<void> Function(String tag) onToggleTodayContextTag;
+  final bool wfhAvailable;
+  final ValueChanged<bool> onWfhAvailableChanged;
+  final bool gymAvailable;
+  final ValueChanged<bool> onGymAvailableChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -25,7 +68,7 @@ class InsightsSection extends StatelessWidget {
       builder: (context, constraints) {
         final contentWidth = constraints.maxWidth < 720
             ? constraints.maxWidth
-            : wideContentWidth.clamp(0, constraints.maxWidth).toDouble();
+            : constraints.maxWidth;
 
         final records = dailyCheckinsByDate.entries
             .map((entry) {
@@ -93,7 +136,67 @@ class InsightsSection extends StatelessWidget {
           return aDate.compareTo(bDate);
         });
 
-        return InsightsView(records: records, contentWidth: contentWidth);
+        final showSideBySide = constraints.maxWidth >= 900;
+        final trackerWidth = showSideBySide
+            ? ((contentWidth - 12) / 2).clamp(0.0, contentWidth).toDouble()
+            : contentWidth;
+        final insightsWidth = showSideBySide ? trackerWidth : contentWidth;
+
+        Widget buildTracker() {
+          return SizedBox(
+            width: trackerWidth,
+            height: showSideBySide ? 860 : null,
+            child: SymptomTrackerSection(
+              checkin: todayCheckin,
+              symptomTrackerLabels: symptomTrackerLabels,
+              dailyContextOptions: dailyContextOptions,
+              otherMedicationOptions: otherMedicationOptions,
+              dopamineCrashSymptomOptions: dopamineCrashSymptomOptions,
+              dopamineCrashAdditionalSymptomOptions:
+                  dopamineCrashAdditionalSymptomOptions,
+              useWideWebOverviewColumns: constraints.maxWidth >= 1200,
+              onSetTodayDailyRating: onSetTodayDailyRating,
+              onSetTodayMedicationTime: onSetTodayMedicationTime,
+              onClearTodayMedicationTime: onClearTodayMedicationTime,
+              onSetTodayMedicationQuickTime: onSetTodayMedicationQuickTime,
+              onToggleTodayOtherMedication: onToggleTodayOtherMedication,
+              onSetTodayCrashTimeField: onSetTodayCrashTimeField,
+              onClearTodayCrashTimeField: onClearTodayCrashTimeField,
+              onToggleTodayCrashSymptomField: onToggleTodayCrashSymptomField,
+              onToggleTodayContextTag: onToggleTodayContextTag,
+              wfhAvailable: wfhAvailable,
+              onWfhAvailableChanged: onWfhAvailableChanged,
+              gymAvailable: gymAvailable,
+              onGymAvailableChanged: onGymAvailableChanged,
+            ),
+          );
+        }
+
+        return SingleChildScrollView(
+          child: showSideBySide
+              ? Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    buildTracker(),
+                    const SizedBox(width: 12),
+                    SizedBox(
+                      width: insightsWidth,
+                      child: InsightsView(
+                        records: records,
+                        contentWidth: insightsWidth,
+                      ),
+                    ),
+                  ],
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    buildTracker(),
+                    const SizedBox(height: 12),
+                    InsightsView(records: records, contentWidth: contentWidth),
+                  ],
+                ),
+        );
       },
     );
   }

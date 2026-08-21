@@ -1,5 +1,28 @@
 import 'package:flutter/material.dart';
 
+class _MondayMaterialLocalizations extends DefaultMaterialLocalizations {
+  const _MondayMaterialLocalizations();
+
+  @override
+  int get firstDayOfWeekIndex => DateTime.monday;
+}
+
+class _MondayMaterialLocalizationsDelegate
+    extends LocalizationsDelegate<MaterialLocalizations> {
+  const _MondayMaterialLocalizationsDelegate();
+
+  @override
+  bool isSupported(Locale locale) => true;
+
+  @override
+  Future<MaterialLocalizations> load(Locale locale) async {
+    return const _MondayMaterialLocalizations();
+  }
+
+  @override
+  bool shouldReload(_MondayMaterialLocalizationsDelegate old) => false;
+}
+
 enum TaskDateDialogAction { set, remove }
 
 class TaskDateDialogResult {
@@ -75,11 +98,20 @@ class TaskFieldDialogs {
       return null;
     }
 
-    final pickedDate = await showDatePicker(
+    final pickedDate = await showDialog<DateTime>(
       context: context,
-      initialDate: initialDate,
-      firstDate: today,
-      lastDate: DateTime(2100),
+      builder: (dialogContext) {
+        return Localizations.override(
+          context: dialogContext,
+          locale: const Locale('en', 'GB'),
+          delegates: const [_MondayMaterialLocalizationsDelegate()],
+          child: DatePickerDialog(
+            initialDate: initialDate,
+            firstDate: today,
+            lastDate: DateTime(2100),
+          ),
+        );
+      },
     );
 
     if (pickedDate == null) {

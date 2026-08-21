@@ -52,8 +52,9 @@ class TaskListContent extends StatelessWidget {
   final void Function(int taskIndex, String value) onPriorityChanged;
   final Future<void> Function(int taskIndex) onSetDueDate;
   final Future<void> Function(int taskIndex) onSetPlanDate;
-  final Future<void> Function(int taskIndex) onSetTaskEffort;
-  final Future<void> Function(int taskIndex) onSetNextSessionEffort;
+  final Future<void> Function(int taskIndex, int? minutes) onSetTaskEffort;
+  final Future<void> Function(int taskIndex, int? minutes)
+  onSetNextSessionEffort;
   final void Function(int taskIndex, String value) onCategoryChanged;
   final void Function(int taskIndex) onEditTask;
   final void Function(int taskIndex) onDeleteTask;
@@ -171,11 +172,11 @@ class TaskListContent extends StatelessWidget {
                         onPlanDate: () {
                           onSetPlanDate(taskIndex);
                         },
-                        onTotalEffortChanged: (_) {
-                          onSetTaskEffort(taskIndex);
+                        onTotalEffortChanged: (minutes) {
+                          onSetTaskEffort(taskIndex, minutes);
                         },
-                        onNextSessionEffortChanged: (_) {
-                          onSetNextSessionEffort(taskIndex);
+                        onNextSessionEffortChanged: (minutes) {
+                          onSetNextSessionEffort(taskIndex, minutes);
                         },
                         onCategoryChanged: (value) {
                           if (value == null) {
