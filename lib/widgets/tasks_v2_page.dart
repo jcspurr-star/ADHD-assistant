@@ -206,11 +206,7 @@ class _TasksV2PageState extends State<TasksV2Page> {
     );
   }
 
-  Widget _section(
-    String title,
-    List<Task> tasks, {
-    bool initiallyCollapsed = false,
-  }) {
+  Widget _section(String title, List<Task> tasks) {
     if (tasks.isEmpty) return const SizedBox.shrink();
     final collapsed = title == 'Completed today'
         ? !_completedExpanded
@@ -302,8 +298,8 @@ class _TasksV2PageState extends State<TasksV2Page> {
     final tasks = _filteredTasks;
     final archived = tasks.where((task) => task.archived).toList();
     final completed = tasks
-      .where((task) => task.done && !task.archived && _completedToday(task))
-      .toList();
+        .where((task) => task.done && !task.archived && _completedToday(task))
+        .toList();
     final active = tasks.where((task) => !task.done && !task.archived).toList();
     final inbox = active
         .where(
@@ -512,8 +508,9 @@ class _TaskV2DetailsState extends State<_TaskV2Details> {
       ),
     );
     controller.dispose();
-    if (text != null && text.trim().isNotEmpty)
+    if (text != null && text.trim().isNotEmpty) {
       await widget.onAddSubtask(text.trim());
+    }
     if (mounted) setState(() {});
   }
 
