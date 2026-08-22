@@ -78,6 +78,20 @@ class PlannerEntryOverride {
   final bool locked;
 }
 
+class PersonalPlannerBlock {
+  const PersonalPlannerBlock({
+    required this.id,
+    required this.title,
+    required this.startMinutes,
+    required this.endMinutes,
+  });
+
+  final String id;
+  final String title;
+  final int startMinutes;
+  final int endMinutes;
+}
+
 class DayPlannerResult {
   DayPlannerResult({
     required this.entries,
@@ -92,8 +106,15 @@ class DayPlannerResult {
 
 class DayPlannerService {
   static const Duration _defaultBreak = Duration(minutes: 10);
-  static const Duration _defaultLunchBreak = Duration(minutes: 20);
+  static const Duration _defaultLunchBreak = Duration(minutes: 30);
   static const Duration _minimumEventDuration = Duration(minutes: 5);
+
+  static bool _occupiesPlanningTime(DayPlannerEntry entry) {
+    return !entry.isAllDay &&
+        entry.type != 'buffer' &&
+        entry.category != PlannerEventCategory.informational &&
+        !(entry.type == 'calendar' && entry.isZeroDuration);
+  }
 
   static DateTime? _parseTaskDate(String? raw) {
     if (raw == null || raw.trim().isEmpty) {
@@ -181,12 +202,16 @@ class DayPlannerService {
     int workdayStartMinutes = 9 * 60,
     int workdayEndMinutes = 17 * 60,
     Set<String> preferredConcurrentEntryIds = const <String>{},
+    Set<String> nonBlockingCalendarEventIds = const <String>{},
     Map<String, PlannerEntryOverride> entryOverrides =
         const <String, PlannerEntryOverride>{},
+    List<PersonalPlannerBlock> personalBlocks = const <PersonalPlannerBlock>[],
     Map<String, ExecutionState> executionStates =
         const <String, ExecutionState>{},
     TimeGrid timeGrid = TimeGrid.fifteenMinutes,
   }) {
+    final isWeekend =
+        day.weekday == DateTime.saturday || day.weekday == DateTime.sunday;
     final normalizedStart = workdayStartMinutes.clamp(0, 23 * 60 + 59);
     final normalizedEnd = workdayEndMinutes.clamp(1, 24 * 60);
     final dayStart = _dateAtMinutes(day, normalizedStart);
@@ -200,6 +225,24 @@ class DayPlannerService {
       );
     }
     final entries = <DayPlannerEntry>[];
+
+    for (final block in personalBlocks) {
+      final start = _dateAtMinutes(day, block.startMinutes);
+      final end = _dateAtMinutes(day, block.endMinutes);
+      if (!end.isAfter(start)) continue;
+      entries.add(
+        DayPlannerEntry(
+          id: block.id,
+          title: block.title,
+          type: 'personal',
+          start: start,
+          end: end,
+          subtitle: 'Personal block',
+          isLocked: true,
+          category: PlannerEventCategory.fixed,
+        ),
+      );
+    }
 
     final todaysEvents =
         calendarEvents.where((event) {
@@ -249,22 +292,6 @@ class DayPlannerService {
         }
       }
 
-      if (adjustedStart.isAfter(cursor)) {
-        final gapDuration = adjustedStart.difference(cursor);
-        if (gapDuration.inMinutes >= 45) {
-          entries.add(
-            DayPlannerEntry(
-              id: 'buffer-${entries.length}',
-              title: 'Open block',
-              type: 'buffer',
-              start: cursor,
-              end: adjustedStart,
-              subtitle: 'Free time for a quick task or reset',
-            ),
-          );
-        }
-      }
-
       if (!adjustedStart.isAfter(adjustedEnd)) {
         final isZeroDuration =
             !event.isAllDay &&
@@ -285,6 +312,8 @@ class DayPlannerService {
             isAllDay: event.isAllDay,
             category: event.isAllDay
                 ? PlannerEventCategory.informational
+                : nonBlockingCalendarEventIds.contains('calendar-${event.id}')
+                ? PlannerEventCategory.informational
                 : PlannerEventCategory.fixed,
             isZeroDuration: isZeroDuration,
           ),
@@ -292,18 +321,22 @@ class DayPlannerService {
       }
 
       cursor = adjustedEnd.isAfter(cursor) ? adjustedEnd : cursor;
+      if (cursor.isAfter(dayEnd)) cursor = dayEnd;
     }
 
-    if (cursor.isBefore(dayEnd)) {
-      entries.add(
-        DayPlannerEntry(
-          id: 'buffer-${entries.length}',
-          title: 'Open block',
-          type: 'buffer',
-          start: cursor,
-          end: dayEnd,
-          subtitle: 'Free time for the rest of the day',
-        ),
+    if (isWeekend) {
+      for (var index = 0; index < entries.length; index++) {
+        final entry = entries[index];
+        entries[index] = entry.copyWith(
+          executionState: executionStates[entry.id] ?? ExecutionState.pending,
+        );
+      }
+      entries.sort((a, b) => a.start.compareTo(b.start));
+      return DayPlannerResult(
+        entries: entries,
+        summary: entries.isEmpty
+            ? 'Weekend: no activities planned.'
+            : 'Weekend: calendar items only.',
       );
     }
 
@@ -339,39 +372,37 @@ class DayPlannerService {
     DateTime currentTime = dayStart;
     bool hasShownLunchBreak = false;
 
-    for (var index = 0; index < actionableTasks.length && index < 3; index++) {
+    for (var index = 0; index < actionableTasks.length && index < 5; index++) {
       final task = actionableTasks[index];
       final estimatedDuration = _estimateTaskDuration(task);
-      final duration = _snapDurationToFiveMinutes(estimatedDuration);
-      DateTime candidateStart = currentTime;
-      DateTime? placedStart;
-
-      for (final entry in entries.where(
-        (entry) => entry.type == 'calendar' && !entry.isAllDay,
-      )) {
-        if (candidateStart.isBefore(entry.start) &&
-                candidateStart.add(duration).isBefore(entry.start) ||
-            candidateStart.add(duration).isAtSameMomentAs(entry.start)) {
-          placedStart = candidateStart;
-          break;
-        }
-        if (candidateStart.isBefore(entry.start) &&
-            candidateStart.add(duration).isAfter(entry.start)) {
-          candidateStart = entry.end;
-          continue;
-        }
-        if (candidateStart.isAfter(entry.end)) {
-          continue;
-        }
-        candidateStart = entry.end;
-      }
-
-      if (placedStart == null) {
-        if (candidateStart.add(duration).isBefore(dayEnd) ||
-            candidateStart.add(duration).isAtSameMomentAs(dayEnd)) {
-          placedStart = candidateStart;
-        }
-      }
+      final focusMinutes = estimatedDuration.inMinutes.clamp(10, 30);
+      final duration = _snapDurationToFiveMinutes(
+        Duration(minutes: focusMinutes),
+      );
+      final target = dayStart.add(
+        Duration(
+          minutes: actionableTasks.length == 1
+              ? 0
+              : (dayEnd.difference(dayStart).inMinutes *
+                        (index + 1) /
+                        (actionableTasks.length.clamp(1, 5) + 1))
+                    .round(),
+        ),
+      );
+      final taskStart = _taskStartAfterCalendarReset(
+        entries,
+        currentTime,
+        target,
+        dayEnd,
+      );
+      final placedStart = _findNearestFreeStart(
+        [...entries, ...plannedTaskEntries],
+        duration,
+        target.isBefore(taskStart) ? taskStart : target,
+        dayStart,
+        dayEnd,
+        earliestStart: taskStart,
+      );
 
       if (placedStart != null) {
         final plannedEnd = placedStart.add(duration);
@@ -401,7 +432,12 @@ class DayPlannerService {
 
         if (index == 1 &&
             !hasShownLunchBreak &&
-            effectivePlannedEnd.add(_defaultLunchBreak).isBefore(dayEnd)) {
+            effectivePlannedEnd.add(_defaultLunchBreak).isBefore(dayEnd) &&
+            _intervalIsFree(
+              [...entries, ...plannedTaskEntries],
+              effectivePlannedEnd,
+              effectivePlannedEnd.add(_defaultLunchBreak),
+            )) {
           plannedTaskEntries.add(
             DayPlannerEntry(
               id: 'break-lunch-$index',
@@ -413,9 +449,13 @@ class DayPlannerService {
             ),
           );
           currentTime = effectivePlannedEnd.add(_defaultLunchBreak);
-          hasShownLunchBreak = true;
         } else if (effectivePlannedEnd.add(_defaultBreak).isBefore(dayEnd) &&
-            index < 2) {
+            index < 4 &&
+            _intervalIsFree(
+              [...entries, ...plannedTaskEntries],
+              effectivePlannedEnd,
+              effectivePlannedEnd.add(_defaultBreak),
+            )) {
           plannedTaskEntries.add(
             DayPlannerEntry(
               id: 'break-$index',
@@ -434,6 +474,22 @@ class DayPlannerService {
     final merged = <DayPlannerEntry>[];
     merged.addAll(entries);
     merged.addAll(plannedTaskEntries);
+    final recommendations = dayContext == null
+        ? const <ActivityRecommendation>[]
+        : MovementRecommendationService.generateRecommendations(
+            dayContext: dayContext,
+            weeklyTotals: weeklyTotals,
+            gymCompletedToday: gymCompletedToday,
+            daysSinceLastMobility: daysSinceLastMobility,
+          );
+    final zwiftEntry = _buildZwiftEntry(
+      recommendations: recommendations,
+      occupiedEntries: merged,
+      day: day,
+    );
+    if (zwiftEntry != null) {
+      merged.add(zwiftEntry);
+    }
     final movementEntries = _buildMovementEntries(
       day: day,
       dayContext: dayContext,
@@ -444,16 +500,22 @@ class DayPlannerService {
       timeGrid: timeGrid,
     );
     merged.addAll(movementEntries);
+    final mergedWithShortGaps = _extendShortGaps(merged, dayStart, dayEnd);
+    merged
+      ..clear()
+      ..addAll(mergedWithShortGaps)
+      ..addAll(_buildOpenBlocks(mergedWithShortGaps, dayStart, dayEnd));
     final overridden = entryOverrides.isEmpty
         ? merged
         : _applyEntryOverrides(merged, entryOverrides, dayStart, dayEnd);
-    for (var index = 0; index < overridden.length; index++) {
-      final entry = overridden[index];
-      overridden[index] = entry.copyWith(
+    final normalizedEntries = _removeTaskOverlaps(overridden);
+    for (var index = 0; index < normalizedEntries.length; index++) {
+      final entry = normalizedEntries[index];
+      normalizedEntries[index] = entry.copyWith(
         executionState: executionStates[entry.id] ?? ExecutionState.pending,
       );
     }
-    overridden.sort((a, b) => a.start.compareTo(b.start));
+    normalizedEntries.sort((a, b) => a.start.compareTo(b.start));
 
     final summarySegments = <String>[];
     if (plannedTaskEntries.isNotEmpty) {
@@ -480,19 +542,53 @@ class DayPlannerService {
     }
 
     return DayPlannerResult(
-      entries: overridden,
+      entries: normalizedEntries,
       summary: summarySegments.isEmpty
           ? 'A light day is ready.'
           : summarySegments.join(' • '),
-      recommendations: dayContext == null
-          ? const <ActivityRecommendation>[]
-          : MovementRecommendationService.generateRecommendations(
-              dayContext: dayContext,
-              weeklyTotals: weeklyTotals,
-              gymCompletedToday: gymCompletedToday,
-              daysSinceLastMobility: daysSinceLastMobility,
-            ),
+      recommendations: recommendations,
     );
+  }
+
+  static DayPlannerEntry? _buildZwiftEntry({
+    required List<ActivityRecommendation> recommendations,
+    required List<DayPlannerEntry> occupiedEntries,
+    required DateTime day,
+  }) {
+    final hasZwiftRecommendation = recommendations.any(
+      (recommendation) => recommendation.pillar == ActivityPillar.zwift,
+    );
+    if (!hasZwiftRecommendation) return null;
+
+    final dayStart = DateTime(day.year, day.month, day.day);
+    final eveningStart = dayStart.add(const Duration(hours: 18));
+    final dayEnd = dayStart.add(const Duration(days: 1));
+    const duration = Duration(minutes: 45);
+    final occupied = occupiedEntries.where(_occupiesPlanningTime);
+    for (
+      var candidate = eveningStart;
+      candidate.add(duration).isBefore(dayEnd) ||
+          candidate.add(duration).isAtSameMomentAs(dayEnd);
+      candidate = candidate.add(const Duration(minutes: 15))
+    ) {
+      final candidateEnd = candidate.add(duration);
+      final overlaps = occupied.any(
+        (entry) =>
+            candidate.isBefore(entry.end) && candidateEnd.isAfter(entry.start),
+      );
+      if (!overlaps) {
+        return DayPlannerEntry(
+          id: 'activity-zwift',
+          title: 'Zwift ride',
+          type: 'movement',
+          start: candidate,
+          end: candidateEnd,
+          subtitle: 'Evening Zwift session',
+          category: PlannerEventCategory.planned,
+        );
+      }
+    }
+    return null;
   }
 
   static List<DayPlannerEntry> _buildMovementEntries({
@@ -534,25 +630,32 @@ class DayPlannerService {
             (walkingBlockMinutes, 'Walk break', 'Office movement'),
           ];
 
-    final occupied =
-        occupiedEntries
-            .where((entry) => !entry.isAllDay && entry.type != 'buffer')
-            .toList()
-          ..sort((a, b) {
-            final startCompare = a.start.compareTo(b.start);
-            if (startCompare != 0) return startCompare;
-            final aIsCalendar = a.type == 'calendar';
-            final bIsCalendar = b.type == 'calendar';
-            if (aIsCalendar != bIsCalendar) return aIsCalendar ? -1 : 1;
-            return b.end.compareTo(a.end);
-          });
+    final occupied = occupiedEntries.where(_occupiesPlanningTime).toList()
+      ..sort((a, b) {
+        final startCompare = a.start.compareTo(b.start);
+        if (startCompare != 0) return startCompare;
+        final aIsCalendar = a.type == 'calendar';
+        final bIsCalendar = b.type == 'calendar';
+        if (aIsCalendar != bIsCalendar) return aIsCalendar ? -1 : 1;
+        return b.end.compareTo(a.end);
+      });
     for (var blockIndex = 0; blockIndex < blockDurations.length; blockIndex++) {
       final block = blockDurations[blockIndex];
-      final duration = _snapDurationToFiveMinutes(Duration(minutes: block.$1));
+      final duration = _snapDurationToFiveMinutes(
+        Duration(minutes: block.$2 == 'Walk break' ? 15 : block.$1),
+      );
       final movementLabel = block.$3;
       final canRunConcurrently =
-          !block.$2.toLowerCase().contains('walk') &&
-          !block.$2.toLowerCase().contains('stand');
+          mode != 'office' || preferredConcurrentEntryIds.isNotEmpty;
+      final movementTarget = dayStart.add(
+        Duration(
+          minutes:
+              (dayEnd.difference(dayStart).inMinutes *
+                      (blockIndex + 1) /
+                      (blockDurations.length + 1))
+                  .round(),
+        ),
+      );
       final concurrentEntry = canRunConcurrently
           ? _findConcurrentEntry(
               occupied,
@@ -561,6 +664,7 @@ class DayPlannerService {
               preferredConcurrentEntryIds,
               dayStart,
               dayEnd,
+              target: movementTarget,
             )
           : null;
       if (concurrentEntry != null) {
@@ -573,10 +677,13 @@ class DayPlannerService {
             : concurrentEntry.end;
         if (concurrentEnd.difference(concurrentStart) >= duration) {
           final concurrentTitle = concurrentEntry.title;
+          final movementTitle = mode == 'office'
+              ? 'Walk while you work'
+              : block.$2;
           entries.add(
             DayPlannerEntry(
               id: 'movement-$mode-${entries.length}',
-              title: block.$2,
+              title: movementTitle,
               type: 'movement',
               start: concurrentStart,
               end: concurrentEnd,
@@ -584,24 +691,18 @@ class DayPlannerService {
               isConcurrent: true,
             ),
           );
-          occupied.remove(concurrentEntry);
+          occupied.add(entries.last);
           continue;
         }
       }
-      final target = dayStart.add(
-        Duration(
-          minutes:
-              ((dayEnd.difference(dayStart).inMinutes * (blockIndex + 1)) /
-                      (blockDurations.length + 1))
-                  .round(),
-        ),
-      );
       final placedStart = _findNearestFreeStart(
         occupied,
         duration,
-        target,
+        movementTarget,
         dayStart,
         dayEnd,
+        minimumGap: const Duration(minutes: 30),
+        separateFromTypes: const {'movement', 'break'},
       );
       if (placedStart == null) break;
 
@@ -625,6 +726,146 @@ class DayPlannerService {
     }
 
     return entries;
+  }
+
+  static List<DayPlannerEntry> _buildOpenBlocks(
+    List<DayPlannerEntry> entries,
+    DateTime dayStart,
+    DateTime dayEnd,
+  ) {
+    final occupied =
+        entries
+            .where(
+              (entry) =>
+                  _occupiesPlanningTime(entry) &&
+                  (entry.type != 'movement' || !entry.isConcurrent),
+            )
+            .map(
+              (entry) => (
+                start: entry.start.isBefore(dayStart) ? dayStart : entry.start,
+                end: entry.end.isAfter(dayEnd) ? dayEnd : entry.end,
+              ),
+            )
+            .where((entry) => entry.end.isAfter(entry.start))
+            .toList()
+          ..sort((a, b) => a.start.compareTo(b.start));
+    final blocks = <DayPlannerEntry>[];
+    var cursor = dayStart;
+    for (final entry in occupied) {
+      if (entry.start.isAfter(cursor)) {
+        blocks.add(
+          DayPlannerEntry(
+            id: 'buffer-${blocks.length}',
+            title: 'Focus time',
+            type: 'buffer',
+            start: cursor,
+            end: entry.start,
+            subtitle: 'Free time for a quick task or reset',
+          ),
+        );
+      }
+      if (entry.end.isAfter(cursor)) cursor = entry.end;
+    }
+    if (cursor.isBefore(dayEnd)) {
+      blocks.add(
+        DayPlannerEntry(
+          id: 'buffer-${blocks.length}',
+          title: 'Focus time',
+          type: 'buffer',
+          start: cursor,
+          end: dayEnd,
+          subtitle: 'Free time for the rest of the day',
+        ),
+      );
+    }
+    return blocks;
+  }
+
+  static List<DayPlannerEntry> _removeTaskOverlaps(
+    List<DayPlannerEntry> entries,
+  ) {
+    final tasks = entries.where((entry) => entry.type == 'task').toList();
+    final normalized = <DayPlannerEntry>[];
+    for (final entry in entries) {
+      if (entry.type != 'break' && entry.type != 'buffer') {
+        normalized.add(entry);
+        continue;
+      }
+      DayPlannerEntry? adjusted = entry;
+      for (final task in tasks) {
+        final current = adjusted;
+        if (current == null) break;
+        final overlaps =
+            current.start.isBefore(task.end) && current.end.isAfter(task.start);
+        if (!overlaps) continue;
+        if (current.type == 'buffer' || !current.start.isBefore(task.start)) {
+          adjusted = null;
+          break;
+        }
+        adjusted = current.copyWith(end: task.start);
+      }
+      if (adjusted != null && adjusted.end.isAfter(adjusted.start)) {
+        normalized.add(adjusted);
+      }
+    }
+    return normalized;
+  }
+
+  static List<DayPlannerEntry> _extendShortGaps(
+    List<DayPlannerEntry> entries,
+    DateTime dayStart,
+    DateTime dayEnd,
+  ) {
+    final result = List<DayPlannerEntry>.from(entries);
+    final occupied =
+        result
+            .where(
+              (entry) =>
+                  _occupiesPlanningTime(entry) &&
+                  (entry.type != 'movement' || !entry.isConcurrent),
+            )
+            .toList()
+          ..sort((a, b) => a.start.compareTo(b.start));
+    for (var index = 1; index < occupied.length; index++) {
+      final previous = occupied[index - 1];
+      final current = occupied[index];
+      final previousEnd = previous.end.isAfter(dayEnd) ? dayEnd : previous.end;
+      final currentStart = current.start.isBefore(dayStart)
+          ? dayStart
+          : current.start;
+      final gap = currentStart.difference(previousEnd);
+      final canExtend =
+          previous.type == 'task' ||
+          previous.type == 'break' ||
+          (previous.type == 'movement' && !previous.isConcurrent);
+      final crossesTask = previous.type != 'task' && current.type == 'task';
+      if (canExtend &&
+          !crossesTask &&
+          gap > Duration.zero &&
+          gap <= const Duration(minutes: 15)) {
+        final resultIndex = result.indexWhere(
+          (entry) => entry.id == previous.id,
+        );
+        if (resultIndex >= 0) {
+          result[resultIndex] = previous.copyWith(end: currentStart);
+          occupied[index - 1] = result[resultIndex];
+        }
+      }
+    }
+    return result;
+  }
+
+  static bool _intervalIsFree(
+    Iterable<DayPlannerEntry> entries,
+    DateTime start,
+    DateTime end,
+  ) {
+    return entries.every(
+      (entry) =>
+          !_occupiesPlanningTime(entry) ||
+          !start.isBefore(entry.end) ||
+          !end.isAfter(entry.start),
+    );
   }
 
   static List<DayPlannerEntry> _applyEntryOverrides(
@@ -684,19 +925,29 @@ class DayPlannerService {
     String mode,
     Set<String> preferredConcurrentEntryIds,
     DateTime dayStart,
-    DateTime dayEnd,
-  ) {
+    DateTime dayEnd, {
+    required DateTime target,
+  }) {
+    DayPlannerEntry? best;
+    Duration? bestDistance;
     for (final entry in occupied) {
-      if (entry.isAllDay || entry.isConcurrent) continue;
+      if (entry.isAllDay ||
+          entry.isConcurrent ||
+          entry.category == PlannerEventCategory.informational) {
+        continue;
+      }
       if (!entry.start.isBefore(dayEnd) || !entry.end.isAfter(dayStart)) {
         continue;
       }
       if (entry.end.difference(entry.start) < duration) continue;
       final isPreferred = preferredConcurrentEntryIds.contains(entry.id);
       if (entry.type == 'calendar' &&
-          (isPreferred ||
-              (preferredConcurrentEntryIds.isEmpty &&
-                  _calendarAllowsConcurrentMovement(entry.title, mode))) &&
+          ((mode != 'office' &&
+                  (isPreferred || preferredConcurrentEntryIds.isEmpty)) ||
+              (mode == 'office' &&
+                  isPreferred &&
+                  entry.subtitle?.toLowerCase().contains('work') == true)) &&
+          !_intervalOverlapsPersonal(entry.start, entry.end, occupied) &&
           _concurrentWindowIsExclusive(
             entry,
             occupied,
@@ -704,11 +955,15 @@ class DayPlannerService {
             dayStart,
             dayEnd,
           )) {
-        return entry;
+        final distance = entry.start.difference(target).abs();
+        if (bestDistance == null || distance < bestDistance) {
+          best = entry;
+          bestDistance = distance;
+        }
       }
       if (entry.type == 'task' &&
-          preferredConcurrentEntryIds.isEmpty &&
-          _taskAllowsConcurrentMovement(entry.title) &&
+          mode != 'office' &&
+          !_intervalOverlapsPersonal(entry.start, entry.end, occupied) &&
           _concurrentWindowIsExclusive(
             entry,
             occupied,
@@ -716,10 +971,43 @@ class DayPlannerService {
             dayStart,
             dayEnd,
           )) {
-        return entry;
+        final distance = entry.start.difference(target).abs();
+        if (bestDistance == null || distance < bestDistance) {
+          best = entry;
+          bestDistance = distance;
+        }
       }
     }
-    return null;
+    return best;
+  }
+
+  static DateTime _taskStartAfterCalendarReset(
+    List<DayPlannerEntry> entries,
+    DateTime currentTime,
+    DateTime target,
+    DateTime dayEnd,
+  ) {
+    var earliest = currentTime;
+    for (final entry in entries) {
+      if (entry.type != 'calendar' || entry.isAllDay) continue;
+      if (entry.end.isAfter(earliest) && !entry.end.isAfter(target)) {
+        earliest = entry.end.add(_defaultBreak);
+      }
+    }
+    return earliest.isAfter(dayEnd) ? dayEnd : earliest;
+  }
+
+  static bool _intervalOverlapsPersonal(
+    DateTime start,
+    DateTime end,
+    Iterable<DayPlannerEntry> entries,
+  ) {
+    return entries.any(
+      (entry) =>
+          entry.type == 'personal' &&
+          start.isBefore(entry.end) &&
+          end.isAfter(entry.start),
+    );
   }
 
   static bool _concurrentWindowIsExclusive(
@@ -741,6 +1029,7 @@ class DayPlannerService {
       if (identical(entry, selectedEntry) || entry.isAllDay) {
         return true;
       }
+      if (entry.type == 'personal') return true;
       return !entry.start.isBefore(windowEnd) ||
           !entry.end.isAfter(windowStart);
     });
@@ -751,14 +1040,31 @@ class DayPlannerService {
     Duration duration,
     DateTime target,
     DateTime dayStart,
-    DateTime dayEnd,
-  ) {
+    DateTime dayEnd, {
+    DateTime? earliestStart,
+    Duration minimumGap = Duration.zero,
+    String? separateFromType,
+    Set<String> separateFromTypes = const <String>{},
+  }) {
     final boundaries = <DateTime>[dayStart, dayEnd];
     for (final entry in occupied) {
-      if (entry.isAllDay || entry.type == 'buffer') continue;
+      if (!_occupiesPlanningTime(entry)) continue;
+      final separation =
+          entry.type == separateFromType ||
+              separateFromTypes.contains(entry.type)
+          ? minimumGap
+          : Duration.zero;
       if (entry.end.isAfter(dayStart) && entry.start.isBefore(dayEnd)) {
-        boundaries.add(entry.start.isBefore(dayStart) ? dayStart : entry.start);
-        boundaries.add(entry.end.isAfter(dayEnd) ? dayEnd : entry.end);
+        boundaries.add(
+          entry.start.subtract(separation).isBefore(dayStart)
+              ? dayStart
+              : entry.start.subtract(separation),
+        );
+        boundaries.add(
+          entry.end.add(separation).isAfter(dayEnd)
+              ? dayEnd
+              : entry.end.add(separation),
+        );
       }
     }
     boundaries.sort();
@@ -768,13 +1074,25 @@ class DayPlannerService {
     for (var index = 0; index < boundaries.length - 1; index++) {
       final gapStart = boundaries[index];
       final gapEnd = boundaries[index + 1];
-      if (gapEnd.difference(gapStart) < duration) continue;
+      final effectiveGapStart =
+          earliestStart != null && gapStart.isBefore(earliestStart)
+          ? earliestStart
+          : gapStart;
+      if (gapEnd.difference(effectiveGapStart) < duration) continue;
       final latestStart = gapEnd.subtract(duration);
-      final candidate = target.isBefore(gapStart)
-          ? gapStart
+      final candidate = target.isBefore(effectiveGapStart)
+          ? effectiveGapStart
           : target.isAfter(latestStart)
           ? latestStart
           : target;
+      if (occupied.any(
+        (entry) =>
+            _occupiesPlanningTime(entry) &&
+            candidate.isBefore(entry.end) &&
+            candidate.add(duration).isAfter(entry.start),
+      )) {
+        continue;
+      }
       final distance = candidate.difference(target).abs();
       if (bestDistance == null || distance < bestDistance) {
         best = candidate;

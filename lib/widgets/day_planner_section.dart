@@ -20,7 +20,10 @@ class DayPlannerSection extends StatelessWidget {
     required this.plannerDayOffset,
     required this.showWorkInPlanner,
     required this.showHomeInPlanner,
-    required this.showPlannerInPlanner,
+    required this.showMovementInPlanner,
+    required this.showBreakInPlanner,
+    required this.showFocusInPlanner,
+    required this.showPersonalInPlanner,
     required this.gymAvailable,
     required this.wfhAvailable,
     required this.eveningAvailable,
@@ -30,9 +33,11 @@ class DayPlannerSection extends StatelessWidget {
     required this.gymCompletedToday,
     required this.executionStates,
     required this.preferredConcurrentEntryIds,
+    required this.nonBlockingCalendarEventIds,
     required this.removedPlannerEntryIds,
     required this.removedCalendarEventIds,
     required this.plannerEntryOverrides,
+    required this.personalBlocks,
     required this.workdayStartMinutes,
     required this.workdayEndMinutes,
     required this.tasks,
@@ -43,17 +48,25 @@ class DayPlannerSection extends StatelessWidget {
     required this.onPlannerDayOffsetChanged,
     required this.onShowWorkInPlannerChanged,
     required this.onShowHomeInPlannerChanged,
-    required this.onShowPlannerInPlannerChanged,
+    required this.onShowMovementInPlannerChanged,
+    required this.onShowBreakInPlannerChanged,
+    required this.onShowFocusInPlannerChanged,
+    required this.onShowPersonalInPlannerChanged,
     required this.onGymAvailableChanged,
     required this.onWfhAvailableChanged,
     required this.onEveningAvailableChanged,
     required this.onCompleteRecommendation,
     required this.onViewActivityHistory,
     required this.onPreferredConcurrentEntryIdsChanged,
+    required this.onToggleCalendarPlanning,
+    required this.onLogHomeEventAsGym,
     required this.onRemovePlannerEntry,
     required this.onWorkdayHoursChanged,
     required this.onEditPlannerEntryTime,
     required this.onTogglePlannerEntryLock,
+    required this.onAddPersonalBlock,
+    required this.onImportCalendar,
+    required this.onResetPlanner,
     required this.onExecutePlannerEntry,
     required this.onOpenTask,
     this.dashboardMode = false,
@@ -68,7 +81,10 @@ class DayPlannerSection extends StatelessWidget {
   final int plannerDayOffset;
   final bool showWorkInPlanner;
   final bool showHomeInPlanner;
-  final bool showPlannerInPlanner;
+  final bool showMovementInPlanner;
+  final bool showBreakInPlanner;
+  final bool showFocusInPlanner;
+  final bool showPersonalInPlanner;
   final bool gymAvailable;
   final bool wfhAvailable;
   final bool eveningAvailable;
@@ -78,9 +94,11 @@ class DayPlannerSection extends StatelessWidget {
   final bool gymCompletedToday;
   final Map<String, ExecutionState> executionStates;
   final Set<String> preferredConcurrentEntryIds;
+  final Set<String> nonBlockingCalendarEventIds;
   final Set<String> removedPlannerEntryIds;
   final Set<String> removedCalendarEventIds;
   final Map<String, PlannerEntryOverride> plannerEntryOverrides;
+  final List<PersonalPlannerBlock> personalBlocks;
   final int workdayStartMinutes;
   final int workdayEndMinutes;
   final List<Task> tasks;
@@ -91,19 +109,33 @@ class DayPlannerSection extends StatelessWidget {
   final ValueChanged<int> onPlannerDayOffsetChanged;
   final ValueChanged<bool> onShowWorkInPlannerChanged;
   final ValueChanged<bool> onShowHomeInPlannerChanged;
-  final ValueChanged<bool> onShowPlannerInPlannerChanged;
+  final ValueChanged<bool> onShowMovementInPlannerChanged;
+  final ValueChanged<bool> onShowBreakInPlannerChanged;
+  final ValueChanged<bool> onShowFocusInPlannerChanged;
+  final ValueChanged<bool> onShowPersonalInPlannerChanged;
   final ValueChanged<bool> onGymAvailableChanged;
   final ValueChanged<bool> onWfhAvailableChanged;
   final ValueChanged<bool> onEveningAvailableChanged;
   final ValueChanged<ActivityRecommendation> onCompleteRecommendation;
   final VoidCallback onViewActivityHistory;
   final ValueChanged<Set<String>> onPreferredConcurrentEntryIdsChanged;
+  final ValueChanged<Set<String>> onToggleCalendarPlanning;
+  final ValueChanged<DayPlannerEntry> onLogHomeEventAsGym;
   final ValueChanged<String> onRemovePlannerEntry;
   final ValueChanged<(int, int)> onWorkdayHoursChanged;
   // Called with (entryId, startMinutes, endMinutes) when the user edits an entry's time.
   final void Function(String entryId, int startMinutes, int endMinutes)
   onEditPlannerEntryTime;
   final void Function(String entryId, bool locked) onTogglePlannerEntryLock;
+  final void Function(
+    DateTime date,
+    String title,
+    int startMinutes,
+    int endMinutes,
+  )
+  onAddPersonalBlock;
+  final VoidCallback onImportCalendar;
+  final VoidCallback onResetPlanner;
   final void Function(DayPlannerEntry entry, ExecutionState state)
   onExecutePlannerEntry;
   final ValueChanged<Task> onOpenTask;
@@ -143,6 +175,39 @@ class DayPlannerSection extends StatelessWidget {
     );
   }
 
+  String _eventCategoryLabel(DayPlannerEntry entry) {
+    if (entry.type == 'personal') return 'Personal';
+    if (entry.type == 'movement') return 'Movement';
+    if (entry.type == 'break') return 'Break';
+    if (entry.type == 'buffer') return 'Focus';
+    if (entry.type == 'task') {
+      return entry.task != null && isWorkTask(entry.task!) ? 'Work' : 'Home';
+    }
+    if (entry.type == 'calendar') {
+      return entry.subtitle?.toLowerCase().contains('work') == true
+          ? 'Work'
+          : 'Home';
+    }
+    return entry.type;
+  }
+
+  String _eventTooltipMessage(
+    DayPlannerEntry entry,
+    String categoryLabel,
+    String timeLabel,
+    String? subtitle,
+  ) {
+    final details = <String>[
+      entry.title,
+      'Category: $categoryLabel',
+      'Time: $timeLabel',
+    ];
+    if (subtitle != null && subtitle.trim().isNotEmpty) {
+      details.add(subtitle.trim());
+    }
+    return details.join('\n');
+  }
+
   // Kept temporarily for compatibility with older timeline snapshots.
   // ignore: unused_element
   Widget _buildPlannerEntryCard(
@@ -155,9 +220,12 @@ class DayPlannerSection extends StatelessWidget {
     final isAllDayCalendarEntry = isCalendar && entry.isAllDay;
     final now = DateTime.now();
     final workColor = const Color(0xFF008E7A);
-    final homeColor = const Color(0xFF1E63D0);
+    final homeColor = const Color(0xFF124B8A);
     final plannerColor = const Color(0xFF7C4DFF);
+    final breakColor = const Color(0xFF8A6D1D);
+    final focusColor = const Color(0xFF6B4E9B);
     final movementColor = const Color(0xFFB05A00);
+    final personalColor = const Color(0xFFB23A48);
     final isMovement = entry.type == 'movement';
     final isCompleted = entry.executionState == ExecutionState.completed;
     final isSkipped = entry.executionState == ExecutionState.skipped;
@@ -170,6 +238,7 @@ class DayPlannerSection extends StatelessWidget {
     final isPreferredConcurrent = preferredConcurrentEntryIds.contains(
       entry.id,
     );
+    final categoryLabel = _eventCategoryLabel(entry);
 
     final isWorkTaskEntry =
         isTask && entry.task != null && isWorkTask(entry.task!);
@@ -180,7 +249,13 @@ class DayPlannerSection extends StatelessWidget {
     final isHomeCalendarEntry =
         isCalendar && (entry.subtitle?.toLowerCase().contains('home') ?? false);
 
-    final color = isMovement
+    final color = entry.type == 'personal'
+        ? personalColor
+        : entry.type == 'break'
+        ? breakColor
+        : entry.type == 'buffer'
+        ? focusColor
+        : isMovement
         ? movementColor
         : (isWorkTaskEntry || isWorkCalendarEntry)
         ? workColor
@@ -224,365 +299,409 @@ class DayPlannerSection extends StatelessWidget {
         ? 'All day'
         : '${entry.start.hour.toString().padLeft(2, '0')}:${entry.start.minute.toString().padLeft(2, '0')}–${entry.end.hour.toString().padLeft(2, '0')}:${entry.end.minute.toString().padLeft(2, '0')}';
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Container(
-        height: height,
-        clipBehavior: Clip.hardEdge,
-        padding: EdgeInsets.symmetric(
-          horizontal: isCompact ? 5 : 8,
-          vertical: isTiny ? 0 : (isCompact ? 4 : 8),
-        ),
-        decoration: BoxDecoration(
-          color: color.withAlpha(
-            isCompleted || isSkipped || isDeferred || isDismissed
-                ? 18
-                : (isCurrentEntry ? 56 : 36),
+    return Tooltip(
+      message: _eventTooltipMessage(entry, categoryLabel, timeLabel, subtitle),
+      waitDuration: const Duration(milliseconds: 350),
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Container(
+          height: height,
+          clipBehavior: Clip.hardEdge,
+          padding: EdgeInsets.symmetric(
+            horizontal: isCompact ? 5 : 8,
+            vertical: isTiny ? 0 : (isCompact ? 4 : 8),
           ),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: color.withAlpha(isCurrentEntry ? 255 : 210),
-            width: isCurrentEntry ? 2.2 : 1,
+          decoration: BoxDecoration(
+            color: color.withAlpha(
+              isCompleted || isSkipped || isDeferred || isDismissed
+                  ? 28
+                  : (isCurrentEntry ? 85 : 70),
+            ),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: color.withAlpha(isCurrentEntry ? 255 : 210),
+              width: isCurrentEntry ? 2.2 : 1,
+            ),
+            boxShadow: isCurrentEntry
+                ? [
+                    BoxShadow(
+                      color: color.withAlpha(90),
+                      blurRadius: 12,
+                      spreadRadius: 0.8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
           ),
-          boxShadow: isCurrentEntry
-              ? [
-                  BoxShadow(
-                    color: color.withAlpha(90),
-                    blurRadius: 12,
-                    spreadRadius: 0.8,
-                    offset: const Offset(0, 2),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final isNarrowLane = constraints.maxWidth < 140;
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: isCompact ? 5 : 8,
+                    height: isTiny ? 14 : (isCompact ? 28 : 60),
+                    decoration: BoxDecoration(
+                      color: color,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
                   ),
-                ]
-              : null,
-        ),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final isNarrowLane = constraints.maxWidth < 140;
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: isCompact ? 5 : 8,
-                  height: isTiny ? 14 : (isCompact ? 28 : 60),
-                  decoration: BoxDecoration(
-                    color: color,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        height: isTiny
-                            ? constraints.maxHeight.clamp(0, 14).toDouble()
-                            : (isCompact || isNarrowLane ? 18 : 32),
-                        child: ClipRect(
-                          child: Text(
-                            entry.title,
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              decoration: isCompleted || isDismissed
-                                  ? TextDecoration.lineThrough
-                                  : null,
-                              color: isSkipped || isDismissed
-                                  ? Colors.grey
-                                  : isDeferred
-                                  ? Colors.orange.shade800
-                                  : null,
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(
+                          height: isTiny
+                              ? constraints.maxHeight.clamp(0, 14).toDouble()
+                              : (isCompact || isNarrowLane ? 18 : 32),
+                          child: ClipRect(
+                            child: Text(
+                              entry.title,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                decoration: isCompleted || isDismissed
+                                    ? TextDecoration.lineThrough
+                                    : null,
+                                color: isSkipped || isDismissed
+                                    ? Colors.grey
+                                    : isDeferred
+                                    ? Colors.orange.shade800
+                                    : null,
+                              ),
+                              maxLines: isCompact || isNarrowLane ? 1 : 2,
+                              overflow: TextOverflow.ellipsis,
                             ),
-                            maxLines: isCompact || isNarrowLane ? 1 : 2,
+                          ),
+                        ),
+                        if (!isCompact && !isNarrowLane)
+                          const SizedBox(height: 2),
+                        if (!isCompact && !isNarrowLane)
+                          Text(
+                            subtitle ?? ' ',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.grey.shade700,
+                            ),
+                            maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
-                        ),
-                      ),
-                      if (!isCompact && !isNarrowLane)
-                        const SizedBox(height: 2),
-                      if (!isCompact && !isNarrowLane)
-                        Text(
-                          subtitle ?? ' ',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: Colors.grey.shade700,
+                        if (!isCompact && !isNarrowLane)
+                          Text(
+                            'Category: $categoryLabel',
+                            style: TextStyle(
+                              fontSize: 9,
+                              color: color,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      if (!isCompact && !isNarrowLane && entry.isConcurrent)
-                        Text(
-                          'Concurrent movement',
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: color,
-                            fontWeight: FontWeight.w700,
+                        if (!isCompact && !isNarrowLane && entry.isConcurrent)
+                          Text(
+                            'Concurrent movement',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: color,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
-                        ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-                if (!isNarrowLane &&
-                    (constraints.maxHeight >= 70 ||
-                        (isCalendar && constraints.maxHeight >= 50)))
-                  SizedBox(
-                    width: 84,
-                    child: ClipRect(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          if (!isCalendar && !isTiny)
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  tooltip: 'Complete',
-                                  visualDensity: VisualDensity.compact,
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints.tightFor(
-                                    width: 22,
-                                    height: 22,
-                                  ),
-                                  icon: Icon(
-                                    isCompleted
-                                        ? Icons.check_circle
-                                        : Icons.check_circle_outline,
-                                    size: 15,
-                                    color: isCompleted
-                                        ? Colors.green.shade700
-                                        : Colors.blueGrey.shade500,
-                                  ),
-                                  onPressed: isCompleted
-                                      ? null
-                                      : () => onExecutePlannerEntry(
-                                          entry,
-                                          ExecutionState.completed,
-                                        ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Skip',
-                                  visualDensity: VisualDensity.compact,
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints.tightFor(
-                                    width: 22,
-                                    height: 22,
-                                  ),
-                                  icon: Icon(
-                                    isSkipped
-                                        ? Icons.skip_next
-                                        : Icons.skip_next_outlined,
-                                    size: 15,
-                                    color: isSkipped
-                                        ? Colors.orange.shade700
-                                        : Colors.blueGrey.shade500,
-                                  ),
-                                  onPressed: isSkipped
-                                      ? null
-                                      : () => onExecutePlannerEntry(
-                                          entry,
-                                          ExecutionState.skipped,
-                                        ),
-                                ),
-                                if (!isCompact)
-                                  PopupMenuButton<ExecutionState>(
-                                    tooltip: 'More planner actions',
+                  if (!isNarrowLane &&
+                      (constraints.maxHeight >= 70 ||
+                          (isCalendar && constraints.maxHeight >= 50)))
+                    SizedBox(
+                      width: 84,
+                      child: ClipRect(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            if (!isCalendar && !isTiny)
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    tooltip: 'Complete',
+                                    visualDensity: VisualDensity.compact,
                                     padding: EdgeInsets.zero,
                                     constraints: const BoxConstraints.tightFor(
                                       width: 22,
                                       height: 22,
                                     ),
-                                    icon: const Icon(
-                                      Icons.more_horiz,
+                                    icon: Icon(
+                                      isCompleted
+                                          ? Icons.check_circle
+                                          : Icons.check_circle_outline,
                                       size: 15,
+                                      color: isCompleted
+                                          ? Colors.green.shade700
+                                          : Colors.blueGrey.shade500,
                                     ),
-                                    onSelected: (state) =>
-                                        onExecutePlannerEntry(entry, state),
-                                    itemBuilder: (context) => const [
-                                      PopupMenuItem(
-                                        value: ExecutionState.deferred,
-                                        child: Text('Defer'),
-                                      ),
-                                      PopupMenuItem(
-                                        value: ExecutionState.dismissed,
-                                        child: Text('Dismiss'),
-                                      ),
-                                    ],
+                                    onPressed: isCompleted
+                                        ? null
+                                        : () => onExecutePlannerEntry(
+                                            entry,
+                                            ExecutionState.completed,
+                                          ),
                                   ),
-                              ],
-                            ),
-                          if (isCalendar && !isAllDayCalendarEntry)
-                            Align(
-                              alignment: Alignment.centerRight,
-                              child: SizedBox(
-                                width: 32,
-                                height: 32,
-                                child: Builder(
-                                  builder: (buttonContext) {
-                                    return IconButton(
-                                      tooltip: 'Event actions',
+                                  IconButton(
+                                    tooltip: 'Skip',
+                                    visualDensity: VisualDensity.compact,
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints.tightFor(
+                                      width: 22,
+                                      height: 22,
+                                    ),
+                                    icon: Icon(
+                                      isSkipped
+                                          ? Icons.skip_next
+                                          : Icons.skip_next_outlined,
+                                      size: 15,
+                                      color: isSkipped
+                                          ? Colors.orange.shade700
+                                          : Colors.blueGrey.shade500,
+                                    ),
+                                    onPressed: isSkipped
+                                        ? null
+                                        : () => onExecutePlannerEntry(
+                                            entry,
+                                            ExecutionState.skipped,
+                                          ),
+                                  ),
+                                  if (!isCompact)
+                                    PopupMenuButton<ExecutionState>(
+                                      tooltip: 'More planner actions',
                                       padding: EdgeInsets.zero,
+                                      constraints:
+                                          const BoxConstraints.tightFor(
+                                            width: 22,
+                                            height: 22,
+                                          ),
                                       icon: const Icon(
                                         Icons.more_horiz,
-                                        size: 19,
+                                        size: 15,
                                       ),
-                                      onPressed: () async {
-                                        final button =
-                                            buttonContext.findRenderObject()
-                                                as RenderBox;
-                                        final overlay =
-                                            Overlay.of(
-                                                  buttonContext,
-                                                ).context.findRenderObject()
-                                                as RenderBox;
-                                        final topLeft = button.localToGlobal(
-                                          Offset.zero,
-                                          ancestor: overlay,
-                                        );
-                                        final bottomRight = button
-                                            .localToGlobal(
-                                              button.size.bottomRight(
-                                                Offset.zero,
+                                      onSelected: (state) =>
+                                          onExecutePlannerEntry(entry, state),
+                                      itemBuilder: (context) => const [
+                                        PopupMenuItem(
+                                          value: ExecutionState.deferred,
+                                          child: Text('Defer'),
+                                        ),
+                                        PopupMenuItem(
+                                          value: ExecutionState.dismissed,
+                                          child: Text('Dismiss'),
+                                        ),
+                                      ],
+                                    ),
+                                ],
+                              ),
+                            if (isCalendar && !isAllDayCalendarEntry)
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: SizedBox(
+                                  width: 32,
+                                  height: 32,
+                                  child: Builder(
+                                    builder: (buttonContext) {
+                                      return IconButton(
+                                        tooltip: 'Event actions',
+                                        padding: EdgeInsets.zero,
+                                        icon: const Icon(
+                                          Icons.more_horiz,
+                                          size: 19,
+                                        ),
+                                        onPressed: () async {
+                                          final button =
+                                              buttonContext.findRenderObject()
+                                                  as RenderBox;
+                                          final overlay =
+                                              Overlay.of(
+                                                    buttonContext,
+                                                  ).context.findRenderObject()
+                                                  as RenderBox;
+                                          final topLeft = button.localToGlobal(
+                                            Offset.zero,
+                                            ancestor: overlay,
+                                          );
+                                          final bottomRight = button
+                                              .localToGlobal(
+                                                button.size.bottomRight(
+                                                  Offset.zero,
+                                                ),
+                                                ancestor: overlay,
+                                              );
+                                          final action = await showMenu<String>(
+                                            context: buttonContext,
+                                            position: RelativeRect.fromRect(
+                                              Rect.fromPoints(
+                                                topLeft,
+                                                bottomRight,
                                               ),
-                                              ancestor: overlay,
+                                              Offset.zero & overlay.size,
+                                            ),
+                                            constraints: const BoxConstraints(
+                                              minWidth: 240,
+                                            ),
+                                            items: [
+                                              PopupMenuItem<String>(
+                                                value: 'pair',
+                                                child: Text(
+                                                  isPreferredConcurrent
+                                                      ? 'Remove movement pairing'
+                                                      : 'Pair movement with this event',
+                                                ),
+                                              ),
+                                              if (isHomeCalendarEntry)
+                                                PopupMenuItem<String>(
+                                                  value: 'planning',
+                                                  child: Text(
+                                                    nonBlockingCalendarEventIds
+                                                            .contains(entry.id)
+                                                        ? 'Include in planning'
+                                                        : 'Exclude from planning',
+                                                  ),
+                                                ),
+                                              if (isHomeCalendarEntry)
+                                                const PopupMenuItem<String>(
+                                                  value: 'gym',
+                                                  child: Text(
+                                                    'Log as gym session',
+                                                  ),
+                                                ),
+                                              const PopupMenuItem<String>(
+                                                value: 'remove',
+                                                child: Text(
+                                                  'Remove from this plan',
+                                                ),
+                                              ),
+                                            ],
+                                          );
+                                          if (action == 'pair') {
+                                            final next = Set<String>.from(
+                                              preferredConcurrentEntryIds,
                                             );
-                                        final action = await showMenu<String>(
-                                          context: buttonContext,
-                                          position: RelativeRect.fromRect(
-                                            Rect.fromPoints(
-                                              topLeft,
-                                              bottomRight,
-                                            ),
-                                            Offset.zero & overlay.size,
-                                          ),
-                                          constraints: const BoxConstraints(
-                                            minWidth: 240,
-                                          ),
-                                          items: [
-                                            PopupMenuItem<String>(
-                                              value: 'pair',
-                                              child: Text(
-                                                isPreferredConcurrent
-                                                    ? 'Remove movement pairing'
-                                                    : 'Pair movement with this event',
-                                              ),
-                                            ),
-                                            const PopupMenuItem<String>(
-                                              value: 'remove',
-                                              child: Text(
-                                                'Remove from this plan',
-                                              ),
-                                            ),
-                                          ],
-                                        );
-                                        if (action == 'pair') {
-                                          final next = Set<String>.from(
-                                            preferredConcurrentEntryIds,
-                                          );
-                                          if (!next.add(entry.id)) {
-                                            next.remove(entry.id);
+                                            if (!next.add(entry.id)) {
+                                              next.remove(entry.id);
+                                            }
+                                            onPreferredConcurrentEntryIdsChanged(
+                                              next,
+                                            );
+                                          } else if (action == 'remove') {
+                                            onRemovePlannerEntry(entry.id);
+                                          } else if (action == 'planning') {
+                                            final next = Set<String>.from(
+                                              nonBlockingCalendarEventIds,
+                                            );
+                                            if (!next.add(entry.id)) {
+                                              next.remove(entry.id);
+                                            }
+                                            onToggleCalendarPlanning(next);
+                                          } else if (action == 'gym') {
+                                            onLogHomeEventAsGym(entry);
                                           }
-                                          onPreferredConcurrentEntryIdsChanged(
-                                            next,
-                                          );
-                                        } else if (action == 'remove') {
-                                          onRemovePlannerEntry(entry.id);
-                                        }
-                                      },
-                                    );
-                                  },
-                                ),
-                              ),
-                            ),
-                          if (!isTiny &&
-                              !isCompact &&
-                              entry.type != 'buffer' &&
-                              entry.type != 'calendar' &&
-                              !isAllDayCalendarEntry)
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  tooltip: entry.isLocked
-                                      ? 'Unlock time'
-                                      : 'Lock time so re-planning won\'t move it',
-                                  visualDensity: VisualDensity.compact,
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(
-                                    minWidth: 24,
-                                    minHeight: 22,
-                                  ),
-                                  icon: Icon(
-                                    entry.isLocked
-                                        ? Icons.lock
-                                        : Icons.lock_open_outlined,
-                                    size: 14,
-                                    color: entry.isLocked
-                                        ? color
-                                        : Colors.blueGrey.shade400,
-                                  ),
-                                  onPressed: () => onTogglePlannerEntryLock(
-                                    entry.id,
-                                    !entry.isLocked,
+                                        },
+                                      );
+                                    },
                                   ),
                                 ),
-                                IconButton(
-                                  tooltip: 'Edit time',
-                                  visualDensity: VisualDensity.compact,
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(
-                                    minWidth: 24,
-                                    minHeight: 22,
+                              ),
+                            if (!isTiny &&
+                                !isCompact &&
+                                entry.type != 'calendar' &&
+                                !isAllDayCalendarEntry)
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    tooltip: entry.isLocked
+                                        ? 'Unlock time'
+                                        : 'Lock time so re-planning won\'t move it',
+                                    visualDensity: VisualDensity.compact,
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(
+                                      minWidth: 24,
+                                      minHeight: 22,
+                                    ),
+                                    icon: Icon(
+                                      entry.isLocked
+                                          ? Icons.lock
+                                          : Icons.lock_open_outlined,
+                                      size: 14,
+                                      color: entry.isLocked
+                                          ? color
+                                          : Colors.blueGrey.shade400,
+                                    ),
+                                    onPressed: () => onTogglePlannerEntryLock(
+                                      entry.id,
+                                      !entry.isLocked,
+                                    ),
                                   ),
-                                  icon: const Icon(
-                                    Icons.schedule_outlined,
-                                    size: 14,
+                                  IconButton(
+                                    tooltip: 'Edit time',
+                                    visualDensity: VisualDensity.compact,
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(
+                                      minWidth: 24,
+                                      minHeight: 22,
+                                    ),
+                                    icon: const Icon(
+                                      Icons.schedule_outlined,
+                                      size: 14,
+                                    ),
+                                    onPressed: () => _showEditEntryTimeDialog(
+                                      context,
+                                      entry,
+                                    ),
                                   ),
-                                  onPressed: () =>
-                                      _showEditEntryTimeDialog(context, entry),
+                                ],
+                              ),
+                            if (isCurrentEntry && !isTiny && !isCompact)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 1,
                                 ),
-                              ],
-                            ),
-                          if (isCurrentEntry && !isTiny && !isCompact)
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 6,
-                                vertical: 1,
+                                decoration: BoxDecoration(
+                                  color: color.withAlpha(230),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: const Text(
+                                  'NOW',
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.white,
+                                  ),
+                                ),
                               ),
-                              decoration: BoxDecoration(
-                                color: color.withAlpha(230),
-                                borderRadius: BorderRadius.circular(999),
-                              ),
-                              child: const Text(
-                                'NOW',
+                            if (isCurrentEntry && !isTiny && !isCompact)
+                              const SizedBox(height: 4),
+                            if (!isTiny && !isCompact)
+                              Text(
+                                timeLabel,
+                                textAlign: TextAlign.right,
                                 style: TextStyle(
-                                  fontSize: 9,
-                                  fontWeight: FontWeight.w800,
-                                  color: Colors.white,
+                                  fontSize: 11,
+                                  color: Colors.grey.shade700,
+                                  fontWeight: FontWeight.w600,
                                 ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
-                            ),
-                          if (isCurrentEntry && !isTiny && !isCompact)
-                            const SizedBox(height: 4),
-                          if (!isTiny && !isCompact)
-                            Text(
-                              timeLabel,
-                              textAlign: TextAlign.right,
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: Colors.grey.shade700,
-                                fontWeight: FontWeight.w600,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-              ],
-            );
-          },
+                ],
+              );
+            },
+          ),
         ),
       ),
     );
@@ -595,26 +714,41 @@ class DayPlannerSection extends StatelessWidget {
   }) {
     final isCalendar = entry.type == 'calendar';
     final isAllDay = isCalendar && entry.isAllDay;
+    final isHomeCalendar =
+        isCalendar && (entry.subtitle?.toLowerCase().contains('home') ?? false);
     final isCompleted = entry.executionState == ExecutionState.completed;
     final isSkipped = entry.executionState == ExecutionState.skipped;
     final isDismissed = entry.executionState == ExecutionState.dismissed;
-    final color = entry.type == 'movement'
+    final color = entry.type == 'personal'
+        ? const Color(0xFFB23A48)
+        : entry.type == 'break'
+        ? const Color(0xFF8A6D1D)
+        : entry.type == 'buffer'
+        ? const Color(0xFF6B4E9B)
+        : entry.type == 'movement'
         ? const Color(0xFFB05A00)
+        : entry.type == 'task'
+        ? (entry.task != null && isWorkTask(entry.task!)
+              ? const Color(0xFF008E7A)
+              : const Color(0xFF124B8A))
         : isCalendar
-        ? const Color(0xFF008E7A)
+        ? isHomeCalendar
+              ? const Color(0xFF124B8A)
+              : const Color(0xFF008E7A)
         : const Color(0xFF5B65C5);
     final timeText = isAllDay
         ? 'All day'
         : entry.isZeroDuration
         ? _formatMinutes(entry.start.hour * 60 + entry.start.minute)
         : '${_formatMinutes(entry.start.hour * 60 + entry.start.minute)} - ${_formatMinutes(entry.end.hour * 60 + entry.end.minute)}';
+    final categoryLabel = _eventCategoryLabel(entry);
 
     Future<void> showActions(BuildContext buttonContext) async {
       final actions = <String>[];
       if (!isCalendar) {
         actions.addAll(['complete', 'skip', 'defer', 'dismiss']);
-        if (entry.type != 'buffer') actions.add('edit');
-        if (entry.type != 'buffer') actions.add('lock');
+        actions.add('edit');
+        actions.add('lock');
       } else if (!isAllDay) {
         actions.addAll(['pair', 'remove']);
       }
@@ -645,14 +779,26 @@ class DayPlannerSection extends StatelessWidget {
             const PopupMenuItem(value: 'skip', child: Text('Skip')),
             const PopupMenuItem(value: 'defer', child: Text('Defer')),
             const PopupMenuItem(value: 'dismiss', child: Text('Dismiss')),
-            if (entry.type != 'buffer')
-              const PopupMenuItem(value: 'edit', child: Text('Edit time')),
-            if (entry.type != 'buffer')
-              PopupMenuItem(
-                value: 'lock',
-                child: Text(entry.isLocked ? 'Unlock time' : 'Lock time'),
-              ),
+            const PopupMenuItem(value: 'edit', child: Text('Edit time')),
+            PopupMenuItem(
+              value: 'lock',
+              child: Text(entry.isLocked ? 'Unlock time' : 'Lock time'),
+            ),
           ] else if (!isAllDay) ...[
+            if (isHomeCalendar)
+              PopupMenuItem(
+                value: 'planning',
+                child: Text(
+                  nonBlockingCalendarEventIds.contains(entry.id)
+                      ? 'Include in planning'
+                      : 'Exclude from planning',
+                ),
+              ),
+            if (isHomeCalendar)
+              const PopupMenuItem(
+                value: 'gym',
+                child: Text('Log as gym session'),
+              ),
             PopupMenuItem(
               value: 'pair',
               child: Text(
@@ -686,77 +832,106 @@ class DayPlannerSection extends StatelessWidget {
           final next = Set<String>.from(preferredConcurrentEntryIds);
           if (!next.add(entry.id)) next.remove(entry.id);
           onPreferredConcurrentEntryIdsChanged(next);
+        case 'planning':
+          final next = Set<String>.from(nonBlockingCalendarEventIds);
+          if (!next.add(entry.id)) next.remove(entry.id);
+          onToggleCalendarPlanning(next);
+        case 'gym':
+          onLogHomeEventAsGym(entry);
         case 'remove':
           onRemovePlannerEntry(entry.id);
       }
     }
 
-    return Align(
-      alignment: Alignment.topLeft,
-      child: Container(
-        height: isAllDay
-            ? (height < 48 ? 48 : height)
-            : height.clamp(1.0, double.infinity),
-        margin: EdgeInsets.zero,
-        clipBehavior: Clip.hardEdge,
-        padding: EdgeInsets.symmetric(horizontal: 6, vertical: 0),
-        decoration: BoxDecoration(
-          color: color.withAlpha(
-            isCompleted || isSkipped || isDismissed ? 18 : 34,
+    return Tooltip(
+      message: _eventTooltipMessage(
+        entry,
+        categoryLabel,
+        timeText,
+        entry.subtitle,
+      ),
+      waitDuration: const Duration(milliseconds: 350),
+      child: Align(
+        alignment: Alignment.topLeft,
+        child: Container(
+          height: isAllDay
+              ? (height < 48 ? 48 : height)
+              : height.clamp(1.0, double.infinity),
+          margin: EdgeInsets.zero,
+          clipBehavior: Clip.hardEdge,
+          padding: EdgeInsets.symmetric(horizontal: 6, vertical: 0),
+          decoration: BoxDecoration(
+            color: color.withAlpha(
+              isCompleted || isSkipped || isDismissed ? 28 : 70,
+            ),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: color.withAlpha(190)),
           ),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: color.withAlpha(190)),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 5,
-              height: entry.isZeroDuration ? 16 : 18,
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: BorderRadius.circular(8),
+          child: Row(
+            children: [
+              Container(
+                width: 5,
+                height: entry.isZeroDuration ? 16 : 18,
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(8),
+                ),
               ),
-            ),
-            const SizedBox(width: 7),
-            Text(
-              timeText,
-              maxLines: 1,
-              style: TextStyle(
-                fontSize: 9,
-                color: Colors.grey.shade700,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                entry.title,
+              const SizedBox(width: 7),
+              Text(
+                timeText,
                 maxLines: 1,
-                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  decoration: isCompleted || isDismissed
-                      ? TextDecoration.lineThrough
-                      : null,
+                  fontSize: 9,
+                  color: Colors.grey.shade700,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-            ),
-            if (!isAllDay)
-              Builder(
-                builder: (buttonContext) => IconButton(
-                  tooltip: 'Event actions',
-                  visualDensity: VisualDensity.compact,
-                  padding: EdgeInsets.zero,
-                  constraints: BoxConstraints.tightFor(
-                    width: entry.isZeroDuration ? 22 : 24,
-                    height: entry.isZeroDuration ? 22 : 24,
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  entry.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    decoration: isCompleted || isDismissed
+                        ? TextDecoration.lineThrough
+                        : null,
                   ),
-                  icon: const Icon(Icons.more_horiz, size: 18),
-                  onPressed: () => showActions(buttonContext),
                 ),
               ),
-          ],
+              if (height >= 36)
+                Padding(
+                  padding: const EdgeInsets.only(left: 4, right: 2),
+                  child: Text(
+                    categoryLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w700,
+                      color: color,
+                    ),
+                  ),
+                ),
+              if (!isAllDay)
+                Builder(
+                  builder: (buttonContext) => IconButton(
+                    tooltip: 'Event actions',
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: BoxConstraints.tightFor(
+                      width: entry.isZeroDuration ? 22 : 24,
+                      height: entry.isZeroDuration ? 22 : 24,
+                    ),
+                    icon: const Icon(Icons.more_horiz, size: 18),
+                    onPressed: () => showActions(buttonContext),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -886,6 +1061,118 @@ class DayPlannerSection extends StatelessWidget {
     onWorkdayHoursChanged((nextStart, nextEnd));
   }
 
+  Future<void> _showAddPersonalBlockDialog(
+    BuildContext context,
+    DateTime date,
+  ) async {
+    const personalBlockNameOptions = [
+      'Annual leave',
+      'Doctor appointment',
+      'Dentist appointment',
+      'School run',
+      'Family commitment',
+      'Travel time',
+      'Personal errand',
+      'Rest and recovery',
+    ];
+    var title = '';
+    var startTime = const TimeOfDay(hour: 9, minute: 0);
+    var endTime = const TimeOfDay(hour: 10, minute: 0);
+    final result = await showDialog<(String, TimeOfDay, TimeOfDay)>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('Add personal block'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Autocomplete<String>(
+                optionsBuilder: (value) {
+                  final query = value.text.trim().toLowerCase();
+                  if (query.isEmpty) {
+                    return personalBlockNameOptions;
+                  }
+                  return personalBlockNameOptions.where(
+                    (option) => option.toLowerCase().contains(query),
+                  );
+                },
+                onSelected: (value) => title = value,
+                fieldViewBuilder:
+                    (context, fieldController, focusNode, onFieldSubmitted) {
+                      return TextField(
+                        controller: fieldController,
+                        focusNode: focusNode,
+                        autofocus: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Name',
+                          hintText: 'Choose or type a personal event',
+                        ),
+                        onSubmitted: (_) => onFieldSubmitted(),
+                        onChanged: (value) => title = value,
+                      );
+                    },
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Start'),
+                trailing: Text(
+                  _formatMinutes(startTime.hour * 60 + startTime.minute),
+                ),
+                onTap: () async {
+                  final picked = await showTimePicker(
+                    context: dialogContext,
+                    initialTime: startTime,
+                  );
+                  if (picked != null) setDialogState(() => startTime = picked);
+                },
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('End'),
+                trailing: Text(
+                  _formatMinutes(endTime.hour * 60 + endTime.minute),
+                ),
+                onTap: () async {
+                  final picked = await showTimePicker(
+                    context: dialogContext,
+                    initialTime: endTime,
+                  );
+                  if (picked != null) setDialogState(() => endTime = picked);
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final trimmedTitle = title.trim();
+                if (trimmedTitle.isEmpty) return;
+                Navigator.of(
+                  dialogContext,
+                ).pop((trimmedTitle, startTime, endTime));
+              },
+              child: const Text('Add'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (result == null || !context.mounted) return;
+    final startMinutes = result.$2.hour * 60 + result.$2.minute;
+    final endMinutes = result.$3.hour * 60 + result.$3.minute;
+    if (endMinutes <= startMinutes) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('End time must be after start time.')),
+      );
+      return;
+    }
+    onAddPersonalBlock(date, result.$1, startMinutes, endMinutes);
+  }
+
   Widget _buildPlannerTimeline({
     required DateTime day,
     required List<DayPlannerEntry> entries,
@@ -928,20 +1215,50 @@ class DayPlannerSection extends StatelessWidget {
 
     final positionedEntries = <({DayPlannerEntry entry, int lane})>[];
     final laneEnds = <DateTime>[];
-    final sortedEntries =
-        entries
-            .where((entry) => entry.type != 'buffer' && !entry.isAllDay)
-            .toList()
-          ..sort((a, b) {
-            final startCompare = a.start.compareTo(b.start);
-            if (startCompare != 0) return startCompare;
-            return b.end.compareTo(a.end);
-          });
+    final sortedEntries = entries.where((entry) => !entry.isAllDay).toList()
+      ..sort((a, b) {
+        final startCompare = a.start.compareTo(b.start);
+        if (startCompare != 0) return startCompare;
+        final aPersonal = a.type == 'personal';
+        final bPersonal = b.type == 'personal';
+        if (aPersonal != bPersonal) return aPersonal ? -1 : 1;
+        final aLunch = a.type == 'break' && a.id.startsWith('break-lunch-');
+        final bLunch = b.type == 'break' && b.id.startsWith('break-lunch-');
+        if (aLunch != bLunch) return aLunch ? -1 : 1;
+        return b.end.compareTo(a.end);
+      });
+    final personalEntries = sortedEntries
+        .where((entry) => entry.type == 'personal')
+        .toList();
     for (final entry in sortedEntries) {
-      final laneEnd = entry.end.isAfter(entry.start)
-          ? entry.end
-          : entry.start.add(const Duration(minutes: 5));
+      final visualDuration = entry.end
+          .difference(entry.start)
+          .inMinutes
+          .clamp(12, totalMinutes);
+      final laneEnd = entry.start.add(Duration(minutes: visualDuration));
       var lane = 0;
+      final isExcludedHomeEvent =
+          entry.type == 'calendar' &&
+          entry.category == PlannerEventCategory.informational;
+      final hasOverlappingEvent = sortedEntries.any(
+        (other) =>
+            !identical(other, entry) &&
+            other.type != 'personal' &&
+            entry.start.isBefore(other.end) &&
+            entry.end.isAfter(other.start),
+      );
+      if (isExcludedHomeEvent && hasOverlappingEvent) {
+        lane = 1;
+        if (laneEnds.isEmpty) laneEnds.add(entry.start);
+      }
+      if (entry.type != 'personal' &&
+          personalEntries.any(
+            (personal) =>
+                entry.start.isBefore(personal.end) &&
+                entry.end.isAfter(personal.start),
+          )) {
+        lane = 1;
+      }
       while (lane < laneEnds.length && entry.start.isBefore(laneEnds[lane])) {
         lane++;
       }
@@ -1029,8 +1346,8 @@ class DayPlannerSection extends StatelessWidget {
                   child: SizedBox(
                     width: timelineWidth,
                     height: timelineContentHeight,
-                    child: SingleChildScrollView(
-                      primary: false,
+                    child: _TimelineVerticalScrollView(
+                      initialScrollOffset: timelineContentHeight / 4,
                       child: SizedBox(
                         height: timelineContentHeight,
                         child: Stack(
@@ -1258,9 +1575,11 @@ class DayPlannerSection extends StatelessWidget {
           gymCompletedToday: gymCompletedToday,
           daysSinceLastMobility: daysSinceLastMobility,
           preferredConcurrentEntryIds: preferredConcurrentEntryIds,
+          nonBlockingCalendarEventIds: nonBlockingCalendarEventIds,
           workdayStartMinutes: workdayStartMinutes,
           workdayEndMinutes: workdayEndMinutes,
           entryOverrides: plannerEntryOverrides,
+          personalBlocks: personalBlocks,
           executionStates: executionStates,
           timeGrid: timeGrid,
         );
@@ -1268,11 +1587,16 @@ class DayPlannerSection extends StatelessWidget {
           if (entry.executionState == ExecutionState.dismissed) {
             return false;
           }
-          final isPlannerAddition =
-              entry.type == 'break' ||
-              entry.type == 'buffer' ||
-              entry.type == 'movement';
-          if (isPlannerAddition && !showPlannerInPlanner) {
+          if (entry.type == 'personal' && !showPersonalInPlanner) {
+            return false;
+          }
+          if (entry.type == 'movement' && !showMovementInPlanner) {
+            return false;
+          }
+          if (entry.type == 'break' && !showBreakInPlanner) {
+            return false;
+          }
+          if (entry.type == 'buffer' && !showFocusInPlanner) {
             return false;
           }
           return true;
@@ -1309,8 +1633,12 @@ class DayPlannerSection extends StatelessWidget {
             builder: (context, sectionConstraints) {
               final availableHeight = sectionConstraints.maxHeight;
               final timelineHeight = availableHeight > 140
-                  ? availableHeight - 110
-                  : availableHeight;
+                  ? (availableHeight - 150)
+                        .clamp(0.0, double.infinity)
+                        .toDouble()
+                  : (availableHeight - 52)
+                        .clamp(0.0, double.infinity)
+                        .toDouble();
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -1334,6 +1662,7 @@ class DayPlannerSection extends StatelessWidget {
                       ),
                     ),
                   ),
+                  _buildTimelineFilters(),
                   const SizedBox(height: 12),
                   if (visiblePlannerEntries.isEmpty)
                     SizedBox(
@@ -1373,6 +1702,53 @@ class DayPlannerSection extends StatelessWidget {
           fontWeight: FontWeight.w800,
           color: Colors.teal.shade900,
         ),
+      ),
+    );
+  }
+
+  Widget _buildTimelineFilters() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Wrap(
+        spacing: 6,
+        children: [
+          _buildPlannerToggleChip(
+            label: 'Work',
+            selected: showWorkInPlanner,
+            chipColor: const Color(0xFF008E7A),
+            onChanged: onShowWorkInPlannerChanged,
+          ),
+          _buildPlannerToggleChip(
+            label: 'Home',
+            selected: showHomeInPlanner,
+            chipColor: const Color(0xFF124B8A),
+            onChanged: onShowHomeInPlannerChanged,
+          ),
+          _buildPlannerToggleChip(
+            label: 'Movement',
+            selected: showMovementInPlanner,
+            chipColor: const Color(0xFFB05A00),
+            onChanged: onShowMovementInPlannerChanged,
+          ),
+          _buildPlannerToggleChip(
+            label: 'Personal',
+            selected: showPersonalInPlanner,
+            chipColor: const Color(0xFFB23A48),
+            onChanged: onShowPersonalInPlannerChanged,
+          ),
+          _buildPlannerToggleChip(
+            label: 'Break',
+            selected: showBreakInPlanner,
+            chipColor: const Color(0xFF8A6D1D),
+            onChanged: onShowBreakInPlannerChanged,
+          ),
+          _buildPlannerToggleChip(
+            label: 'Focus',
+            selected: showFocusInPlanner,
+            chipColor: const Color(0xFF6B4E9B),
+            onChanged: onShowFocusInPlannerChanged,
+          ),
+        ],
       ),
     );
   }
@@ -1780,34 +2156,27 @@ class DayPlannerSection extends StatelessWidget {
                   ),
                   child: const Text('Today'),
                 ),
+                const Spacer(),
+                IconButton(
+                  tooltip: 'Import work calendar',
+                  icon: const Icon(Icons.upload_file_outlined),
+                  onPressed: onImportCalendar,
+                ),
+                IconButton(
+                  tooltip: 'Reset and replan this day',
+                  icon: const Icon(Icons.refresh_rounded),
+                  onPressed: onResetPlanner,
+                ),
+                IconButton(
+                  tooltip: 'Add personal block',
+                  icon: const Icon(Icons.add_box_outlined),
+                  onPressed: () =>
+                      _showAddPersonalBlockDialog(context, selectedPlannerDate),
+                ),
               ],
             ),
           );
         },
-      ),
-      const SizedBox(height: 8),
-      Wrap(
-        spacing: 6,
-        children: [
-          _buildPlannerToggleChip(
-            label: 'Work',
-            selected: showWorkInPlanner,
-            chipColor: const Color(0xFF008E7A),
-            onChanged: onShowWorkInPlannerChanged,
-          ),
-          _buildPlannerToggleChip(
-            label: 'Home',
-            selected: showHomeInPlanner,
-            chipColor: const Color(0xFF1E63D0),
-            onChanged: onShowHomeInPlannerChanged,
-          ),
-          _buildPlannerToggleChip(
-            label: 'Planner',
-            selected: showPlannerInPlanner,
-            chipColor: const Color(0xFF7C4DFF),
-            onChanged: onShowPlannerInPlannerChanged,
-          ),
-        ],
       ),
     ];
   }
@@ -1839,5 +2208,47 @@ class _DashedTimelineLinePainter extends CustomPainter {
   @override
   bool shouldRepaint(_DashedTimelineLinePainter oldDelegate) {
     return oldDelegate.color != color;
+  }
+}
+
+class _TimelineVerticalScrollView extends StatefulWidget {
+  const _TimelineVerticalScrollView({
+    required this.initialScrollOffset,
+    required this.child,
+  });
+
+  final double initialScrollOffset;
+  final Widget child;
+
+  @override
+  State<_TimelineVerticalScrollView> createState() =>
+      _TimelineVerticalScrollViewState();
+}
+
+class _TimelineVerticalScrollViewState
+    extends State<_TimelineVerticalScrollView> {
+  late final ScrollController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = ScrollController(
+      initialScrollOffset: widget.initialScrollOffset,
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      controller: _controller,
+      primary: false,
+      child: widget.child,
+    );
   }
 }

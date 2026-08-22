@@ -57,6 +57,214 @@ void main() {
     expect(result.summary, isNot(contains('focus block')));
   });
 
+  test('buildPlan lets activities start at zero-duration calendar events', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: [
+        Task(
+          task: 'Start on time',
+          priority: 'high',
+          dueDate: '2024-01-02',
+          nextSessionEffortMinutes: 30,
+        ),
+      ],
+      calendarEvents: [
+        OutlookCalendarEvent(
+          id: 'instant-1',
+          subject: 'Reminder',
+          start: DateTime(2024, 1, 2, 9),
+          end: DateTime(2024, 1, 2, 9),
+          isAllDay: false,
+          calendarSource: 'work',
+        ),
+      ],
+      day: DateTime(2024, 1, 2),
+    );
+
+    final task = result.entries.firstWhere((entry) => entry.type == 'task');
+    expect(task.start, DateTime(2024, 1, 2, 9));
+  });
+
+  test('buildPlan can show a Home event without using it for planning', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: [
+        Task(
+          task: 'Plan through appointment',
+          priority: 'high',
+          dueDate: '2024-01-02',
+          nextSessionEffortMinutes: 30,
+        ),
+      ],
+      calendarEvents: [
+        OutlookCalendarEvent(
+          id: 'home-appointment',
+          subject: 'Personal appointment',
+          start: DateTime(2024, 1, 2, 9),
+          end: DateTime(2024, 1, 2, 10),
+          isAllDay: false,
+          calendarSource: 'home',
+        ),
+      ],
+      day: DateTime(2024, 1, 2),
+      nonBlockingCalendarEventIds: const {'calendar-home-appointment'},
+    );
+
+    expect(
+      result.entries.any((entry) => entry.id == 'calendar-home-appointment'),
+      isTrue,
+    );
+    final task = result.entries.firstWhere((entry) => entry.type == 'task');
+    expect(task.start, DateTime(2024, 1, 2, 9));
+  });
+
+  test('buildPlan schedules up to five tasks when the day has room', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: [
+        for (var index = 0; index < 6; index++)
+          Task(
+            task: 'Task $index',
+            priority: 'high',
+            dueDate: '2024-01-02',
+            nextSessionEffortMinutes: 30,
+          ),
+      ],
+      calendarEvents: const <OutlookCalendarEvent>[],
+      day: DateTime(2024, 1, 2),
+      dayContext: _officeDayContext,
+    );
+
+    expect(result.entries.where((entry) => entry.type == 'task'), hasLength(5));
+  });
+
+  test('buildPlan clamps focus blocks between 10 and 30 minutes', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: [
+        Task(
+          task: 'Long focus task',
+          priority: 'high',
+          dueDate: '2024-01-02',
+          nextSessionEffortMinutes: 90,
+        ),
+        Task(
+          task: 'Short focus task',
+          priority: 'low',
+          dueDate: '2024-01-02',
+          nextSessionEffortMinutes: 5,
+        ),
+      ],
+      calendarEvents: const <OutlookCalendarEvent>[],
+      day: DateTime(2024, 1, 2),
+    );
+    final focusTasks = result.entries.where((entry) => entry.type == 'task');
+
+    expect(
+      focusTasks.every((task) {
+        final minutes = task.end.difference(task.start).inMinutes;
+        return minutes >= 10 && minutes <= 30;
+      }),
+      isTrue,
+    );
+  });
+
+  test(
+    'buildPlan shows weekend calendar items without planning activities',
+    () {
+      final result = DayPlannerService.buildPlan(
+        tasks: [Task(task: 'Weekend task', dueDate: '2024-01-06')],
+        calendarEvents: [
+          OutlookCalendarEvent(
+            id: 'weekend-event',
+            subject: 'Weekend lunch',
+            start: DateTime(2024, 1, 6, 12),
+            end: DateTime(2024, 1, 6, 13),
+            isAllDay: false,
+            calendarSource: 'home',
+          ),
+        ],
+        day: DateTime(2024, 1, 6),
+        dayContext: _homeDayContext,
+      );
+
+      expect(result.entries, hasLength(1));
+      expect(result.entries.single.type, 'calendar');
+      expect(result.entries.single.title, 'Weekend lunch');
+      expect(result.entries.any((entry) => entry.type != 'calendar'), isFalse);
+      expect(result.recommendations, isEmpty);
+      expect(result.summary, contains('Weekend'));
+    },
+  );
+
+  test('buildPlan places a recommended Zwift ride at 6pm', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: const <Task>[],
+      calendarEvents: const <OutlookCalendarEvent>[],
+      day: DateTime(2024, 1, 2),
+      dayContext: _homeDayContext,
+    );
+
+    final zwift = result.entries.firstWhere(
+      (entry) => entry.title == 'Zwift ride',
+    );
+    expect(zwift.start, DateTime(2024, 1, 2, 18));
+    expect(zwift.end, DateTime(2024, 1, 2, 18, 45));
+  });
+
+  test('buildPlan moves Zwift after a busy 6pm slot', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: const <Task>[],
+      calendarEvents: [
+        OutlookCalendarEvent(
+          id: 'evening-1',
+          subject: 'Dinner',
+          start: DateTime(2024, 1, 2, 18),
+          end: DateTime(2024, 1, 2, 19),
+          isAllDay: false,
+          calendarSource: 'home',
+        ),
+      ],
+      day: DateTime(2024, 1, 2),
+      dayContext: _homeDayContext,
+    );
+
+    final zwift = result.entries.firstWhere(
+      (entry) => entry.title == 'Zwift ride',
+    );
+    expect(zwift.start, DateTime(2024, 1, 2, 19));
+  });
+
+  test('buildPlan includes personal blocks as fixed entries', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: const <Task>[],
+      calendarEvents: const <OutlookCalendarEvent>[],
+      day: DateTime(2024, 1, 2),
+      dayContext: _homeDayContext,
+      personalBlocks: const [
+        PersonalPlannerBlock(
+          id: 'personal-leave',
+          title: 'Annual leave',
+          startMinutes: 11 * 60,
+          endMinutes: 15 * 60,
+        ),
+      ],
+    );
+
+    final block = result.entries.firstWhere(
+      (entry) => entry.id == 'personal-leave',
+    );
+    expect(block.type, 'personal');
+    expect(block.title, 'Annual leave');
+    expect(block.isLocked, isTrue);
+    expect(
+      result.entries
+          .where((entry) => entry.type == 'movement')
+          .every(
+            (movement) =>
+                !movement.end.isAfter(block.start) ||
+                !movement.start.isBefore(block.end),
+          ),
+      isTrue,
+    );
+  });
+
   test('buildPlan adds home movement blocks without overlapping meetings', () {
     final day = DateTime(2024, 1, 2);
     final result = DayPlannerService.buildPlan(
@@ -105,7 +313,33 @@ void main() {
     );
   });
 
-  test('buildPlan does not place walking movement during a meeting', () {
+  test('buildPlan pairs an office Work event with Walk while you work', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: const <Task>[],
+      calendarEvents: [
+        OutlookCalendarEvent(
+          id: 'work-call',
+          subject: 'Planning call',
+          start: DateTime(2024, 1, 2, 10),
+          end: DateTime(2024, 1, 2, 11),
+          isAllDay: false,
+          calendarSource: 'work',
+        ),
+      ],
+      day: DateTime(2024, 1, 2),
+      dayContext: _officeDayContext,
+      preferredConcurrentEntryIds: const {'calendar-work-call'},
+    );
+
+    final paired = result.entries.firstWhere(
+      (entry) => entry.type == 'movement' && entry.isConcurrent,
+    );
+    expect(paired.title, 'Walk while you work');
+    expect(paired.start, DateTime(2024, 1, 2, 10));
+    expect(paired.end.difference(paired.start).inMinutes, 15);
+  });
+
+  test('buildPlan allows home movement during a meeting', () {
     final result = DayPlannerService.buildPlan(
       tasks: const <Task>[],
       calendarEvents: [
@@ -126,7 +360,7 @@ void main() {
       result.entries.any(
         (entry) => entry.type == 'movement' && entry.isConcurrent,
       ),
-      isFalse,
+      isTrue,
     );
   });
 
@@ -144,8 +378,9 @@ void main() {
     expect(
       result.entries.every(
         (entry) =>
+            entry.title == 'Zwift ride' ||
             !entry.start.isBefore(DateTime(2024, 1, 2, 9)) &&
-            !entry.end.isAfter(DateTime(2024, 1, 2, 17)),
+                !entry.end.isAfter(DateTime(2024, 1, 2, 17)),
       ),
       isTrue,
     );
@@ -168,7 +403,7 @@ void main() {
     );
   });
 
-  test('buildPlan does not place walking movement during a selected event', () {
+  test('buildPlan allows home movement during a selected event', () {
     final result = DayPlannerService.buildPlan(
       tasks: const <Task>[],
       calendarEvents: [
@@ -190,7 +425,97 @@ void main() {
       result.entries.any(
         (entry) => entry.type == 'movement' && entry.isConcurrent,
       ),
-      isFalse,
+      isTrue,
+    );
+  });
+
+  test('buildPlan keeps breaks and open blocks non-overlapping', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: [
+        Task(
+          task: 'Focus task',
+          priority: 'high',
+          dueDate: '2024-01-02',
+          nextSessionEffortMinutes: 60,
+        ),
+      ],
+      calendarEvents: [
+        OutlookCalendarEvent(
+          id: 'meeting-1',
+          subject: 'Meeting',
+          start: DateTime(2024, 1, 2, 10),
+          end: DateTime(2024, 1, 2, 11),
+          isAllDay: false,
+          calendarSource: 'work',
+        ),
+      ],
+      day: DateTime(2024, 1, 2),
+      dayContext: _officeDayContext,
+    );
+    final protectedEntries = result.entries
+        .where((entry) => entry.type == 'break' || entry.type == 'buffer')
+        .toList();
+
+    for (var index = 0; index < protectedEntries.length; index++) {
+      for (
+        var otherIndex = index + 1;
+        otherIndex < protectedEntries.length;
+        otherIndex++
+      ) {
+        final first = protectedEntries[index];
+        final second = protectedEntries[otherIndex];
+        expect(
+          !first.end.isAfter(second.start) || !second.end.isAfter(first.start),
+          isTrue,
+        );
+      }
+    }
+    expect(
+      protectedEntries.every((protectedEntry) {
+        return result.entries
+            .where((entry) => entry.type == 'calendar')
+            .every(
+              (calendarEntry) =>
+                  !protectedEntry.end.isAfter(calendarEntry.start) ||
+                  !calendarEntry.end.isAfter(protectedEntry.start),
+            );
+      }),
+      isTrue,
+    );
+    final tasks = result.entries.where((entry) => entry.type == 'task');
+    expect(
+      protectedEntries.every((protectedEntry) {
+        return tasks.every(
+          (task) =>
+              !protectedEntry.start.isBefore(task.end) ||
+              !protectedEntry.end.isAfter(task.start),
+        );
+      }),
+      isTrue,
+    );
+  });
+
+  test('buildPlan fills the work window with open blocks', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: const <Task>[],
+      calendarEvents: const <OutlookCalendarEvent>[],
+      day: DateTime(2024, 1, 2),
+      dayContext: _officeDayContext,
+      workdayStartMinutes: 9 * 60,
+      workdayEndMinutes: 17 * 60,
+    );
+    final openBlocks = result.entries
+        .where((entry) => entry.type == 'buffer')
+        .toList();
+
+    expect(openBlocks, isNotEmpty);
+    expect(
+      openBlocks.every(
+        (block) =>
+            !block.start.isBefore(DateTime(2024, 1, 2, 9)) &&
+            !block.end.isAfter(DateTime(2024, 1, 2, 17)),
+      ),
+      isTrue,
     );
   });
 
@@ -245,7 +570,7 @@ void main() {
     final plannedTask = result.entries.firstWhere(
       (entry) => entry.type == 'task',
     );
-    expect(plannedTask.end.difference(plannedTask.start).inMinutes, equals(45));
+    expect(plannedTask.end.difference(plannedTask.start).inMinutes, equals(30));
   });
 
   test(

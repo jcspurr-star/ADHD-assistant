@@ -238,7 +238,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   bool eveningAvailable = false;
   bool showWorkInPlanner = true;
   bool showHomeInPlanner = true;
-  bool showPlannerInPlanner = true;
+  bool showPersonalInPlanner = true;
+  bool showMovementInPlanner = true;
+  bool showBreakInPlanner = true;
+  bool showFocusInPlanner = true;
   int selectedFocusTimerMinutes = 25;
   int selectedFocusTimerSeconds = 0;
   Duration remainingFocusTime = const Duration(minutes: 25);
@@ -1560,6 +1563,26 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     return parseStringList(raw).toSet();
   }
 
+  Set<String> nonBlockingCalendarEventIdsForDate(DateTime date) {
+    final raw =
+        dailyCheckinsByDate[getDateKey(date)]?['nonBlockingCalendarEventIds'];
+    return parseStringList(raw).toSet();
+  }
+
+  Future<void> setNonBlockingCalendarEventIds(
+    DateTime date,
+    Set<String> ids,
+  ) async {
+    final dateKey = getDateKey(date);
+    final current = Map<String, dynamic>.from(
+      dailyCheckinsByDate[dateKey] ?? defaultDailyCheckin(),
+    );
+    current['nonBlockingCalendarEventIds'] = ids.toList()..sort();
+    current['trackerVersion'] = 2;
+    setState(() => dailyCheckinsByDate[dateKey] = current);
+    await saveDailyCheckinsByDate();
+  }
+
   Set<String> removedPlannerEntryIdsForDate(DateTime date) {
     final raw =
         dailyCheckinsByDate[getDateKey(date)]?['removedPlannerEntryIds'];
@@ -1617,6 +1640,74 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     return overrides;
   }
 
+  List<PersonalPlannerBlock> personalBlocksForDate(DateTime date) {
+    final raw = dailyCheckinsByDate[getDateKey(date)]?['personalPlannerBlocks'];
+    final blocks = <PersonalPlannerBlock>[];
+    for (final encoded in parseStringList(raw)) {
+      try {
+        final decoded = Map<String, dynamic>.from(jsonDecode(encoded) as Map);
+        final id = decoded['id']?.toString();
+        final title = decoded['title']?.toString().trim();
+        final startMinutes = (decoded['startMinutes'] as num?)?.toInt();
+        final endMinutes = (decoded['endMinutes'] as num?)?.toInt();
+        if (id == null ||
+            title == null ||
+            title.isEmpty ||
+            startMinutes == null ||
+            endMinutes == null) {
+          continue;
+        }
+        blocks.add(
+          PersonalPlannerBlock(
+            id: id,
+            title: title,
+            startMinutes: startMinutes,
+            endMinutes: endMinutes,
+          ),
+        );
+      } catch (_) {
+        continue;
+      }
+    }
+    return blocks;
+  }
+
+  Future<void> addPersonalBlock(
+    DateTime date,
+    String title,
+    int startMinutes,
+    int endMinutes,
+  ) async {
+    final dateKey = getDateKey(date);
+    final current = Map<String, dynamic>.from(
+      dailyCheckinsByDate[dateKey] ?? defaultDailyCheckin(),
+    );
+    final blocks = personalBlocksForDate(date);
+    blocks.add(
+      PersonalPlannerBlock(
+        id: 'personal-${DateTime.now().microsecondsSinceEpoch}',
+        title: title,
+        startMinutes: startMinutes,
+        endMinutes: endMinutes,
+      ),
+    );
+    current['personalPlannerBlocks'] = blocks
+        .map(
+          (block) => jsonEncode({
+            'id': block.id,
+            'title': block.title,
+            'startMinutes': block.startMinutes,
+            'endMinutes': block.endMinutes,
+          }),
+        )
+        .toList();
+    current['trackerVersion'] = 2;
+    setState(() {
+      dailyCheckinsByDate[dateKey] = current;
+    });
+    await saveDailyCheckinsByDate();
+  }
+
   Map<String, ExecutionState> plannerExecutionStatesForDate(DateTime date) {
     final raw =
         dailyCheckinsByDate[getDateKey(date)]?['plannerExecutionStates'];
@@ -1665,14 +1756,20 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
 
     if (state == ExecutionState.completed && entry.type == 'movement') {
       final normalized = '${entry.title} ${entry.subtitle ?? ''}'.toLowerCase();
-      final pillar = normalized.contains('stand')
+      final pillar = normalized.contains('zwift')
+          ? ActivityPillar.zwift
+          : normalized.contains('stand')
           ? ActivityPillar.standing
           : ActivityPillar.walking;
+      final requiresMinutes =
+          pillar == ActivityPillar.walking || pillar == ActivityPillar.standing;
       final log = ActivityLogEntry(
         id: 'planner-activity-${entry.id}',
         pillar: pillar,
         completedAt: DateTime.now(),
-        minutes: entry.end.difference(entry.start).inMinutes,
+        minutes: requiresMinutes
+            ? entry.end.difference(entry.start).inMinutes
+            : null,
         source: ActivitySource.plannerTimeline,
         plannerItemId: entry.id,
       );
@@ -1815,8 +1912,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       'dopamineCrashSymptomsAdditional': <String>[],
       'contextTags': <String>[],
       'preferredConcurrentEntryIds': <String>[],
+      'nonBlockingCalendarEventIds': <String>[],
       'removedPlannerEntryIds': <String>[],
       'plannerEntryOverrides': <String>[],
+      'personalPlannerBlocks': <String>[],
       'plannerExecutionStates': <String>[],
     };
   }
@@ -2885,6 +2984,59 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     await StorageService.saveGymAvailable(enabled);
   }
 
+  Future<void> resetPlannerDay(DateTime date) async {
+    final dateKey = getDateKey(date);
+    final current = Map<String, dynamic>.from(
+      dailyCheckinsByDate[dateKey] ?? defaultDailyCheckin(),
+    );
+    current['preferredConcurrentEntryIds'] = <String>[];
+    current['nonBlockingCalendarEventIds'] = <String>[];
+    current['removedPlannerEntryIds'] = <String>[];
+    current['plannerEntryOverrides'] = <String>[];
+    current['plannerExecutionStates'] = <String>[];
+    current['trackerVersion'] = 2;
+
+    final nextLogs = activityLogs.where((entry) {
+      final completedAt = entry.completedAt.toLocal();
+      final isSameDay =
+          completedAt.year == date.year &&
+          completedAt.month == date.month &&
+          completedAt.day == date.day;
+      return entry.source != ActivitySource.plannerTimeline || !isSameDay;
+    }).toList();
+
+    setState(() {
+      dailyCheckinsByDate[dateKey] = current;
+      activityLogs = nextLogs;
+      weeklyActivityTotals = ActivityTrackingService.calculateWeeklyTotals(
+        nextLogs,
+      );
+    });
+    await saveDailyCheckinsByDate();
+    await StorageService.saveActivityLogs(nextLogs);
+  }
+
+  Future<void> logHomeEventAsGym(DayPlannerEntry event) async {
+    final entry = ActivityTrackingService.createManualEntry(
+      pillar: ActivityPillar.gym,
+      minutes: null,
+      completedAt: event.start,
+      id: 'activity-gym-${event.id}',
+    );
+    if (entry == null) return;
+    final nextLogs = [
+      ...ActivityTrackingService.withoutId(activityLogs, entry.id),
+      entry,
+    ];
+    setState(() {
+      activityLogs = nextLogs;
+      weeklyActivityTotals = ActivityTrackingService.calculateWeeklyTotals(
+        nextLogs,
+      );
+    });
+    await StorageService.saveActivityLogs(nextLogs);
+  }
+
   Future<void> setWfhAvailable(bool enabled) async {
     setState(() {
       wfhAvailable = enabled;
@@ -3624,7 +3776,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             plannerDayOffset: plannerDayOffset,
             showWorkInPlanner: showWorkInPlanner,
             showHomeInPlanner: showHomeInPlanner,
-            showPlannerInPlanner: showPlannerInPlanner,
+            showMovementInPlanner: showMovementInPlanner,
+            showBreakInPlanner: showBreakInPlanner,
+            showFocusInPlanner: showFocusInPlanner,
+            showPersonalInPlanner: showPersonalInPlanner,
             gymAvailable: gymAvailable,
             wfhAvailable: wfhAvailable,
             eveningAvailable: eveningAvailable,
@@ -3642,11 +3797,17 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             preferredConcurrentEntryIds: preferredConcurrentEntryIdsForDate(
               DateTime.now().add(Duration(days: plannerDayOffset)),
             ),
+            nonBlockingCalendarEventIds: nonBlockingCalendarEventIdsForDate(
+              DateTime.now().add(Duration(days: plannerDayOffset)),
+            ),
             removedPlannerEntryIds: removedPlannerEntryIdsForDate(
               DateTime.now().add(Duration(days: plannerDayOffset)),
             ),
             removedCalendarEventIds: removedCalendarEventIds,
             plannerEntryOverrides: plannerEntryOverridesForDate(
+              DateTime.now().add(Duration(days: plannerDayOffset)),
+            ),
+            personalBlocks: personalBlocksForDate(
               DateTime.now().add(Duration(days: plannerDayOffset)),
             ),
             workdayStartMinutes: plannerWorkdayStartMinutes,
@@ -3671,9 +3832,15 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                 showHomeInPlanner = next;
               });
             },
-            onShowPlannerInPlannerChanged: (next) {
+            onShowMovementInPlannerChanged: (next) =>
+                setState(() => showMovementInPlanner = next),
+            onShowBreakInPlannerChanged: (next) =>
+                setState(() => showBreakInPlanner = next),
+            onShowFocusInPlannerChanged: (next) =>
+                setState(() => showFocusInPlanner = next),
+            onShowPersonalInPlannerChanged: (next) {
               setState(() {
-                showPlannerInPlanner = next;
+                showPersonalInPlanner = next;
               });
             },
             onGymAvailableChanged: (next) {
@@ -3693,6 +3860,13 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               final date = DateTime.now().add(Duration(days: plannerDayOffset));
               unawaited(setPreferredConcurrentEntryIds(date, ids));
             },
+            onToggleCalendarPlanning: (ids) {
+              final date = DateTime.now().add(Duration(days: plannerDayOffset));
+              unawaited(setNonBlockingCalendarEventIds(date, ids));
+            },
+            onLogHomeEventAsGym: (event) {
+              unawaited(logHomeEventAsGym(event));
+            },
             onRemovePlannerEntry: (entryId) {
               final date = DateTime.now().add(Duration(days: plannerDayOffset));
               final next = removedPlannerEntryIdsForDate(date)..add(entryId);
@@ -3707,6 +3881,14 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             onTogglePlannerEntryLock: (entryId, locked) {
               final date = DateTime.now().add(Duration(days: plannerDayOffset));
               unawaited(setPlannerEntryLocked(date, entryId, locked));
+            },
+            onAddPersonalBlock: (date, title, start, end) {
+              unawaited(addPersonalBlock(date, title, start, end));
+            },
+            onImportCalendar: importIcsCalendarFile,
+            onResetPlanner: () {
+              final date = DateTime.now().add(Duration(days: plannerDayOffset));
+              unawaited(resetPlannerDay(date));
             },
             onExecutePlannerEntry: (entry, state) {
               final date = DateTime.now().add(Duration(days: plannerDayOffset));
@@ -4147,7 +4329,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           plannerDayOffset: plannerDayOffset,
           showWorkInPlanner: showWorkInPlanner,
           showHomeInPlanner: showHomeInPlanner,
-          showPlannerInPlanner: showPlannerInPlanner,
+          showMovementInPlanner: showMovementInPlanner,
+          showBreakInPlanner: showBreakInPlanner,
+          showFocusInPlanner: showFocusInPlanner,
+          showPersonalInPlanner: showPersonalInPlanner,
           gymAvailable: gymAvailable,
           wfhAvailable: wfhAvailable,
           eveningAvailable: eveningAvailable,
@@ -4165,11 +4350,17 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           preferredConcurrentEntryIds: preferredConcurrentEntryIdsForDate(
             DateTime.now().add(Duration(days: plannerDayOffset)),
           ),
+          nonBlockingCalendarEventIds: nonBlockingCalendarEventIdsForDate(
+            DateTime.now().add(Duration(days: plannerDayOffset)),
+          ),
           removedPlannerEntryIds: removedPlannerEntryIdsForDate(
             DateTime.now().add(Duration(days: plannerDayOffset)),
           ),
           removedCalendarEventIds: removedCalendarEventIds,
           plannerEntryOverrides: plannerEntryOverridesForDate(
+            DateTime.now().add(Duration(days: plannerDayOffset)),
+          ),
+          personalBlocks: personalBlocksForDate(
             DateTime.now().add(Duration(days: plannerDayOffset)),
           ),
           workdayStartMinutes: plannerWorkdayStartMinutes,
@@ -4186,18 +4377,39 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               setState(() => showWorkInPlanner = value),
           onShowHomeInPlannerChanged: (value) =>
               setState(() => showHomeInPlanner = value),
-          onShowPlannerInPlannerChanged: (value) =>
-              setState(() => showPlannerInPlanner = value),
+          onShowMovementInPlannerChanged: (value) =>
+              setState(() => showMovementInPlanner = value),
+          onShowBreakInPlannerChanged: (value) =>
+              setState(() => showBreakInPlanner = value),
+          onShowFocusInPlannerChanged: (value) =>
+              setState(() => showFocusInPlanner = value),
+          onShowPersonalInPlannerChanged: (value) =>
+              setState(() => showPersonalInPlanner = value),
           onGymAvailableChanged: (value) => unawaited(setGymAvailable(value)),
           onWfhAvailableChanged: (value) => unawaited(setWfhAvailable(value)),
           onEveningAvailableChanged: (value) =>
               unawaited(setEveningAvailable(value)),
+          onAddPersonalBlock: (date, title, start, end) {
+            unawaited(addPersonalBlock(date, title, start, end));
+          },
+          onImportCalendar: importIcsCalendarFile,
+          onResetPlanner: () {
+            final date = DateTime.now().add(Duration(days: plannerDayOffset));
+            unawaited(resetPlannerDay(date));
+          },
           onCompleteRecommendation: (value) =>
               unawaited(completeActivityRecommendation(value)),
           onViewActivityHistory: openActivityHistory,
           onPreferredConcurrentEntryIdsChanged: (ids) {
             final date = DateTime.now().add(Duration(days: plannerDayOffset));
             unawaited(setPreferredConcurrentEntryIds(date, ids));
+          },
+          onToggleCalendarPlanning: (ids) {
+            final date = DateTime.now().add(Duration(days: plannerDayOffset));
+            unawaited(setNonBlockingCalendarEventIds(date, ids));
+          },
+          onLogHomeEventAsGym: (event) {
+            unawaited(logHomeEventAsGym(event));
           },
           onRemovePlannerEntry: (entryId) {
             final date = DateTime.now().add(Duration(days: plannerDayOffset));
