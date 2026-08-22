@@ -116,7 +116,7 @@ void main() {
     expect(task.start, DateTime(2024, 1, 2, 9));
   });
 
-  test('buildPlan schedules up to five tasks when the day has room', () {
+  test('buildPlan schedules tasks until capacity is exhausted', () {
     final result = DayPlannerService.buildPlan(
       tasks: [
         for (var index = 0; index < 6; index++)
@@ -132,7 +132,35 @@ void main() {
       dayContext: _officeDayContext,
     );
 
-    expect(result.entries.where((entry) => entry.type == 'task'), hasLength(5));
+    expect(result.entries.where((entry) => entry.type == 'task'), hasLength(6));
+  });
+
+  test('buildPlan reserves capacity for fixed calendar time', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: [
+        for (var index = 0; index < 6; index++)
+          Task(
+            task: 'Task $index',
+            priority: 'high',
+            dueDate: '2024-01-02',
+            nextSessionEffortMinutes: 30,
+          ),
+      ],
+      calendarEvents: [
+        OutlookCalendarEvent(
+          id: 'fixed-half-day',
+          subject: 'Fixed event',
+          start: DateTime(2024, 1, 2, 9),
+          end: DateTime(2024, 1, 2, 13),
+          isAllDay: false,
+          calendarSource: 'work',
+        ),
+      ],
+      day: DateTime(2024, 1, 2),
+      dayContext: _officeDayContext,
+    );
+
+    expect(result.entries.where((entry) => entry.type == 'task'), hasLength(4));
   });
 
   test('buildPlan clamps focus blocks between 10 and 30 minutes', () {

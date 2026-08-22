@@ -92,6 +92,33 @@ class PersonalPlannerBlock {
   final int endMinutes;
 }
 
+class _DailyCapacity {
+  const _DailyCapacity({
+    required this.workWindowMinutes,
+    required this.fixedEventMinutes,
+    required this.lunchMinutes,
+    required this.requiredBreakMinutes,
+    required this.movementMinimumMinutes,
+    required this.reserveMinutes,
+  });
+
+  final int workWindowMinutes;
+  final int fixedEventMinutes;
+  final int lunchMinutes;
+  final int requiredBreakMinutes;
+  final int movementMinimumMinutes;
+  final int reserveMinutes;
+
+  int get availableMinutes =>
+      (workWindowMinutes -
+              fixedEventMinutes -
+              lunchMinutes -
+              requiredBreakMinutes -
+              movementMinimumMinutes -
+              reserveMinutes)
+          .clamp(0, workWindowMinutes);
+}
+
 class DayPlannerResult {
   DayPlannerResult({
     required this.entries,
@@ -371,14 +398,21 @@ class DayPlannerService {
     final plannedTaskEntries = <DayPlannerEntry>[];
     DateTime currentTime = dayStart;
     bool hasShownLunchBreak = false;
+    final dailyCapacity = _calculateDailyCapacity(entries, dayStart, dayEnd);
+    var remainingTaskCapacity = dailyCapacity.availableMinutes;
 
-    for (var index = 0; index < actionableTasks.length && index < 5; index++) {
+    for (
+      var index = 0;
+      index < actionableTasks.length && remainingTaskCapacity > 0;
+      index++
+    ) {
       final task = actionableTasks[index];
       final estimatedDuration = _estimateTaskDuration(task);
       final focusMinutes = estimatedDuration.inMinutes.clamp(10, 30);
       final duration = _snapDurationToFiveMinutes(
         Duration(minutes: focusMinutes),
       );
+      if (duration.inMinutes > remainingTaskCapacity) break;
       final target = dayStart.add(
         Duration(
           minutes: actionableTasks.length == 1
@@ -426,6 +460,7 @@ class DayPlannerService {
             category: PlannerEventCategory.planned,
           ),
         );
+        remainingTaskCapacity -= duration.inMinutes;
 
         final effectivePlannedEnd = snappedStart.add(duration);
         currentTime = effectivePlannedEnd;
@@ -779,6 +814,46 @@ class DayPlannerService {
       );
     }
     return blocks;
+  }
+
+  static _DailyCapacity _calculateDailyCapacity(
+    List<DayPlannerEntry> fixedEntries,
+    DateTime dayStart,
+    DateTime dayEnd,
+  ) {
+    final intervals =
+        fixedEntries
+            .where(_occupiesPlanningTime)
+            .map(
+              (entry) => (
+                start: entry.start.isBefore(dayStart) ? dayStart : entry.start,
+                end: entry.end.isAfter(dayEnd) ? dayEnd : entry.end,
+              ),
+            )
+            .where((entry) => entry.end.isAfter(entry.start))
+            .toList()
+          ..sort((a, b) => a.start.compareTo(b.start));
+    var fixedMinutes = 0;
+    var occupiedEnd = dayStart;
+    for (final interval in intervals) {
+      final effectiveStart = interval.start.isAfter(occupiedEnd)
+          ? interval.start
+          : occupiedEnd;
+      if (interval.end.isAfter(effectiveStart)) {
+        fixedMinutes += interval.end.difference(effectiveStart).inMinutes;
+      }
+      if (interval.end.isAfter(occupiedEnd)) occupiedEnd = interval.end;
+    }
+    final workWindowMinutes = dayEnd.difference(dayStart).inMinutes;
+    final reserveMinutes = (workWindowMinutes * 0.15).round();
+    return _DailyCapacity(
+      workWindowMinutes: workWindowMinutes,
+      fixedEventMinutes: fixedMinutes,
+      lunchMinutes: const Duration(minutes: 30).inMinutes,
+      requiredBreakMinutes: workWindowMinutes >= 120 ? 10 : 0,
+      movementMinimumMinutes: 0,
+      reserveMinutes: reserveMinutes,
+    );
   }
 
   static List<DayPlannerEntry> _removeTaskOverlaps(
