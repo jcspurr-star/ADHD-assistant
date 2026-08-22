@@ -13,6 +13,7 @@ class DayPlannerEntry {
     required this.end,
     this.subtitle,
     this.task,
+    this.relatedTaskIds = const <String>[],
     this.isAllDay = false,
     this.isConcurrent = false,
     this.isLocked = false,
@@ -28,6 +29,7 @@ class DayPlannerEntry {
   final DateTime end;
   final String? subtitle;
   final Task? task;
+  final List<String> relatedTaskIds;
   final bool isAllDay;
   final bool isConcurrent;
   // True when the user manually pinned this entry's time; the planner won't move it.
@@ -52,6 +54,7 @@ class DayPlannerEntry {
       end: end ?? this.end,
       subtitle: subtitle,
       task: task,
+      relatedTaskIds: relatedTaskIds,
       isAllDay: isAllDay,
       isConcurrent: isConcurrent,
       isLocked: isLocked ?? this.isLocked,
@@ -159,8 +162,6 @@ class DayPlannerResult {
 }
 
 class DayPlannerService {
-  static const Duration _defaultBreak = Duration(minutes: 10);
-  static const Duration _defaultLunchBreak = Duration(minutes: 30);
   static const Duration _minimumEventDuration = Duration(minutes: 5);
 
   static bool _occupiesPlanningTime(DayPlannerEntry entry) {
@@ -460,6 +461,7 @@ class DayPlannerService {
               ? 'Includes: ${session.tasks.map((task) => task.task).join(', ')}'
               : _taskSubtitle(task),
           task: task,
+          relatedTaskIds: session.tasks.map((task) => task.id).toList(),
           category: PlannerEventCategory.planned,
         ),
       );
@@ -1137,19 +1139,6 @@ class DayPlannerService {
     return result;
   }
 
-  static bool _intervalIsFree(
-    Iterable<DayPlannerEntry> entries,
-    DateTime start,
-    DateTime end,
-  ) {
-    return entries.every(
-      (entry) =>
-          !_occupiesPlanningTime(entry) ||
-          !start.isBefore(entry.end) ||
-          !end.isAfter(entry.start),
-    );
-  }
-
   static List<DayPlannerEntry> _applyEntryOverrides(
     List<DayPlannerEntry> entries,
     Map<String, PlannerEntryOverride> overrides,
@@ -1263,22 +1252,6 @@ class DayPlannerService {
     return best;
   }
 
-  static DateTime _taskStartAfterCalendarReset(
-    List<DayPlannerEntry> entries,
-    DateTime currentTime,
-    DateTime target,
-    DateTime dayEnd,
-  ) {
-    var earliest = currentTime;
-    for (final entry in entries) {
-      if (entry.type != 'calendar' || entry.isAllDay) continue;
-      if (entry.end.isAfter(earliest) && !entry.end.isAfter(target)) {
-        earliest = entry.end.add(_defaultBreak);
-      }
-    }
-    return earliest.isAfter(dayEnd) ? dayEnd : earliest;
-  }
-
   static bool _intervalOverlapsPersonal(
     DateTime start,
     DateTime end,
@@ -1382,49 +1355,6 @@ class DayPlannerService {
       }
     }
     return best;
-  }
-
-  static bool _calendarAllowsConcurrentMovement(String title, String mode) {
-    final normalized = title.toLowerCase();
-    const sharedMeetingWords = [
-      'call',
-      'catch up',
-      'catch-up',
-      'check-in',
-      'check in',
-      'one to one',
-      '1:1',
-      'stand-up',
-      'stand up',
-      'sync',
-      'review',
-      'interview',
-      'webinar',
-      'briefing',
-    ];
-    if (!sharedMeetingWords.any(normalized.contains)) return false;
-    if (mode == 'office') {
-      return normalized.contains('call') ||
-          normalized.contains('catch') ||
-          normalized.contains('1:1') ||
-          normalized.contains('check');
-    }
-    return true;
-  }
-
-  static bool _taskAllowsConcurrentMovement(String title) {
-    final normalized = title.toLowerCase();
-    const lowLoadTaskWords = [
-      'call',
-      'phone',
-      'listen',
-      'read',
-      'inbox',
-      'admin',
-      'file',
-      'sort',
-    ];
-    return lowLoadTaskWords.any(normalized.contains);
   }
 
   static Duration _estimateTaskDuration(Task task) {

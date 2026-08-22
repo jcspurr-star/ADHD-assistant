@@ -1746,13 +1746,15 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     if (existingState == state) return;
 
     if (state == ExecutionState.completed &&
-        entry.type == 'task' &&
-        !entry.id.contains('-session-')) {
-      final taskIndex = entry.task == null
-          ? -1
-          : tasks.indexWhere((task) => identical(task, entry.task));
-      if (taskIndex >= 0) {
-        await toggleTask(taskIndex, true);
+        (entry.type == 'task' || entry.type == 'admin')) {
+      final taskIds = entry.relatedTaskIds.isEmpty && entry.task != null
+          ? <String>[entry.task!.id]
+          : entry.relatedTaskIds;
+      if (!entry.id.contains('-session-')) {
+        for (final taskId in taskIds) {
+          final taskIndex = tasks.indexWhere((task) => task.id == taskId);
+          if (taskIndex >= 0) await toggleTask(taskIndex, true);
+        }
       }
     }
 
