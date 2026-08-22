@@ -12,7 +12,14 @@ class MainSectionTabs extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const labels = ['Home', 'Timer', 'Task list', 'Insights', 'Notes'];
+    const labels = [
+      'Home',
+      'Timer',
+      'Task list',
+      'Insights',
+      'Notes',
+      'Tasks V2',
+    ];
 
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,

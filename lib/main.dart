@@ -38,6 +38,7 @@ import 'services/activity_tracking_service.dart';
 import 'services/planner_execution_service.dart';
 import 'widgets/outlook_section.dart';
 import 'widgets/priority_task_card.dart';
+import 'widgets/tasks_v2_page.dart';
 import 'widgets/quick_capture_section.dart';
 import 'widgets/symptom_tracker_section.dart';
 import 'widgets/task_composer_section.dart';
@@ -2442,29 +2443,46 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   }
 
   Future<void> addTask() async {
-    if (taskController.text.trim().isNotEmpty) {
-      ensureSelectedTaskCategoryIsValid();
-      final taskCategory = selectedTaskCategory == 'All tasks'
-          ? (categories.isNotEmpty ? categories.first : 'None')
-          : selectedTaskCategory;
+    await addTaskFromText(taskController.text);
+    taskController.clear();
+  }
 
-      setState(() {
-        tasks.add(
-          Task(
-            task: taskController.text.trim(),
-            done: false,
-            expanded: false,
-            priority: 'medium',
-            category: taskCategory,
-          ),
-        );
-        subtaskControllers.add(TextEditingController());
-      });
+  Future<void> addTaskFromText(String value) async {
+    final title = value.trim();
+    if (title.isEmpty) return;
+    ensureSelectedTaskCategoryIsValid();
+    final taskCategory = selectedTaskCategory == 'All tasks'
+        ? (categories.isNotEmpty ? categories.first : 'None')
+        : selectedTaskCategory;
+    setState(() {
+      tasks.add(
+        Task(
+          task: title,
+          done: false,
+          expanded: false,
+          priority: 'medium',
+          category: taskCategory,
+        ),
+      );
+      subtaskControllers.add(TextEditingController());
+    });
+    await saveTasks();
+  }
 
-      taskController.clear();
+  Future<void> setTaskArchived(int index, bool archived) async {
+    if (index < 0 || index >= tasks.length) return;
+    setState(() => tasks[index].archived = archived);
+    await saveTasks();
+  }
 
-      await saveTasks();
-    }
+  Future<void> addSubtaskText(int taskIndex, String text) async {
+    final value = text.trim();
+    if (taskIndex < 0 || taskIndex >= tasks.length || value.isEmpty) return;
+    setState(() {
+      tasks[taskIndex].subtasks.add(Subtask(text: value));
+      tasks[taskIndex].expanded = true;
+    });
+    await saveTasks();
   }
 
   Future<void> addTaskWithSubtask() async {
@@ -3211,6 +3229,9 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
 
     setState(() {
       tasks[index].done = newDoneValue;
+      tasks[index].completedAtUtc = newDoneValue
+          ? DateTime.now().toUtc().toIso8601String()
+          : null;
       for (final subtask in tasks[index].subtasks) {
         subtask.done = newDoneValue;
       }
@@ -3655,6 +3676,23 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(completedStep)));
+  }
+
+  Widget buildTasksV2View() {
+    return TasksV2Page(
+      tasks: tasks,
+      onAddTask: addTaskFromText,
+      onSaveTasks: saveTasks,
+      onToggleTask: (index, value) => toggleTask(index, value),
+      onEditTask: editTask,
+      onDeleteTask: deleteTask,
+      onSetArchived: setTaskArchived,
+      onToggleSubtask: (taskIndex, subtaskIndex, value) =>
+          toggleSubtask(taskIndex, subtaskIndex, value),
+      onAddSubtask: addSubtaskText,
+      onEditSubtask: editSubtask,
+      onDeleteSubtask: deleteSubtask,
+    );
   }
 
   Widget buildTasksView({
@@ -4555,6 +4593,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                 child: MainContentView(
                   selectedMainSectionIndex: selectedMainSectionIndex,
                   buildTasksView: buildTasksView,
+                  buildTasksV2View: buildTasksV2View,
                   buildHomeDashboard: () =>
                       _buildPlannerExperience(dashboardMode: true),
                   buildCombinedHomePlanner: _buildCombinedHomePlanner,

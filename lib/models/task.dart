@@ -48,6 +48,11 @@ class Task {
   String starterSetupChecklist;
   String starterIfStuck;
   String? snoozedUntilUtc;
+  String description;
+  String notes;
+  List<String> tags;
+  bool archived;
+  String? completedAtUtc;
 
   Task({
     String? id,
@@ -67,9 +72,15 @@ class Task {
     this.starterSetupChecklist = '',
     this.starterIfStuck = '',
     this.snoozedUntilUtc,
+    this.description = '',
+    this.notes = '',
+    List<String>? tags,
+    this.archived = false,
+    this.completedAtUtc,
   }) : id = id ?? 'task-${DateTime.now().microsecondsSinceEpoch}',
        aiSubtasks = aiSubtasks ?? [],
-       subtasks = subtasks ?? [];
+       subtasks = subtasks ?? [],
+       tags = tags ?? [];
 
   factory Task.fromJson(Map<String, dynamic> json) {
     return Task(
@@ -98,6 +109,15 @@ class Task {
       starterSetupChecklist: json["starterSetupChecklist"] ?? '',
       starterIfStuck: json["starterIfStuck"] ?? '',
       snoozedUntilUtc: json["snoozedUntilUtc"],
+      description: json["description"] ?? '',
+      notes: json["notes"] ?? '',
+      tags:
+          (json["tags"] as List<dynamic>?)
+              ?.map((tag) => tag.toString())
+              .toList() ??
+          [],
+      archived: json["archived"] ?? false,
+      completedAtUtc: json["completedAtUtc"],
     );
   }
 
@@ -120,6 +140,11 @@ class Task {
       "starterSetupChecklist": starterSetupChecklist,
       "starterIfStuck": starterIfStuck,
       "snoozedUntilUtc": snoozedUntilUtc,
+      "description": description,
+      "notes": notes,
+      "tags": tags,
+      "archived": archived,
+      "completedAtUtc": completedAtUtc,
     };
   }
 }

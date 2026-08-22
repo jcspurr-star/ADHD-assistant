@@ -5,6 +5,7 @@ class MainContentView extends StatelessWidget {
     super.key,
     required this.selectedMainSectionIndex,
     required this.buildTasksView,
+    required this.buildTasksV2View,
     required this.buildHomeDashboard,
     required this.buildCombinedHomePlanner,
     required this.buildCountdownView,
@@ -18,6 +19,7 @@ class MainContentView extends StatelessWidget {
     required bool showTaskList,
   })
   buildTasksView;
+  final Widget Function() buildTasksV2View;
   final Widget Function() buildHomeDashboard;
   final Widget Function() buildCombinedHomePlanner;
   final Widget Function() buildCountdownView;
@@ -33,6 +35,8 @@ class MainContentView extends StatelessWidget {
         return buildCountdownView();
       case 2:
         return buildTasksView(showOverview: false, showTaskList: true);
+      case 5:
+        return buildTasksV2View();
       case 3:
         return buildInsightsView();
       case 4:
