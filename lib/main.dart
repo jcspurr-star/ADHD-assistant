@@ -211,6 +211,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   List<ActivityLogEntry> activityLogs = [];
   WeeklyActivityTotals weeklyActivityTotals = const WeeklyActivityTotals();
   Map<String, Map<String, dynamic>> dailyCheckinsByDate = {};
+  Set<String> removedCalendarEventIds = <String>{};
   String? selectedNoteId;
   List<String> categories = ['None'];
   String starterStepPrompt = GeminiService.defaultStarterStepPromptTemplate;
@@ -230,6 +231,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   int plannerDayOffset = 0;
   int plannerWorkdayStartMinutes = 9 * 60;
   int plannerWorkdayEndMinutes = 17 * 60;
+  TimeGrid plannerTimeGrid = TimeGrid.fifteenMinutes;
   bool prioritizeWorkOnWeekdays = true;
   bool gymAvailable = false;
   bool wfhAvailable = false;
@@ -325,6 +327,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       final loadedNoteEntries = await StorageService.loadNoteEntries();
       final loadedDailyCheckinsByDate =
           await StorageService.loadDailyCheckinsByDate();
+      final loadedRemovedCalendarEventIds =
+          await StorageService.loadRemovedCalendarEventIds();
       final loadedCategories = await StorageService.loadCategories();
       final loadedStarterStepPrompt =
           await StorageService.loadStarterStepPrompt();
@@ -352,6 +356,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           await StorageService.loadPlannerWorkdayStartMinutes();
       final loadedPlannerWorkdayEndMinutes =
           await StorageService.loadPlannerWorkdayEndMinutes();
+      final loadedPlannerTimeGrid = await StorageService.loadPlannerTimeGrid();
 
       List<String> resolveOptionList(
         List<String>? loaded,
@@ -422,6 +427,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         eveningAvailable = resolvedEveningAvailable;
         plannerWorkdayStartMinutes = resolvedPlannerWorkdayStartMinutes;
         plannerWorkdayEndMinutes = resolvedPlannerWorkdayEndMinutes;
+        plannerTimeGrid = loadedPlannerTimeGrid;
         tasks = loadedTasks;
         activityLogs = loadedActivityLogs;
         weeklyActivityTotals = ActivityTrackingService.calculateWeeklyTotals(
@@ -430,6 +436,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         inboxEntries = loadedInboxEntries;
         noteEntries = loadedNoteEntries;
         dailyCheckinsByDate = loadedDailyCheckinsByDate;
+        removedCalendarEventIds = loadedRemovedCalendarEventIds;
         selectedNoteId = null;
         normalizeTaskCategories();
         ensureSelectedTaskCategoryIsValid();
@@ -621,9 +628,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     if (!mounted) {
       return;
     }
-    setState(() {
-      upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
-    });
+    _refreshUpcomingOutlookEvents();
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Imported Outlook data cleared.')),
     );
@@ -687,9 +692,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     await StorageService.saveImportedOutlookEvents(importResult.eventsToSave);
     await _loadImportedOutlookSummary();
     if (!mounted) return;
-    setState(() {
-      upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
-    });
+    _refreshUpcomingOutlookEvents();
 
     final movedSuffix = importResult.movedCount > 0
         ? ' ${importResult.movedCount} moved.'
@@ -789,7 +792,14 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   }
 
   void _refreshUpcomingOutlookEvents() {
+    unawaited(_refreshUpcomingOutlookEventsAndRestoreRemoved());
+  }
+
+  Future<void> _refreshUpcomingOutlookEventsAndRestoreRemoved() async {
+    await StorageService.clearRemovedCalendarEventIds();
+    if (!mounted) return;
     setState(() {
+      removedCalendarEventIds = <String>{};
       upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
     });
   }
@@ -1641,6 +1651,9 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   ) async {
     if (entry.type == 'calendar') return;
 
+    final existingState = plannerExecutionStatesForDate(date)[entry.id];
+    if (existingState == state) return;
+
     if (state == ExecutionState.completed && entry.type == 'task') {
       final taskIndex = entry.task == null
           ? -1
@@ -1656,13 +1669,50 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           ? ActivityPillar.standing
           : ActivityPillar.walking;
       final log = ActivityLogEntry(
-        id: 'activity-${DateTime.now().microsecondsSinceEpoch}',
+        id: 'planner-activity-${entry.id}',
         pillar: pillar,
         completedAt: DateTime.now(),
         minutes: entry.end.difference(entry.start).inMinutes,
         source: ActivitySource.plannerTimeline,
+        plannerItemId: entry.id,
       );
-      final nextLogs = [...activityLogs, log];
+      final nextLogs = [
+        ...ActivityTrackingService.withoutPlannerItem(activityLogs, entry.id),
+        log,
+      ];
+      setState(() {
+        activityLogs = nextLogs;
+        weeklyActivityTotals = ActivityTrackingService.calculateWeeklyTotals(
+          nextLogs,
+        );
+      });
+      await StorageService.saveActivityLogs(nextLogs);
+    }
+
+    if (state == ExecutionState.deferred) {
+      final deferredStart = PlannerExecutionService.snapToGrid(
+        DateTime.now().add(const Duration(minutes: 30)),
+        plannerTimeGrid,
+      );
+      final duration = entry.end.difference(entry.start);
+      final deferredEnd = deferredStart.add(duration);
+      if (deferredEnd.hour < plannerWorkdayEndMinutes ~/ 60 ||
+          (deferredEnd.hour == plannerWorkdayEndMinutes ~/ 60 &&
+              deferredEnd.minute <= plannerWorkdayEndMinutes % 60)) {
+        await setPlannerEntryTime(
+          date,
+          entry.id,
+          deferredStart.hour * 60 + deferredStart.minute,
+          deferredEnd.hour * 60 + deferredEnd.minute,
+        );
+      }
+    }
+
+    if (state != ExecutionState.completed && entry.type == 'movement') {
+      final nextLogs = ActivityTrackingService.withoutPlannerItem(
+        activityLogs,
+        entry.id,
+      );
       setState(() {
         activityLogs = nextLogs;
         weeklyActivityTotals = ActivityTrackingService.calculateWeeklyTotals(
@@ -3579,11 +3629,13 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             wfhAvailable: wfhAvailable,
             eveningAvailable: eveningAvailable,
             weeklyActivityTotals: weeklyActivityTotals,
+            dailyActivityTotals: ActivityTrackingService.calculateDailyTotals(
+              activityLogs,
+            ),
             daysSinceLastMobility: getDaysSinceLastMobility(),
             gymCompletedToday: completedActivityPillarsToday().contains(
               ActivityPillar.gym,
             ),
-            completedActivityPillarsToday: completedActivityPillarsToday(),
             executionStates: plannerExecutionStatesForDate(
               DateTime.now().add(Duration(days: plannerDayOffset)),
             ),
@@ -3593,6 +3645,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             removedPlannerEntryIds: removedPlannerEntryIdsForDate(
               DateTime.now().add(Duration(days: plannerDayOffset)),
             ),
+            removedCalendarEventIds: removedCalendarEventIds,
             plannerEntryOverrides: plannerEntryOverridesForDate(
               DateTime.now().add(Duration(days: plannerDayOffset)),
             ),
@@ -4099,11 +4152,13 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           wfhAvailable: wfhAvailable,
           eveningAvailable: eveningAvailable,
           weeklyActivityTotals: weeklyActivityTotals,
+          dailyActivityTotals: ActivityTrackingService.calculateDailyTotals(
+            activityLogs,
+          ),
           daysSinceLastMobility: getDaysSinceLastMobility(),
           gymCompletedToday: completedActivityPillarsToday().contains(
             ActivityPillar.gym,
           ),
-          completedActivityPillarsToday: completedActivityPillarsToday(),
           executionStates: plannerExecutionStatesForDate(
             DateTime.now().add(Duration(days: plannerDayOffset)),
           ),
@@ -4113,11 +4168,13 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           removedPlannerEntryIds: removedPlannerEntryIdsForDate(
             DateTime.now().add(Duration(days: plannerDayOffset)),
           ),
+          removedCalendarEventIds: removedCalendarEventIds,
           plannerEntryOverrides: plannerEntryOverridesForDate(
             DateTime.now().add(Duration(days: plannerDayOffset)),
           ),
           workdayStartMinutes: plannerWorkdayStartMinutes,
           workdayEndMinutes: plannerWorkdayEndMinutes,
+          timeGrid: plannerTimeGrid,
           tasks: tasks,
           isNarrow: isNarrow,
           useWideWebOverviewColumns: useWideWebOverviewColumns,
@@ -4150,6 +4207,13 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                 removedPlannerEntryIdsForDate(date)..add(entryId),
               ),
             );
+            if (entryId.startsWith('calendar-')) {
+              final eventId = entryId.substring('calendar-'.length);
+              final next = Set<String>.from(removedCalendarEventIds)
+                ..add(eventId);
+              setState(() => removedCalendarEventIds = next);
+              unawaited(StorageService.saveRemovedCalendarEventIds(next));
+            }
           },
           onWorkdayHoursChanged: (hours) {
             setState(() {
@@ -4162,6 +4226,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                 endMinutes: hours.$2,
               ),
             );
+          },
+          onTimeGridChanged: (grid) {
+            setState(() => plannerTimeGrid = grid);
+            unawaited(StorageService.savePlannerTimeGrid(grid));
           },
           onEditPlannerEntryTime: (entryId, start, end) {
             final date = DateTime.now().add(Duration(days: plannerDayOffset));

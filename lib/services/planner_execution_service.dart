@@ -1,6 +1,12 @@
 import 'dart:convert';
 
-enum ExecutionState { pending, completed, skipped }
+enum ExecutionState { pending, completed, skipped, deferred, dismissed }
+
+enum PlannerItemState { planned, completed, skipped, deferred, dismissed }
+
+enum PlannerEventCategory { informational, reminder, fixed, planned }
+
+enum TimeGrid { fifteenMinutes, thirtyMinutes }
 
 class PlannerExecutionRecord {
   const PlannerExecutionRecord({
@@ -50,6 +56,40 @@ class PlannerExecutionSummary {
 }
 
 class PlannerExecutionService {
+  static PlannerItemState itemStateFromExecution(ExecutionState state) {
+    return switch (state) {
+      ExecutionState.pending => PlannerItemState.planned,
+      ExecutionState.completed => PlannerItemState.completed,
+      ExecutionState.skipped => PlannerItemState.skipped,
+      ExecutionState.deferred => PlannerItemState.deferred,
+      ExecutionState.dismissed => PlannerItemState.dismissed,
+    };
+  }
+
+  static ExecutionState executionFromItemState(PlannerItemState state) {
+    return switch (state) {
+      PlannerItemState.planned ||
+      PlannerItemState.deferred => ExecutionState.pending,
+      PlannerItemState.completed => ExecutionState.completed,
+      PlannerItemState.skipped ||
+      PlannerItemState.dismissed => ExecutionState.skipped,
+    };
+  }
+
+  static DateTime snapToGrid(DateTime value, TimeGrid grid) {
+    final interval = grid == TimeGrid.fifteenMinutes ? 15 : 30;
+    final minutes = value.hour * 60 + value.minute;
+    final snapped = ((minutes + interval - 1) ~/ interval) * interval;
+    final clamped = snapped.clamp(0, 24 * 60 - 1).toInt();
+    return DateTime(
+      value.year,
+      value.month,
+      value.day,
+      clamped ~/ 60,
+      clamped % 60,
+    );
+  }
+
   static Map<String, ExecutionState> statesFromEncoded(
     Iterable<String> encoded,
   ) {
@@ -87,6 +127,7 @@ class PlannerExecutionService {
   ) {
     var completed = 0;
     var skipped = 0;
+    var dismissed = 0;
     var planned = 0;
     for (final entryId in entryIds) {
       planned++;
@@ -95,6 +136,10 @@ class PlannerExecutionService {
           completed++;
         case ExecutionState.skipped:
           skipped++;
+        case ExecutionState.dismissed:
+          dismissed++;
+          break;
+        case ExecutionState.deferred:
         case ExecutionState.pending:
           break;
       }
@@ -103,7 +148,7 @@ class PlannerExecutionService {
       plannedCount: planned,
       completedCount: completed,
       skippedCount: skipped,
-      remainingCount: planned - completed - skipped,
+      remainingCount: planned - completed - skipped - dismissed,
     );
   }
 }

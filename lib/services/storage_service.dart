@@ -7,6 +7,7 @@ import '../models/task.dart';
 import '../models/activity_recommendation.dart';
 import 'firebase_sync_service.dart';
 import 'one_drive_sync_service.dart';
+import 'planner_execution_service.dart';
 
 class ImportedOutlookEventsSummary {
   final DateTime? lastImportedAt;
@@ -30,6 +31,8 @@ class StorageService {
   static const String _noteEntriesKey = 'note_entries';
   static const String _inboxEntriesKey = 'inbox_entries';
   static const String _activityLogsKey = 'activity_logs';
+  static const String _removedCalendarEventIdsKey =
+      'removed_calendar_event_ids';
   static const String _dailyCheckinsByDateKey = 'daily_checkins_by_date';
   static const String _legacySymptomRatingsByDateKey =
       'symptom_ratings_by_date';
@@ -52,6 +55,7 @@ class StorageService {
       'planner_workday_start_minutes';
   static const String _plannerWorkdayEndMinutesKey =
       'planner_workday_end_minutes';
+  static const String _plannerTimeGridKey = 'planner_time_grid';
   static const String _prioritizeWorkOnWeekdaysKey =
       'prioritize_work_on_weekdays';
   static const String _gymAvailableKey = 'gym_available';
@@ -562,6 +566,49 @@ class StorageService {
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }
 
+  static Future<Set<String>> loadRemovedCalendarEventIds() async {
+    final prefs = await SharedPreferences.getInstance();
+    return (prefs.getStringList(_removedCalendarEventIdsKey) ??
+            const <String>[])
+        .toSet();
+  }
+
+  static Future<void> saveRemovedCalendarEventIds(Set<String> ids) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _removedCalendarEventIdsKey,
+      ids.toList()..sort(),
+    );
+    await _touchStateMetadata(prefs);
+    unawaited(_pushCurrentStateToCloudIfAvailable());
+  }
+
+  static Future<void> clearRemovedCalendarEventIds() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_removedCalendarEventIdsKey);
+    final raw = prefs.getString(_dailyCheckinsByDateKey);
+    if (raw != null && raw.trim().isNotEmpty) {
+      try {
+        final decoded = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+        for (final value in decoded.values) {
+          if (value is! Map) continue;
+          final removed = (value['removedPlannerEntryIds'] as List<dynamic>?)
+              ?.map((item) => item.toString())
+              .where((item) => !item.startsWith('calendar-'))
+              .toList();
+          if (removed != null) value['removedPlannerEntryIds'] = removed;
+        }
+        final encoded = jsonEncode(decoded);
+        await prefs.setString(_dailyCheckinsByDateKey, encoded);
+        await prefs.setString(_symptomRatingsByDateKey, encoded);
+      } catch (_) {
+        // Leave existing state untouched if an old record cannot be decoded.
+      }
+    }
+    await _touchStateMetadata(prefs);
+    unawaited(_pushCurrentStateToCloudIfAvailable());
+  }
+
   static Future<ImportedOutlookEventsSummary>
   loadImportedOutlookEventsSummary() async {
     final prefs = await SharedPreferences.getInstance();
@@ -640,13 +687,12 @@ class StorageService {
       final eventStart = event.start!.toLocal();
       final eventEnd = event.end?.toLocal();
       final effectiveEventEnd = eventEnd ?? eventStart;
-      final isCurrentOrUpcoming =
+      // Keep persisted/imported past events available for planner history.
+      // Live calendar APIs still control their own returned range.
+      final isInRequestedRange =
           !effectiveEventEnd.isBefore(rangeStart) &&
           eventStart.isBefore(rangeEnd);
-
-      if (!isCurrentOrUpcoming) {
-        continue;
-      }
+      if (!isInRequestedRange && event.id.trim().isEmpty) continue;
 
       final key = _calendarEventMergeKey(event);
       final existing = uniqueEvents[key];
@@ -980,6 +1026,20 @@ class StorageService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_plannerWorkdayStartMinutesKey, startMinutes);
     await prefs.setInt(_plannerWorkdayEndMinutesKey, endMinutes);
+    await _touchStateMetadata(prefs);
+    unawaited(_pushCurrentStateToCloudIfAvailable());
+  }
+
+  static Future<TimeGrid> loadPlannerTimeGrid() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_plannerTimeGridKey) == 'thirtyMinutes'
+        ? TimeGrid.thirtyMinutes
+        : TimeGrid.fifteenMinutes;
+  }
+
+  static Future<void> savePlannerTimeGrid(TimeGrid grid) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_plannerTimeGridKey, grid.name);
     await _touchStateMetadata(prefs);
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }
@@ -1502,6 +1562,8 @@ class StorageService {
     final noteEntriesRaw = prefs.getString(_noteEntriesKey);
     final inboxEntriesRaw = prefs.getString(_inboxEntriesKey);
     final activityLogsRaw = prefs.getString(_activityLogsKey);
+    final removedCalendarEventIds =
+        prefs.getStringList(_removedCalendarEventIdsKey) ?? <String>[];
     final dailyCheckinsByDateRaw =
         prefs.getString(_dailyCheckinsByDateKey) ??
         prefs.getString(_legacySymptomRatingsByDateKey);
@@ -1566,6 +1628,7 @@ class StorageService {
       'activity_logs': activityLogsRaw == null
           ? <dynamic>[]
           : (jsonDecode(activityLogsRaw) as List<dynamic>),
+      'removed_calendar_event_ids': removedCalendarEventIds,
       'daily_checkins_by_date': dailyCheckinsByDateJson,
       'symptom_ratings_by_date': dailyCheckinsByDateJson,
       'categories': categoriesJson,
@@ -1606,6 +1669,8 @@ class StorageService {
         state['inbox_entries'] as List<dynamic>? ?? <dynamic>[];
     final activityLogs =
         state['activity_logs'] as List<dynamic>? ?? <dynamic>[];
+    final removedCalendarEventIds =
+        state['removed_calendar_event_ids'] as List<dynamic>? ?? <dynamic>[];
     final dailyCheckinsByDate =
         state['daily_checkins_by_date'] as Map<String, dynamic>? ??
         state['symptom_ratings_by_date'] as Map<String, dynamic>? ??
@@ -1650,6 +1715,10 @@ class StorageService {
     await prefs.setString(_noteEntriesKey, jsonEncode(noteEntries));
     await prefs.setString(_inboxEntriesKey, jsonEncode(inboxEntries));
     await prefs.setString(_activityLogsKey, jsonEncode(activityLogs));
+    await prefs.setStringList(
+      _removedCalendarEventIdsKey,
+      removedCalendarEventIds.map((value) => value.toString()).toList(),
+    );
     await prefs.setString(
       _dailyCheckinsByDateKey,
       jsonEncode(dailyCheckinsByDate),

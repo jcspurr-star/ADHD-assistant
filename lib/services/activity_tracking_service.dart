@@ -73,6 +73,13 @@ class ActivityTrackingService {
     return logs.where((entry) => entry.id != id).toList();
   }
 
+  static List<ActivityLogEntry> withoutPlannerItem(
+    List<ActivityLogEntry> logs,
+    String plannerItemId,
+  ) {
+    return logs.where((entry) => entry.plannerItemId != plannerItemId).toList();
+  }
+
   static Future<List<ActivityLogEntry>> loadLogs() {
     return StorageService.loadActivityLogs();
   }
@@ -117,10 +124,44 @@ class ActivityTrackingService {
 
     return WeeklyActivityTotals(
       walkingMinutes: walkingMinutes,
-      standingHours: standingMinutes / 60,
+      standingMinutes: standingMinutes,
       gymSessions: gymSessions,
       zwiftSessions: zwiftSessions,
       mobilitySessions: mobilitySessions,
+    );
+  }
+
+  static DailyActivityTotals calculateDailyTotals(
+    List<ActivityLogEntry> logs, {
+    DateTime? day,
+  }) {
+    final target = dateOnly(day ?? DateTime.now());
+    var walking = 0;
+    var standing = 0;
+    var gym = 0;
+    var zwift = 0;
+    var mobility = 0;
+    for (final log in logs) {
+      if (dateOnly(log.completedAt) != target) continue;
+      switch (log.pillar) {
+        case ActivityPillar.walking:
+          walking += log.minutes ?? 0;
+        case ActivityPillar.standing:
+          standing += log.minutes ?? 0;
+        case ActivityPillar.gym:
+          gym++;
+        case ActivityPillar.zwift:
+          zwift++;
+        case ActivityPillar.mobility:
+          mobility++;
+      }
+    }
+    return DailyActivityTotals(
+      walkingMinutes: walking,
+      standingMinutes: standing,
+      gymSessions: gym,
+      zwiftSessions: zwift,
+      mobilitySessions: mobility,
     );
   }
 }

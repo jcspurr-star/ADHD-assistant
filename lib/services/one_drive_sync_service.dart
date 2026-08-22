@@ -484,7 +484,9 @@ class OneDriveSyncService {
       throw Exception('No Microsoft sign-in session found.');
     }
 
-    final nowUtc = DateTime.now().toUtc();
+    final now = DateTime.now();
+    final todayStartLocal = DateTime(now.year, now.month, now.day);
+    final nowUtc = todayStartLocal.toUtc();
     final endUtc = nowUtc.add(lookAhead);
     return _fetchDefaultCalendarView(
       accessToken: accessToken,
@@ -645,7 +647,6 @@ class OneDriveSyncService {
   static DateTime? _parseGraphDateTimeField(dynamic rawValue) {
     if (rawValue is Map<String, dynamic>) {
       final dateTimeText = (rawValue['dateTime'] ?? '').toString();
-      final timeZone = (rawValue['timeZone'] ?? '').toString();
       if (dateTimeText.isEmpty) {
         return null;
       }
@@ -655,8 +656,10 @@ class OneDriveSyncService {
         return null;
       }
 
-      if (timeZone.toUpperCase() == 'UTC' &&
-          !_dateTimeHasExplicitZone.hasMatch(dateTimeText)) {
+      // calendarView is requested with Prefer: outlook.timezone="UTC".
+      // Graph can still return a zone-less dateTime alongside a timezone
+      // label; interpret that value as UTC rather than local machine time.
+      if (!_dateTimeHasExplicitZone.hasMatch(dateTimeText)) {
         return DateTime.parse('${dateTimeText}Z');
       }
 

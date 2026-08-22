@@ -4,8 +4,7 @@ import '../models/activity_recommendation.dart';
 
 /// Presentation-only panel for the rules-based movement planner.
 ///
-/// Renders the four planner sections (today's context, today's targets,
-/// weekly progress, recommended next actions) from data supplied by the
+/// Renders the activity context and progress sections from data supplied by the
 /// caller. Contains no business logic — all values are pre-computed by
 /// [MovementRecommendationService].
 class MovementRecommendationPanel extends StatelessWidget {
@@ -14,12 +13,10 @@ class MovementRecommendationPanel extends StatelessWidget {
     required this.dayContext,
     required this.todayTargets,
     required this.weeklyProgress,
-    required this.recommendations,
+    required this.dailyTotals,
     required this.onGymAvailableChanged,
     required this.onWfhAvailableChanged,
     required this.onEveningAvailableChanged,
-    required this.completedActivityPillars,
-    required this.onCompleteRecommendation,
     required this.onViewActivityHistory,
     this.showContext = true,
   });
@@ -27,12 +24,10 @@ class MovementRecommendationPanel extends StatelessWidget {
   final DayContext dayContext;
   final DayTypeTargets todayTargets;
   final Map<ActivityPillar, ActivityProgress> weeklyProgress;
-  final List<ActivityRecommendation> recommendations;
+  final DailyActivityTotals dailyTotals;
   final ValueChanged<bool> onGymAvailableChanged;
   final ValueChanged<bool> onWfhAvailableChanged;
   final ValueChanged<bool> onEveningAvailableChanged;
-  final Set<ActivityPillar> completedActivityPillars;
-  final ValueChanged<ActivityRecommendation> onCompleteRecommendation;
   final VoidCallback onViewActivityHistory;
   final bool showContext;
 
@@ -60,7 +55,7 @@ class MovementRecommendationPanel extends StatelessWidget {
 
   String _pillarUnit(ActivityPillar pillar) {
     return switch (pillar) {
-      ActivityPillar.standing => 'hrs',
+      ActivityPillar.standing => 'min',
       ActivityPillar.walking => 'min',
       ActivityPillar.gym ||
       ActivityPillar.zwift ||
@@ -144,34 +139,6 @@ class MovementRecommendationPanel extends StatelessWidget {
     );
   }
 
-  Widget _buildTargetsSection() {
-    final standingHoursMin = (todayTargets.standingMinutes.minMinutes / 60);
-    final standingHoursMax = (todayTargets.standingMinutes.maxMinutes / 60);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _sectionHeader("Today's targets"),
-        const SizedBox(height: 4),
-        Text(
-          'Walking: ${todayTargets.walkingMinutes.minMinutes}-${todayTargets.walkingMinutes.maxMinutes} min',
-          style: const TextStyle(fontSize: 11),
-        ),
-        Text(
-          'Standing: ${standingHoursMin.toStringAsFixed(0)}-${standingHoursMax.toStringAsFixed(0)} hrs',
-          style: const TextStyle(fontSize: 11),
-        ),
-        Text(
-          'Gym: ${todayTargets.gym.name} • Mobility: ${todayTargets.mobility.name} • Zwift: ${todayTargets.zwift.name}',
-          style: const TextStyle(fontSize: 11),
-        ),
-        Text(
-          todayTargets.notes,
-          style: TextStyle(fontSize: 10, color: Colors.grey.shade700),
-        ),
-      ],
-    );
-  }
-
   Widget _buildWeeklyProgressSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -197,26 +164,101 @@ class MovementRecommendationPanel extends StatelessWidget {
     );
   }
 
+  Widget _buildDailyProgressSection() {
+    final values = <ActivityPillar, ({num current, num target})>{
+      ActivityPillar.walking: (
+        current: dailyTotals.walkingMinutes,
+        target: todayTargets.walkingMinutes.minMinutes,
+      ),
+      ActivityPillar.standing: (
+        current: dailyTotals.standingMinutes,
+        target: todayTargets.standingMinutes.minMinutes,
+      ),
+      ActivityPillar.gym: (
+        current: dailyTotals.gymSessions,
+        target: todayTargets.gym == RecommendationLevel.no ? 0 : 1,
+      ),
+      ActivityPillar.zwift: (
+        current: dailyTotals.zwiftSessions,
+        target: todayTargets.zwift == RecommendationLevel.no ? 0 : 1,
+      ),
+      ActivityPillar.mobility: (
+        current: dailyTotals.mobilitySessions,
+        target: todayTargets.mobility == RecommendationLevel.no ? 0 : 1,
+      ),
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionHeader("Today's progress"),
+        const SizedBox(height: 2),
+        Text(
+          todayTargets.notes,
+          style: TextStyle(fontSize: 10, color: Colors.grey.shade700),
+        ),
+        const SizedBox(height: 4),
+        for (final entry in values.entries)
+          _buildProgressBarRow(
+            pillar: entry.key,
+            current: entry.value.current,
+            target: entry.value.target,
+            percent: entry.value.target <= 0
+                ? 0
+                : (entry.value.current / entry.value.target)
+                      .clamp(0.0, 1.0)
+                      .toDouble(),
+          ),
+      ],
+    );
+  }
+
   Widget _buildProgressRow(ActivityProgress progress) {
     final percent = (progress.percentComplete / 100).clamp(0.0, 1.0);
-    final status = progress.current >= progress.target
-        ? 'Complete'
-        : progress.deficit == 0
-        ? 'On Track'
-        : 'Behind';
+    return _buildProgressBarRow(
+      pillar: progress.pillar,
+      current: progress.current,
+      target: progress.target,
+      percent: percent,
+      metricsWidth: 140,
+    );
+  }
+
+  Widget _buildProgressBarRow({
+    required ActivityPillar pillar,
+    required num current,
+    required num target,
+    required double percent,
+    double metricsWidth = 140,
+    String? status,
+  }) {
+    final statusColor = status == 'Target reached'
+        ? Colors.green.shade700
+        : status == 'In progress'
+        ? Colors.orange.shade700
+        : Colors.blueGrey.shade700;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
         children: [
-          Icon(_pillarIcon(progress.pillar), size: 13, color: _accent),
-          const SizedBox(width: 6),
           SizedBox(
-            width: 62,
-            child: Text(
-              _pillarLabel(progress.pillar),
-              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600),
+            width: 88,
+            child: Row(
+              children: [
+                Icon(_pillarIcon(pillar), size: 13, color: _accent),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    _pillarLabel(pillar),
+                    style: const TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
+          const SizedBox(width: 6),
           Expanded(
             child: ClipRRect(
               borderRadius: BorderRadius.circular(4),
@@ -229,112 +271,49 @@ class MovementRecommendationPanel extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 6),
-          Text(
-            '${progress.current}/${progress.target} ${_pillarUnit(progress.pillar)}',
-            style: TextStyle(fontSize: 10, color: Colors.grey.shade700),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            '${progress.percentComplete.toStringAsFixed(0)}%',
-            style: TextStyle(fontSize: 9, color: Colors.grey.shade700),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            status,
-            style: TextStyle(
-              fontSize: 9,
-              fontWeight: FontWeight.w700,
-              color: status == 'Complete'
-                  ? Colors.green.shade700
-                  : status == 'On Track'
-                  ? Colors.orange.shade700
-                  : Colors.red.shade700,
+          SizedBox(
+            width: metricsWidth,
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '$current/$target ${_pillarUnit(pillar)}',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      '${(percent * 100).toStringAsFixed(0)}%',
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                    if (status != null) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        status,
+                        style: TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w700,
+                          color: statusColor,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
             ),
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildRecommendationsSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _sectionHeader('Recommended next actions'),
-        const SizedBox(height: 4),
-        if (recommendations.isEmpty)
-          Text(
-            'No movement recommendations for today\'s context.',
-            style: TextStyle(fontSize: 11, color: Colors.grey.shade700),
-          )
-        else
-          for (final recommendation in recommendations)
-            Builder(
-              builder: (context) {
-                final completed = completedActivityPillars.contains(
-                  recommendation.pillar,
-                );
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Icon(
-                        _pillarIcon(recommendation.pillar),
-                        size: 14,
-                        color: Colors.teal.shade600,
-                      ),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              recommendation.title,
-                              style: const TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            Text(
-                              recommendation.description,
-                              style: TextStyle(
-                                fontSize: 10,
-                                color: Colors.grey.shade700,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${recommendation.estimatedDuration.inMinutes} min',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.teal.shade700,
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      TextButton(
-                        onPressed: completed
-                            ? null
-                            : () => onCompleteRecommendation(recommendation),
-                        style: TextButton.styleFrom(
-                          visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.symmetric(horizontal: 6),
-                        ),
-                        child: Text(
-                          completed ? 'Complete' : 'Mark complete',
-                          style: const TextStyle(fontSize: 10),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-      ],
     );
   }
 
@@ -354,11 +333,9 @@ class MovementRecommendationPanel extends StatelessWidget {
             _buildContextSection(),
             const SizedBox(height: 8),
           ],
-          _buildTargetsSection(),
+          _buildDailyProgressSection(),
           const SizedBox(height: 8),
           _buildWeeklyProgressSection(),
-          const SizedBox(height: 8),
-          _buildRecommendationsSection(),
         ],
       ),
     );

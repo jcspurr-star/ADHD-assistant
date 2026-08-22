@@ -105,7 +105,7 @@ void main() {
     );
   });
 
-  test('buildPlan can place movement during a suitable meeting', () {
+  test('buildPlan does not place walking movement during a meeting', () {
     final result = DayPlannerService.buildPlan(
       tasks: const <Task>[],
       calendarEvents: [
@@ -122,12 +122,12 @@ void main() {
       dayContext: _homeDayContext,
     );
 
-    final movement = result.entries.firstWhere(
-      (entry) => entry.type == 'movement' && entry.isConcurrent,
+    expect(
+      result.entries.any(
+        (entry) => entry.type == 'movement' && entry.isConcurrent,
+      ),
+      isFalse,
     );
-    expect(movement.isConcurrent, isTrue);
-    expect(movement.start, equals(DateTime(2024, 1, 2, 9)));
-    expect(movement.subtitle, contains('Client call'));
   });
 
   test('buildPlan keeps entries inside the configured workday', () {
@@ -168,7 +168,7 @@ void main() {
     );
   });
 
-  test('buildPlan uses a selected event for concurrent movement', () {
+  test('buildPlan does not place walking movement during a selected event', () {
     final result = DayPlannerService.buildPlan(
       tasks: const <Task>[],
       calendarEvents: [
@@ -186,11 +186,12 @@ void main() {
       preferredConcurrentEntryIds: const {'calendar-meeting-1'},
     );
 
-    final movement = result.entries.firstWhere(
-      (entry) => entry.type == 'movement' && entry.isConcurrent,
+    expect(
+      result.entries.any(
+        (entry) => entry.type == 'movement' && entry.isConcurrent,
+      ),
+      isFalse,
     );
-    expect(movement.start, equals(DateTime(2024, 1, 2, 13)));
-    expect(movement.subtitle, contains('Deep work review'));
   });
 
   test('buildPlan keeps events outside the workday in the day view', () {

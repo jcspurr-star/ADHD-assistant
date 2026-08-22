@@ -204,7 +204,7 @@ class _ActivityHistoryPageState extends State<ActivityHistoryPage> {
   Widget _buildSummary(WeeklyActivityTotals totals) {
     final values = <String>[
       'Walking\n${totals.walkingMinutes} mins',
-      'Standing\n${totals.standingHours} hrs',
+      'Standing\n${totals.standingMinutes} min',
       'Gym\n${totals.gymSessions} sessions',
       'Zwift\n${totals.zwiftSessions} sessions',
       'Mobility\n${totals.mobilitySessions} sessions',

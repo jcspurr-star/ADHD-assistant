@@ -44,4 +44,24 @@ void main() {
     expect(restored['task-1'], ExecutionState.completed);
     expect(restored['break-1'], ExecutionState.skipped);
   });
+
+  test(
+    'dismissed items are not remaining and grid snapping is predictable',
+    () {
+      final summary = PlannerExecutionService.summarize(
+        const ['task-1', 'task-2', 'task-3'],
+        const {
+          'task-1': ExecutionState.dismissed,
+          'task-2': ExecutionState.deferred,
+        },
+      );
+      final snapped = PlannerExecutionService.snapToGrid(
+        DateTime(2026, 8, 21, 10, 7),
+        TimeGrid.fifteenMinutes,
+      );
+
+      expect(summary.remainingCount, 2);
+      expect(snapped, DateTime(2026, 8, 21, 10, 15));
+    },
+  );
 }

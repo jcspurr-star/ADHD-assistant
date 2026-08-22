@@ -31,6 +31,7 @@ class Subtask {
 }
 
 class Task {
+  String id;
   String task;
   bool done;
   bool expanded;
@@ -49,6 +50,7 @@ class Task {
   String? snoozedUntilUtc;
 
   Task({
+    String? id,
     required this.task,
     this.done = false,
     this.expanded = false,
@@ -65,11 +67,13 @@ class Task {
     this.starterSetupChecklist = '',
     this.starterIfStuck = '',
     this.snoozedUntilUtc,
-  }) : aiSubtasks = aiSubtasks ?? [],
+  }) : id = id ?? 'task-${DateTime.now().microsecondsSinceEpoch}',
+       aiSubtasks = aiSubtasks ?? [],
        subtasks = subtasks ?? [];
 
   factory Task.fromJson(Map<String, dynamic> json) {
     return Task(
+      id: json["id"] ?? 'legacy-task-${json["task"] ?? "untitled"}',
       task: json["task"],
       done: json["done"] ?? false,
       expanded: json["expanded"] ?? false,
@@ -99,6 +103,7 @@ class Task {
 
   Map<String, dynamic> toJson() {
     return {
+      "id": id,
       "task": task,
       "done": done,
       "expanded": expanded,

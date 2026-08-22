@@ -10,6 +10,7 @@ class ActivityLogEntry {
     required this.completedAt,
     this.minutes,
     this.source = ActivitySource.recommendation,
+    this.plannerItemId,
   });
 
   final String id;
@@ -17,6 +18,7 @@ class ActivityLogEntry {
   final DateTime completedAt;
   final int? minutes;
   final ActivitySource source;
+  final String? plannerItemId;
 
   factory ActivityLogEntry.fromJson(Map<String, dynamic> json) {
     final pillarName = json['pillar']?.toString();
@@ -36,6 +38,7 @@ class ActivityLogEntry {
           DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
       minutes: (json['minutes'] as num?)?.toInt(),
       source: source,
+      plannerItemId: json['plannerItemId']?.toString(),
     );
   }
 
@@ -46,6 +49,7 @@ class ActivityLogEntry {
       'completedAt': completedAt.toUtc().toIso8601String(),
       'minutes': minutes,
       'source': source.name,
+      'plannerItemId': plannerItemId,
     };
   }
 }
@@ -108,21 +112,21 @@ class WeeklyTarget {
 class WeeklyTargets {
   const WeeklyTargets({
     this.walkingMinutes = const WeeklyTarget(420, 600),
-    this.standingHours = const WeeklyTarget(15, 20),
+    this.standingMinutes = const WeeklyTarget(900, 1200),
     this.gymSessions = const WeeklyTarget(3, 3),
     this.zwiftSessions = const WeeklyTarget(2, 3),
     this.mobilitySessions = const WeeklyTarget(3, 5),
   });
 
   final WeeklyTarget walkingMinutes;
-  final WeeklyTarget standingHours;
+  final WeeklyTarget standingMinutes;
   final WeeklyTarget gymSessions;
   final WeeklyTarget zwiftSessions;
   final WeeklyTarget mobilitySessions;
 
   WeeklyTarget forPillar(ActivityPillar pillar) => switch (pillar) {
     ActivityPillar.walking => walkingMinutes,
-    ActivityPillar.standing => standingHours,
+    ActivityPillar.standing => standingMinutes,
     ActivityPillar.gym => gymSessions,
     ActivityPillar.zwift => zwiftSessions,
     ActivityPillar.mobility => mobilitySessions,
@@ -133,25 +137,44 @@ class WeeklyTargets {
 class WeeklyActivityTotals {
   const WeeklyActivityTotals({
     this.walkingMinutes = 0,
-    this.standingHours = 0,
+    this.standingMinutes = 0,
     this.gymSessions = 0,
     this.zwiftSessions = 0,
     this.mobilitySessions = 0,
   });
 
   final num walkingMinutes;
-  final num standingHours;
+  final num standingMinutes;
   final num gymSessions;
   final num zwiftSessions;
   final num mobilitySessions;
 
+  @Deprecated('Use standingMinutes for new code.')
+  num get standingHours => standingMinutes / 60;
+
   num forPillar(ActivityPillar pillar) => switch (pillar) {
     ActivityPillar.walking => walkingMinutes,
-    ActivityPillar.standing => standingHours,
+    ActivityPillar.standing => standingMinutes,
     ActivityPillar.gym => gymSessions,
     ActivityPillar.zwift => zwiftSessions,
     ActivityPillar.mobility => mobilitySessions,
   };
+}
+
+class DailyActivityTotals {
+  const DailyActivityTotals({
+    this.walkingMinutes = 0,
+    this.standingMinutes = 0,
+    this.gymSessions = 0,
+    this.zwiftSessions = 0,
+    this.mobilitySessions = 0,
+  });
+
+  final num walkingMinutes;
+  final num standingMinutes;
+  final num gymSessions;
+  final num zwiftSessions;
+  final num mobilitySessions;
 }
 
 /// Progress of one pillar against its weekly target.

@@ -6,6 +6,7 @@ import '../services/day_planner_service.dart';
 import '../services/movement_recommendation_service.dart';
 import '../services/next_action_service.dart';
 import '../services/planner_execution_service.dart';
+import '../services/planner_context_resolver.dart';
 import '../services/one_drive_sync_service.dart';
 import 'next_action_card.dart';
 import 'movement_recommendation_panel.dart';
@@ -24,12 +25,13 @@ class DayPlannerSection extends StatelessWidget {
     required this.wfhAvailable,
     required this.eveningAvailable,
     required this.weeklyActivityTotals,
+    required this.dailyActivityTotals,
     required this.daysSinceLastMobility,
     required this.gymCompletedToday,
-    required this.completedActivityPillarsToday,
     required this.executionStates,
     required this.preferredConcurrentEntryIds,
     required this.removedPlannerEntryIds,
+    required this.removedCalendarEventIds,
     required this.plannerEntryOverrides,
     required this.workdayStartMinutes,
     required this.workdayEndMinutes,
@@ -56,6 +58,8 @@ class DayPlannerSection extends StatelessWidget {
     required this.onOpenTask,
     this.dashboardMode = false,
     this.onOpenPlanner,
+    this.timeGrid = TimeGrid.fifteenMinutes,
+    this.onTimeGridChanged,
   });
 
   final Future<List<OutlookCalendarEvent>>? upcomingOutlookEventsFuture;
@@ -69,12 +73,13 @@ class DayPlannerSection extends StatelessWidget {
   final bool wfhAvailable;
   final bool eveningAvailable;
   final WeeklyActivityTotals weeklyActivityTotals;
+  final DailyActivityTotals dailyActivityTotals;
   final int daysSinceLastMobility;
   final bool gymCompletedToday;
-  final Set<ActivityPillar> completedActivityPillarsToday;
   final Map<String, ExecutionState> executionStates;
   final Set<String> preferredConcurrentEntryIds;
   final Set<String> removedPlannerEntryIds;
+  final Set<String> removedCalendarEventIds;
   final Map<String, PlannerEntryOverride> plannerEntryOverrides;
   final int workdayStartMinutes;
   final int workdayEndMinutes;
@@ -104,6 +109,8 @@ class DayPlannerSection extends StatelessWidget {
   final ValueChanged<Task> onOpenTask;
   final bool dashboardMode;
   final VoidCallback? onOpenPlanner;
+  final TimeGrid timeGrid;
+  final ValueChanged<TimeGrid>? onTimeGridChanged;
 
   Widget _buildPlannerToggleChip({
     required String label,
@@ -136,6 +143,8 @@ class DayPlannerSection extends StatelessWidget {
     );
   }
 
+  // Kept temporarily for compatibility with older timeline snapshots.
+  // ignore: unused_element
   Widget _buildPlannerEntryCard(
     BuildContext context,
     DayPlannerEntry entry, {
@@ -152,6 +161,8 @@ class DayPlannerSection extends StatelessWidget {
     final isMovement = entry.type == 'movement';
     final isCompleted = entry.executionState == ExecutionState.completed;
     final isSkipped = entry.executionState == ExecutionState.skipped;
+    final isDeferred = entry.executionState == ExecutionState.deferred;
+    final isDismissed = entry.executionState == ExecutionState.dismissed;
     final isCompact = height < 76;
     // The card's internal padding reduces the usable action-column height.
     // Treat near-minimum cards as tiny before their nominal height reaches 46.
@@ -181,6 +192,10 @@ class DayPlannerSection extends StatelessWidget {
         : entry.start.add(const Duration(minutes: 5));
     final isCurrentEntry =
         !now.isBefore(entry.start) && now.isBefore(effectiveEnd);
+    final isPastDue =
+        entry.executionState == ExecutionState.pending &&
+        entry.end.isBefore(now) &&
+        entry.type != 'calendar';
 
     var subtitle = entry.subtitle;
     if (isTask && entry.task != null) {
@@ -197,6 +212,13 @@ class DayPlannerSection extends StatelessWidget {
           ? 'Movement plan'
           : '$subtitle • Movement plan';
     }
+    if (isPastDue) {
+      subtitle = subtitle == null || subtitle.trim().isEmpty
+          ? 'Past due'
+          : 'Past due • $subtitle';
+    }
+    if (isDeferred) subtitle = 'Deferred • ${subtitle ?? 'Planner item'}';
+    if (isDismissed) subtitle = 'Dismissed • ${subtitle ?? 'Planner item'}';
 
     final timeLabel = isAllDayCalendarEntry
         ? 'All day'
@@ -213,7 +235,9 @@ class DayPlannerSection extends StatelessWidget {
         ),
         decoration: BoxDecoration(
           color: color.withAlpha(
-            isCompleted || isSkipped ? 18 : (isCurrentEntry ? 56 : 36),
+            isCompleted || isSkipped || isDeferred || isDismissed
+                ? 18
+                : (isCurrentEntry ? 56 : 36),
           ),
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
@@ -260,10 +284,14 @@ class DayPlannerSection extends StatelessWidget {
                             style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w700,
-                              decoration: isCompleted
+                              decoration: isCompleted || isDismissed
                                   ? TextDecoration.lineThrough
                                   : null,
-                              color: isSkipped ? Colors.grey : null,
+                              color: isSkipped || isDismissed
+                                  ? Colors.grey
+                                  : isDeferred
+                                  ? Colors.orange.shade800
+                                  : null,
                             ),
                             maxLines: isCompact || isNarrowLane ? 1 : 2,
                             overflow: TextOverflow.ellipsis,
@@ -294,7 +322,9 @@ class DayPlannerSection extends StatelessWidget {
                     ],
                   ),
                 ),
-                if (!isNarrowLane && !isTiny)
+                if (!isNarrowLane &&
+                    (constraints.maxHeight >= 70 ||
+                        (isCalendar && constraints.maxHeight >= 50)))
                   SizedBox(
                     width: 84,
                     child: ClipRect(
@@ -310,9 +340,9 @@ class DayPlannerSection extends StatelessWidget {
                                   tooltip: 'Complete',
                                   visualDensity: VisualDensity.compact,
                                   padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(
-                                    minWidth: 24,
-                                    minHeight: 22,
+                                  constraints: const BoxConstraints.tightFor(
+                                    width: 22,
+                                    height: 22,
                                   ),
                                   icon: Icon(
                                     isCompleted
@@ -334,9 +364,9 @@ class DayPlannerSection extends StatelessWidget {
                                   tooltip: 'Skip',
                                   visualDensity: VisualDensity.compact,
                                   padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(
-                                    minWidth: 24,
-                                    minHeight: 22,
+                                  constraints: const BoxConstraints.tightFor(
+                                    width: 22,
+                                    height: 22,
                                   ),
                                   icon: Icon(
                                     isSkipped
@@ -354,132 +384,120 @@ class DayPlannerSection extends StatelessWidget {
                                           ExecutionState.skipped,
                                         ),
                                 ),
+                                if (!isCompact)
+                                  PopupMenuButton<ExecutionState>(
+                                    tooltip: 'More planner actions',
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints.tightFor(
+                                      width: 22,
+                                      height: 22,
+                                    ),
+                                    icon: const Icon(
+                                      Icons.more_horiz,
+                                      size: 15,
+                                    ),
+                                    onSelected: (state) =>
+                                        onExecutePlannerEntry(entry, state),
+                                    itemBuilder: (context) => const [
+                                      PopupMenuItem(
+                                        value: ExecutionState.deferred,
+                                        child: Text('Defer'),
+                                      ),
+                                      PopupMenuItem(
+                                        value: ExecutionState.dismissed,
+                                        child: Text('Dismiss'),
+                                      ),
+                                    ],
+                                  ),
                               ],
                             ),
-                          if (isCalendar && isCompact && !isTiny)
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  tooltip: isPreferredConcurrent
-                                      ? 'Remove movement pairing'
-                                      : 'Pair movement with this event',
-                                  visualDensity: VisualDensity.compact,
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(
-                                    minWidth: 26,
-                                    minHeight: 22,
-                                  ),
-                                  icon: Icon(
-                                    isPreferredConcurrent
-                                        ? Icons.directions_walk
-                                        : Icons.directions_walk_outlined,
-                                    size: 16,
-                                    color: isPreferredConcurrent
-                                        ? movementColor
-                                        : Colors.blueGrey.shade500,
-                                  ),
-                                  onPressed: () {
-                                    final next = Set<String>.from(
-                                      preferredConcurrentEntryIds,
+                          if (isCalendar && !isAllDayCalendarEntry)
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: SizedBox(
+                                width: 32,
+                                height: 32,
+                                child: Builder(
+                                  builder: (buttonContext) {
+                                    return IconButton(
+                                      tooltip: 'Event actions',
+                                      padding: EdgeInsets.zero,
+                                      icon: const Icon(
+                                        Icons.more_horiz,
+                                        size: 19,
+                                      ),
+                                      onPressed: () async {
+                                        final button =
+                                            buttonContext.findRenderObject()
+                                                as RenderBox;
+                                        final overlay =
+                                            Overlay.of(
+                                                  buttonContext,
+                                                ).context.findRenderObject()
+                                                as RenderBox;
+                                        final topLeft = button.localToGlobal(
+                                          Offset.zero,
+                                          ancestor: overlay,
+                                        );
+                                        final bottomRight = button
+                                            .localToGlobal(
+                                              button.size.bottomRight(
+                                                Offset.zero,
+                                              ),
+                                              ancestor: overlay,
+                                            );
+                                        final action = await showMenu<String>(
+                                          context: buttonContext,
+                                          position: RelativeRect.fromRect(
+                                            Rect.fromPoints(
+                                              topLeft,
+                                              bottomRight,
+                                            ),
+                                            Offset.zero & overlay.size,
+                                          ),
+                                          constraints: const BoxConstraints(
+                                            minWidth: 240,
+                                          ),
+                                          items: [
+                                            PopupMenuItem<String>(
+                                              value: 'pair',
+                                              child: Text(
+                                                isPreferredConcurrent
+                                                    ? 'Remove movement pairing'
+                                                    : 'Pair movement with this event',
+                                              ),
+                                            ),
+                                            const PopupMenuItem<String>(
+                                              value: 'remove',
+                                              child: Text(
+                                                'Remove from this plan',
+                                              ),
+                                            ),
+                                          ],
+                                        );
+                                        if (action == 'pair') {
+                                          final next = Set<String>.from(
+                                            preferredConcurrentEntryIds,
+                                          );
+                                          if (!next.add(entry.id)) {
+                                            next.remove(entry.id);
+                                          }
+                                          onPreferredConcurrentEntryIdsChanged(
+                                            next,
+                                          );
+                                        } else if (action == 'remove') {
+                                          onRemovePlannerEntry(entry.id);
+                                        }
+                                      },
                                     );
-                                    if (!next.add(entry.id)) {
-                                      next.remove(entry.id);
-                                    }
-                                    onPreferredConcurrentEntryIdsChanged(next);
                                   },
-                                ),
-                                IconButton(
-                                  tooltip: 'Remove from this plan',
-                                  visualDensity: VisualDensity.compact,
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(
-                                    minWidth: 26,
-                                    minHeight: 22,
-                                  ),
-                                  icon: const Icon(
-                                    Icons.visibility_off_outlined,
-                                    size: 16,
-                                  ),
-                                  onPressed: () =>
-                                      onRemovePlannerEntry(entry.id),
-                                ),
-                              ],
-                            ),
-                          if (isCalendar && !isCompact && !isTiny)
-                            IconButton(
-                              tooltip: isPreferredConcurrent
-                                  ? 'Remove movement pairing'
-                                  : 'Pair movement with this event',
-                              visualDensity: VisualDensity.compact,
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(
-                                minWidth: 26,
-                                minHeight: 22,
-                              ),
-                              icon: Icon(
-                                isPreferredConcurrent
-                                    ? Icons.directions_walk
-                                    : Icons.directions_walk_outlined,
-                                size: 16,
-                                color: isPreferredConcurrent
-                                    ? movementColor
-                                    : Colors.blueGrey.shade500,
-                              ),
-                              onPressed: () {
-                                final next = Set<String>.from(
-                                  preferredConcurrentEntryIds,
-                                );
-                                if (!next.add(entry.id)) {
-                                  next.remove(entry.id);
-                                }
-                                onPreferredConcurrentEntryIdsChanged(next);
-                              },
-                            ),
-                          if (isCalendar && !isCompact && !isTiny)
-                            IconButton(
-                              tooltip: 'Remove from this plan',
-                              visualDensity: VisualDensity.compact,
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(
-                                minWidth: 26,
-                                minHeight: 22,
-                              ),
-                              icon: const Icon(
-                                Icons.visibility_off_outlined,
-                                size: 16,
-                              ),
-                              onPressed: () => onRemovePlannerEntry(entry.id),
-                            ),
-                          if (isCalendar && isTiny)
-                            Tooltip(
-                              message: isPreferredConcurrent
-                                  ? 'Remove movement pairing'
-                                  : 'Pair movement with this event',
-                              child: InkWell(
-                                onTap: () {
-                                  final next = Set<String>.from(
-                                    preferredConcurrentEntryIds,
-                                  );
-                                  if (!next.add(entry.id)) {
-                                    next.remove(entry.id);
-                                  }
-                                  onPreferredConcurrentEntryIdsChanged(next);
-                                },
-                                child: Icon(
-                                  isPreferredConcurrent
-                                      ? Icons.directions_walk
-                                      : Icons.directions_walk_outlined,
-                                  size: 14,
-                                  color: isPreferredConcurrent
-                                      ? movementColor
-                                      : Colors.blueGrey.shade500,
                                 ),
                               ),
                             ),
                           if (!isTiny &&
                               !isCompact &&
                               entry.type != 'buffer' &&
+                              entry.type != 'calendar' &&
                               !isAllDayCalendarEntry)
                             Row(
                               mainAxisSize: MainAxisSize.min,
@@ -565,6 +583,180 @@ class DayPlannerSection extends StatelessWidget {
               ],
             );
           },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCompactTimelineEventCard(
+    BuildContext context,
+    DayPlannerEntry entry, {
+    required double height,
+  }) {
+    final isCalendar = entry.type == 'calendar';
+    final isAllDay = isCalendar && entry.isAllDay;
+    final isCompleted = entry.executionState == ExecutionState.completed;
+    final isSkipped = entry.executionState == ExecutionState.skipped;
+    final isDismissed = entry.executionState == ExecutionState.dismissed;
+    final color = entry.type == 'movement'
+        ? const Color(0xFFB05A00)
+        : isCalendar
+        ? const Color(0xFF008E7A)
+        : const Color(0xFF5B65C5);
+    final timeText = isAllDay
+        ? 'All day'
+        : entry.isZeroDuration
+        ? _formatMinutes(entry.start.hour * 60 + entry.start.minute)
+        : '${_formatMinutes(entry.start.hour * 60 + entry.start.minute)} - ${_formatMinutes(entry.end.hour * 60 + entry.end.minute)}';
+
+    Future<void> showActions(BuildContext buttonContext) async {
+      final actions = <String>[];
+      if (!isCalendar) {
+        actions.addAll(['complete', 'skip', 'defer', 'dismiss']);
+        if (entry.type != 'buffer') actions.add('edit');
+        if (entry.type != 'buffer') actions.add('lock');
+      } else if (!isAllDay) {
+        actions.addAll(['pair', 'remove']);
+      }
+      if (actions.isEmpty) return;
+
+      final button = buttonContext.findRenderObject() as RenderBox?;
+      final overlay =
+          Overlay.of(buttonContext).context.findRenderObject() as RenderBox?;
+      if (button == null || overlay == null) return;
+      final topLeft = button.localToGlobal(Offset.zero, ancestor: overlay);
+      final bottomRight = button.localToGlobal(
+        button.size.bottomRight(Offset.zero),
+        ancestor: overlay,
+      );
+      final selected = await showMenu<String>(
+        context: buttonContext,
+        position: RelativeRect.fromRect(
+          Rect.fromPoints(topLeft, bottomRight),
+          Offset.zero & overlay.size,
+        ),
+        constraints: const BoxConstraints(minWidth: 220),
+        items: [
+          if (!isCalendar) ...[
+            const PopupMenuItem(
+              value: 'complete',
+              child: Text('Mark complete'),
+            ),
+            const PopupMenuItem(value: 'skip', child: Text('Skip')),
+            const PopupMenuItem(value: 'defer', child: Text('Defer')),
+            const PopupMenuItem(value: 'dismiss', child: Text('Dismiss')),
+            if (entry.type != 'buffer')
+              const PopupMenuItem(value: 'edit', child: Text('Edit time')),
+            if (entry.type != 'buffer')
+              PopupMenuItem(
+                value: 'lock',
+                child: Text(entry.isLocked ? 'Unlock time' : 'Lock time'),
+              ),
+          ] else if (!isAllDay) ...[
+            PopupMenuItem(
+              value: 'pair',
+              child: Text(
+                preferredConcurrentEntryIds.contains(entry.id)
+                    ? 'Remove movement pairing'
+                    : 'Pair movement with this event',
+              ),
+            ),
+            const PopupMenuItem(
+              value: 'remove',
+              child: Text('Remove from this plan'),
+            ),
+          ],
+        ],
+      );
+      if (!context.mounted || selected == null) return;
+      switch (selected) {
+        case 'complete':
+          onExecutePlannerEntry(entry, ExecutionState.completed);
+        case 'skip':
+          onExecutePlannerEntry(entry, ExecutionState.skipped);
+        case 'defer':
+          onExecutePlannerEntry(entry, ExecutionState.deferred);
+        case 'dismiss':
+          onExecutePlannerEntry(entry, ExecutionState.dismissed);
+        case 'edit':
+          await _showEditEntryTimeDialog(context, entry);
+        case 'lock':
+          onTogglePlannerEntryLock(entry.id, !entry.isLocked);
+        case 'pair':
+          final next = Set<String>.from(preferredConcurrentEntryIds);
+          if (!next.add(entry.id)) next.remove(entry.id);
+          onPreferredConcurrentEntryIdsChanged(next);
+        case 'remove':
+          onRemovePlannerEntry(entry.id);
+      }
+    }
+
+    return Align(
+      alignment: Alignment.topLeft,
+      child: Container(
+        height: isAllDay
+            ? (height < 48 ? 48 : height)
+            : height.clamp(1.0, double.infinity),
+        margin: EdgeInsets.zero,
+        clipBehavior: Clip.hardEdge,
+        padding: EdgeInsets.symmetric(horizontal: 6, vertical: 0),
+        decoration: BoxDecoration(
+          color: color.withAlpha(
+            isCompleted || isSkipped || isDismissed ? 18 : 34,
+          ),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withAlpha(190)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 5,
+              height: entry.isZeroDuration ? 16 : 18,
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            const SizedBox(width: 7),
+            Text(
+              timeText,
+              maxLines: 1,
+              style: TextStyle(
+                fontSize: 9,
+                color: Colors.grey.shade700,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                entry.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  decoration: isCompleted || isDismissed
+                      ? TextDecoration.lineThrough
+                      : null,
+                ),
+              ),
+            ),
+            if (!isAllDay)
+              Builder(
+                builder: (buttonContext) => IconButton(
+                  tooltip: 'Event actions',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: BoxConstraints.tightFor(
+                    width: entry.isZeroDuration ? 22 : 24,
+                    height: entry.isZeroDuration ? 22 : 24,
+                  ),
+                  icon: const Icon(Icons.more_horiz, size: 18),
+                  onPressed: () => showActions(buttonContext),
+                ),
+              ),
+          ],
         ),
       ),
     );
@@ -731,7 +923,7 @@ class DayPlannerSection extends StatelessWidget {
     if (totalMinutes <= 0) return const SizedBox.shrink();
     // Keep the viewport at the full pane height while rendering the day at a
     // readable scale inside its vertical scroll area.
-    final timelineContentHeight = height * 8;
+    final timelineContentHeight = height * 4;
     final allDayEntries = entries.where((entry) => entry.isAllDay).toList();
 
     final positionedEntries = <({DayPlannerEntry entry, int lane})>[];
@@ -746,18 +938,17 @@ class DayPlannerSection extends StatelessWidget {
             return b.end.compareTo(a.end);
           });
     for (final entry in sortedEntries) {
-      final visualEnd =
-          entry.end.isAfter(entry.start.add(const Duration(minutes: 30)))
+      final laneEnd = entry.end.isAfter(entry.start)
           ? entry.end
-          : entry.start.add(const Duration(minutes: 30));
+          : entry.start.add(const Duration(minutes: 5));
       var lane = 0;
       while (lane < laneEnds.length && entry.start.isBefore(laneEnds[lane])) {
         lane++;
       }
       if (lane == laneEnds.length) {
-        laneEnds.add(visualEnd);
+        laneEnds.add(laneEnd);
       } else {
-        laneEnds[lane] = visualEnd;
+        laneEnds[lane] = laneEnd;
       }
       positionedEntries.add((entry: entry, lane: lane));
     }
@@ -797,7 +988,7 @@ class DayPlannerSection extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   SizedBox(
-                    height: 42,
+                    height: 86,
                     child: ListView.separated(
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.only(bottom: 6),
@@ -805,10 +996,10 @@ class DayPlannerSection extends StatelessWidget {
                       separatorBuilder: (_, _) => const SizedBox(width: 6),
                       itemBuilder: (context, index) => SizedBox(
                         width: 180,
-                        child: _buildPlannerEntryCard(
+                        child: _buildCompactTimelineEventCard(
                           context,
                           allDayEntries[index],
-                          height: 36,
+                          height: 76,
                         ),
                       ),
                     ),
@@ -851,73 +1042,105 @@ class DayPlannerSection extends StatelessWidget {
                                     timelineContentHeight,
                                 left: 0,
                                 right: 0,
-                                child: Row(
-                                  children: [
-                                    SizedBox(
-                                      width: timeAxisWidth,
-                                      child: Text(
-                                        _formatTime(
-                                          start.add(Duration(minutes: hour)),
-                                        ),
-                                        style: TextStyle(
-                                          fontSize: 10,
-                                          color: Colors.blueGrey.shade600,
-                                          fontWeight: FontWeight.w600,
+                                child: SizedBox(
+                                  height: 18,
+                                  child: Stack(
+                                    children: [
+                                      Positioned(
+                                        top: 0,
+                                        left: timeAxisWidth,
+                                        right: 0,
+                                        child: Divider(
+                                          color: timelineColor,
+                                          height: 1,
                                         ),
                                       ),
-                                    ),
-                                    Expanded(
-                                      child: Divider(
-                                        color: timelineColor,
-                                        height: 1,
+                                      Positioned(
+                                        top: 0,
+                                        left: 0,
+                                        width: timeAxisWidth,
+                                        child: Text(
+                                          _formatTime(
+                                            start.add(Duration(minutes: hour)),
+                                          ),
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.blueGrey.shade600,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
                                       ),
-                                    ),
-                                  ],
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            for (
+                              var halfHour = 30;
+                              halfHour < totalMinutes;
+                              halfHour += 60
+                            )
+                              Positioned(
+                                top:
+                                    (halfHour / totalMinutes) *
+                                    timelineContentHeight,
+                                left: timeAxisWidth,
+                                right: 0,
+                                height: 1,
+                                child: CustomPaint(
+                                  painter: _DashedTimelineLinePainter(
+                                    color: timelineColor.withAlpha(180),
+                                  ),
                                 ),
                               ),
                             for (final positioned in positionedEntries)
                               if (positioned.lane < laneCount)
-                                Positioned(
-                                  top:
-                                      (((positioned.entry.start.isBefore(start)
-                                                  ? start
-                                                  : positioned.entry.start)
-                                              .difference(start)
-                                              .inMinutes
-                                              .clamp(0, totalMinutes)) /
-                                          totalMinutes) *
-                                      timelineContentHeight,
-                                  left:
-                                      timeAxisWidth +
-                                      positioned.lane * (laneWidth + laneGap),
-                                  width: laneWidth,
-                                  height:
-                                      (((positioned.entry.end
-                                                  .difference(
-                                                    positioned.entry.start
-                                                            .isBefore(start)
-                                                        ? start
-                                                        : positioned
-                                                              .entry
-                                                              .start,
-                                                  )
-                                                  .inMinutes)
-                                              .clamp(30, totalMinutes)) /
-                                          totalMinutes) *
-                                      timelineContentHeight,
-                                  child: _buildPlannerEntryCard(
-                                    context,
-                                    positioned.entry,
-                                    height:
-                                        (((positioned.entry.end
-                                                    .difference(
-                                                      positioned.entry.start,
-                                                    )
-                                                    .inMinutes)
-                                                .clamp(30, totalMinutes)) /
-                                            totalMinutes) *
+                                Builder(
+                                  builder: (context) {
+                                    final visibleStart =
+                                        positioned.entry.start.isBefore(start)
+                                        ? start
+                                        : positioned.entry.start;
+                                    final visibleEnd =
+                                        positioned.entry.end.isAfter(end)
+                                        ? end
+                                        : positioned.entry.end;
+                                    final topMinutes = visibleStart
+                                        .difference(start)
+                                        .inMinutes
+                                        .clamp(0, totalMinutes);
+                                    final durationMinutes = visibleEnd
+                                        .difference(visibleStart)
+                                        .inMinutes
+                                        .clamp(12, totalMinutes);
+                                    final top =
+                                        topMinutes /
+                                        totalMinutes *
+                                        timelineContentHeight;
+                                    final cardHeight =
+                                        durationMinutes /
+                                        totalMinutes *
+                                        timelineContentHeight;
+                                    return Positioned(
+                                      top: top,
+                                      left:
+                                          timeAxisWidth +
+                                          positioned.lane *
+                                              (laneWidth + laneGap),
+                                      width: laneWidth,
+                                      height: cardHeight.clamp(
+                                        1.0,
                                         timelineContentHeight,
-                                  ),
+                                      ),
+                                      child: _buildCompactTimelineEventCard(
+                                        context,
+                                        positioned.entry,
+                                        height: cardHeight.clamp(
+                                          1.0,
+                                          timelineContentHeight,
+                                        ),
+                                      ),
+                                    );
+                                  },
                                 ),
                             if (isToday)
                               Positioned(
@@ -982,12 +1205,6 @@ class DayPlannerSection extends StatelessWidget {
         final selectedPlannerDate = today.add(
           Duration(days: effectivePlannerDayOffset),
         );
-        final selectedPlannerDayOnly = DateTime(
-          selectedPlannerDate.year,
-          selectedPlannerDate.month,
-          selectedPlannerDate.day,
-        );
-        final isPlannerDayToday = selectedPlannerDayOnly == today;
         final filteredCalendarEvents = events.where((event) {
           final isWorkCalendar = event.calendarSource == 'work';
           if (isWorkCalendar && !showWorkInPlanner) {
@@ -1001,16 +1218,8 @@ class DayPlannerSection extends StatelessWidget {
           if (start == null) {
             return false;
           }
-          final eventEnd =
-              event.end?.toLocal() ??
-              (event.isAllDay
-                  ? DateTime(start.year, start.month, start.day, 23, 59)
-                  : start.add(const Duration(minutes: 5)));
-          if (isPlannerDayToday && !eventEnd.isAfter(now)) {
-            return false;
-          }
-
-          if (removedPlannerEntryIds.contains('calendar-${event.id}')) {
+          if (removedPlannerEntryIds.contains('calendar-${event.id}') ||
+              removedCalendarEventIds.contains(event.id)) {
             return false;
           }
 
@@ -1028,11 +1237,17 @@ class DayPlannerSection extends StatelessWidget {
           return true;
         }).toList();
 
-        final dayContext = DayContext(
+        final manualDayContext = DayContext(
           gymMorning: gymAvailable,
           workLocation: wfhAvailable ? WorkLocation.home : WorkLocation.office,
           eveningAvailable: eveningAvailable,
         );
+        final resolvedPlannerContext = PlannerContextResolver.resolve(
+          day: selectedPlannerDate,
+          manualContext: manualDayContext,
+          calendarEvents: filteredCalendarEvents,
+        );
+        final dayContext = resolvedPlannerContext.dayContext;
 
         final plannerResult = DayPlannerService.buildPlan(
           tasks: filteredTasks,
@@ -1047,9 +1262,10 @@ class DayPlannerSection extends StatelessWidget {
           workdayEndMinutes: workdayEndMinutes,
           entryOverrides: plannerEntryOverrides,
           executionStates: executionStates,
+          timeGrid: timeGrid,
         );
         final visiblePlannerEntries = plannerResult.entries.where((entry) {
-          if (isPlannerDayToday && !entry.end.isAfter(now)) {
+          if (entry.executionState == ExecutionState.dismissed) {
             return false;
           }
           final isPlannerAddition =
@@ -1347,30 +1563,35 @@ class DayPlannerSection extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 6,
-                children: [
-                  _buildPlannerToggleChip(
-                    label: 'Work',
-                    selected: showWorkInPlanner,
-                    chipColor: const Color(0xFF008E7A),
-                    onChanged: onShowWorkInPlannerChanged,
+              if (onTimeGridChanged != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Time grid',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.teal.shade800,
                   ),
-                  _buildPlannerToggleChip(
-                    label: 'Home',
-                    selected: showHomeInPlanner,
-                    chipColor: const Color(0xFF1E63D0),
-                    onChanged: onShowHomeInPlannerChanged,
-                  ),
-                  _buildPlannerToggleChip(
-                    label: 'Planner',
-                    selected: showPlannerInPlanner,
-                    chipColor: const Color(0xFF7C4DFF),
-                    onChanged: onShowPlannerInPlannerChanged,
-                  ),
-                ],
-              ),
+                ),
+                const SizedBox(height: 4),
+                Wrap(
+                  spacing: 6,
+                  children: [
+                    ChoiceChip(
+                      label: const Text('15 min'),
+                      selected: timeGrid == TimeGrid.fifteenMinutes,
+                      onSelected: (_) =>
+                          onTimeGridChanged!(TimeGrid.fifteenMinutes),
+                    ),
+                    ChoiceChip(
+                      label: const Text('30 min'),
+                      selected: timeGrid == TimeGrid.thirtyMinutes,
+                      onSelected: (_) =>
+                          onTimeGridChanged!(TimeGrid.thirtyMinutes),
+                    ),
+                  ],
+                ),
+              ],
             ],
           ),
         ),
@@ -1452,12 +1673,10 @@ class DayPlannerSection extends StatelessWidget {
                 MovementRecommendationService.calculateWeeklyProgress(
                   weeklyActivityTotals,
                 ),
-            recommendations: plannerResult.recommendations,
+            dailyTotals: dailyActivityTotals,
             onGymAvailableChanged: onGymAvailableChanged,
             onWfhAvailableChanged: onWfhAvailableChanged,
             onEveningAvailableChanged: onEveningAvailableChanged,
-            completedActivityPillars: completedActivityPillarsToday,
-            onCompleteRecommendation: onCompleteRecommendation,
             onViewActivityHistory: onViewActivityHistory,
             showContext: false,
           ),
@@ -1566,6 +1785,59 @@ class DayPlannerSection extends StatelessWidget {
           );
         },
       ),
+      const SizedBox(height: 8),
+      Wrap(
+        spacing: 6,
+        children: [
+          _buildPlannerToggleChip(
+            label: 'Work',
+            selected: showWorkInPlanner,
+            chipColor: const Color(0xFF008E7A),
+            onChanged: onShowWorkInPlannerChanged,
+          ),
+          _buildPlannerToggleChip(
+            label: 'Home',
+            selected: showHomeInPlanner,
+            chipColor: const Color(0xFF1E63D0),
+            onChanged: onShowHomeInPlannerChanged,
+          ),
+          _buildPlannerToggleChip(
+            label: 'Planner',
+            selected: showPlannerInPlanner,
+            chipColor: const Color(0xFF7C4DFF),
+            onChanged: onShowPlannerInPlannerChanged,
+          ),
+        ],
+      ),
     ];
+  }
+}
+
+class _DashedTimelineLinePainter extends CustomPainter {
+  const _DashedTimelineLinePainter({required this.color});
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1;
+    const dashWidth = 6.0;
+    const gap = 4.0;
+    var x = 0.0;
+    while (x < size.width) {
+      canvas.drawLine(
+        Offset(x, 0.5),
+        Offset((x + dashWidth).clamp(0, size.width), 0.5),
+        paint,
+      );
+      x += dashWidth + gap;
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashedTimelineLinePainter oldDelegate) {
+    return oldDelegate.color != color;
   }
 }

@@ -118,6 +118,32 @@ void main() {
     expect(invalidStanding, isNull);
   });
 
+  test('daily rollup separates duration and session pillars', () {
+    final totals = ActivityTrackingService.calculateDailyTotals([
+      ActivityLogEntry(
+        id: 'walk',
+        pillar: ActivityPillar.walking,
+        completedAt: weekReference,
+        minutes: 25,
+      ),
+      ActivityLogEntry(
+        id: 'stand',
+        pillar: ActivityPillar.standing,
+        completedAt: weekReference,
+        minutes: 45,
+      ),
+      ActivityLogEntry(
+        id: 'gym',
+        pillar: ActivityPillar.gym,
+        completedAt: weekReference,
+      ),
+    ], day: weekReference);
+
+    expect(totals.walkingMinutes, 25);
+    expect(totals.standingMinutes, 45);
+    expect(totals.gymSessions, 1);
+  });
+
   test(
     'weekly rollup includes Monday through Sunday and excludes other weeks',
     () {
