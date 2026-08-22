@@ -163,7 +163,7 @@ void main() {
     expect(result.entries.where((entry) => entry.type == 'task'), hasLength(4));
   });
 
-  test('buildPlan clamps focus blocks between 10 and 30 minutes', () {
+  test('buildPlan uses the focus session duration policy', () {
     final result = DayPlannerService.buildPlan(
       tasks: [
         Task(
@@ -182,16 +182,112 @@ void main() {
       calendarEvents: const <OutlookCalendarEvent>[],
       day: DateTime(2024, 1, 2),
     );
-    final focusTasks = result.entries.where((entry) => entry.type == 'task');
+    final longTask = result.entries.firstWhere(
+      (entry) => entry.title == 'Long focus task',
+    );
+    final adminBlock = result.entries.firstWhere(
+      (entry) => entry.type == 'admin',
+    );
+    expect(longTask.end.difference(longTask.start).inMinutes, 90);
+    expect(adminBlock.end.difference(adminBlock.start).inMinutes, 25);
+  });
 
+  test('buildPlan splits tasks longer than 90 minutes into sessions', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: [
+        Task(
+          task: 'Long project',
+          priority: 'high',
+          dueDate: '2024-01-02',
+          effortMinutes: 150,
+        ),
+      ],
+      calendarEvents: const <OutlookCalendarEvent>[],
+      day: DateTime(2024, 1, 2),
+    );
+    final sessions = result.entries
+        .where((entry) => entry.title.startsWith('Long project (Session'))
+        .toList();
+
+    expect(sessions, hasLength(3));
     expect(
-      focusTasks.every((task) {
-        final minutes = task.end.difference(task.start).inMinutes;
-        return minutes >= 10 && minutes <= 30;
-      }),
+      sessions.every(
+        (session) =>
+            session.end.difference(session.start).inMinutes >= 25 &&
+            session.end.difference(session.start).inMinutes <= 60,
+      ),
       isTrue,
     );
   });
+
+  test('buildPlan groups short tasks into an Admin Block', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: [
+        for (var index = 0; index < 3; index++)
+          Task(
+            task: 'Admin task $index',
+            priority: 'medium',
+            dueDate: '2024-01-02',
+            nextSessionEffortMinutes: 10,
+          ),
+      ],
+      calendarEvents: const <OutlookCalendarEvent>[],
+      day: DateTime(2024, 1, 2),
+    );
+
+    final admin = result.entries.firstWhere((entry) => entry.type == 'admin');
+    expect(admin.title, 'Admin Block');
+    expect(admin.end.difference(admin.start).inMinutes, 30);
+    expect(admin.subtitle, contains('Admin task 0'));
+  });
+
+  test('buildPlan inserts a recovery break from cumulative focus time', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: [
+        for (var index = 0; index < 3; index++)
+          Task(
+            task: 'Focus $index',
+            priority: 'high',
+            dueDate: '2024-01-02',
+            nextSessionEffortMinutes: 30,
+          ),
+      ],
+      calendarEvents: const <OutlookCalendarEvent>[],
+      day: DateTime(2024, 1, 2),
+    );
+
+    final recoveryBreaks = result.entries.where(
+      (entry) => entry.title == 'Recovery break',
+    );
+    expect(recoveryBreaks, isNotEmpty);
+    expect(
+      recoveryBreaks.first.end.difference(recoveryBreaks.first.start).inMinutes,
+      5,
+    );
+  });
+
+  test(
+    'buildPlan reports tasks that do not fit capacity as rollover tasks',
+    () {
+      final result = DayPlannerService.buildPlan(
+        tasks: [
+          for (var index = 0; index < 10; index++)
+            Task(
+              id: 'large-$index',
+              task: 'Large task $index',
+              priority: 'high',
+              dueDate: '2024-01-02',
+              nextSessionEffortMinutes: 90,
+            ),
+        ],
+        calendarEvents: const <OutlookCalendarEvent>[],
+        day: DateTime(2024, 1, 2),
+      );
+
+      expect(result.rolloverTasks, isNotEmpty);
+      expect(result.summary, contains('rolled over'));
+    },
+  );
 
   test(
     'buildPlan shows weekend calendar items without planning activities',
@@ -598,7 +694,7 @@ void main() {
     final plannedTask = result.entries.firstWhere(
       (entry) => entry.type == 'task',
     );
-    expect(plannedTask.end.difference(plannedTask.start).inMinutes, equals(30));
+    expect(plannedTask.end.difference(plannedTask.start).inMinutes, equals(45));
   });
 
   test(

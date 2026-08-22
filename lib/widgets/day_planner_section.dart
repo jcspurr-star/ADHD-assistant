@@ -180,6 +180,7 @@ class DayPlannerSection extends StatelessWidget {
     if (entry.type == 'movement') return 'Movement';
     if (entry.type == 'break') return 'Break';
     if (entry.type == 'buffer') return 'Focus';
+    if (entry.type == 'admin') return 'Admin';
     if (entry.type == 'task') {
       return entry.task != null && isWorkTask(entry.task!) ? 'Work' : 'Home';
     }
@@ -254,6 +255,8 @@ class DayPlannerSection extends StatelessWidget {
         : entry.type == 'break'
         ? breakColor
         : entry.type == 'buffer'
+        ? focusColor
+        : entry.type == 'admin'
         ? focusColor
         : isMovement
         ? movementColor
@@ -724,6 +727,8 @@ class DayPlannerSection extends StatelessWidget {
         : entry.type == 'break'
         ? const Color(0xFF8A6D1D)
         : entry.type == 'buffer'
+        ? const Color(0xFF6B4E9B)
+        : entry.type == 'admin'
         ? const Color(0xFF6B4E9B)
         : entry.type == 'movement'
         ? const Color(0xFFB05A00)
@@ -1846,6 +1851,37 @@ class DayPlannerSection extends StatelessWidget {
     );
   }
 
+  Widget _buildRolloverTasks(List<Task> tasks) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Rollover tasks',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+            ),
+            for (final task in tasks)
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.forward_outlined, size: 17),
+                title: Text(
+                  task.task,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11),
+                ),
+                onTap: () => onOpenTask(task),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildContextSection(
     BuildContext context,
     DayContext dayContext, {
@@ -2039,6 +2075,40 @@ class DayPlannerSection extends StatelessWidget {
           _buildExecutionSummary(executionSummary),
           const SizedBox(height: 8),
           _buildUpcomingItems(pendingEntries),
+          if (plannerResult.rolloverTasks.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Card(
+              margin: EdgeInsets.zero,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 8, 10, 6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Rollover tasks',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    for (final task in plannerResult.rolloverTasks)
+                      ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.forward_outlined, size: 17),
+                        title: Text(
+                          task.task,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        onTap: () => onOpenTask(task),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 10),
           MovementRecommendationPanel(
             dayContext: dayContext,
@@ -2178,6 +2248,10 @@ class DayPlannerSection extends StatelessWidget {
           );
         },
       ),
+      if (plannerResult.rolloverTasks.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        _buildRolloverTasks(plannerResult.rolloverTasks),
+      ],
     ];
   }
 }

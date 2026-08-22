@@ -1745,7 +1745,9 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     final existingState = plannerExecutionStatesForDate(date)[entry.id];
     if (existingState == state) return;
 
-    if (state == ExecutionState.completed && entry.type == 'task') {
+    if (state == ExecutionState.completed &&
+        entry.type == 'task' &&
+        !entry.id.contains('-session-')) {
       final taskIndex = entry.task == null
           ? -1
           : tasks.indexWhere((task) => identical(task, entry.task));

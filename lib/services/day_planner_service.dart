@@ -119,16 +119,43 @@ class _DailyCapacity {
           .clamp(0, workWindowMinutes);
 }
 
+class _PrioritizedTask {
+  const _PrioritizedTask({required this.task, required this.score});
+
+  final Task task;
+  final double score;
+}
+
+class _TaskSession {
+  const _TaskSession({
+    required this.tasks,
+    required this.duration,
+    this.sessionIndex = 1,
+    this.sessionCount = 1,
+    this.isAdmin = false,
+  });
+
+  final List<Task> tasks;
+  final Duration duration;
+  final int sessionIndex;
+  final int sessionCount;
+  final bool isAdmin;
+
+  Task get primaryTask => tasks.first;
+}
+
 class DayPlannerResult {
   DayPlannerResult({
     required this.entries,
     required this.summary,
     this.recommendations = const <ActivityRecommendation>[],
+    this.rolloverTasks = const <Task>[],
   });
 
   final List<DayPlannerEntry> entries;
   final String summary;
   final List<ActivityRecommendation> recommendations;
+  final List<Task> rolloverTasks;
 }
 
 class DayPlannerService {
@@ -351,6 +378,11 @@ class DayPlannerService {
       if (cursor.isAfter(dayEnd)) cursor = dayEnd;
     }
 
+    if (!isWeekend) {
+      final lunchEntry = _placeLunch(entries, dayStart, dayEnd);
+      if (lunchEntry != null) entries.add(lunchEntry);
+    }
+
     if (isWeekend) {
       for (var index = 0; index < entries.length; index++) {
         final entry = entries[index];
@@ -364,147 +396,82 @@ class DayPlannerService {
         summary: entries.isEmpty
             ? 'Weekend: no activities planned.'
             : 'Weekend: calendar items only.',
+        rolloverTasks: const <Task>[],
       );
     }
 
-    final actionableTasks =
-        tasks.where((task) => _isTaskEligibleForDay(task, day)).toList()
-          ..sort((a, b) {
-            final aPlanningDate = _planningDateForTask(a);
-            final bPlanningDate = _planningDateForTask(b);
-            if (aPlanningDate != null && bPlanningDate != null) {
-              final planningCompare = aPlanningDate.compareTo(bPlanningDate);
-              if (planningCompare != 0) {
-                return planningCompare;
-              }
-            } else if (aPlanningDate != null) {
-              return -1;
-            } else if (bPlanningDate != null) {
-              return 1;
-            }
-
-            final priorityOrder = {'high': 0, 'medium': 1, 'low': 2};
-            final aPriority = priorityOrder[a.priority] ?? 1;
-            final bPriority = priorityOrder[b.priority] ?? 1;
-            if (aPriority != bPriority) return aPriority.compareTo(bPriority);
-            final aDue = a.dueDate;
-            final bDue = b.dueDate;
-            if (aDue == null && bDue == null) return 0;
-            if (aDue == null) return 1;
-            if (bDue == null) return -1;
-            return aDue.compareTo(bDue);
-          });
+    final prioritizedTasks = _prioritizeTasks(tasks, day);
+    final actionableTasks = prioritizedTasks.map((item) => item.task).toList();
 
     final plannedTaskEntries = <DayPlannerEntry>[];
-    DateTime currentTime = dayStart;
-    bool hasShownLunchBreak = false;
     final dailyCapacity = _calculateDailyCapacity(entries, dayStart, dayEnd);
     var remainingTaskCapacity = dailyCapacity.availableMinutes;
+    final sessions = _createTaskSessions(prioritizedTasks);
+    final scheduledTaskIds = <String>{};
 
     for (
       var index = 0;
-      index < actionableTasks.length && remainingTaskCapacity > 0;
+      index < sessions.length && remainingTaskCapacity > 0;
       index++
     ) {
-      final task = actionableTasks[index];
-      final estimatedDuration = _estimateTaskDuration(task);
-      final focusMinutes = estimatedDuration.inMinutes.clamp(10, 30);
-      final duration = _snapDurationToFiveMinutes(
-        Duration(minutes: focusMinutes),
-      );
+      final session = sessions[index];
+      final duration = session.duration;
       if (duration.inMinutes > remainingTaskCapacity) break;
       final target = dayStart.add(
         Duration(
-          minutes: actionableTasks.length == 1
+          minutes: sessions.length == 1
               ? 0
               : (dayEnd.difference(dayStart).inMinutes *
                         (index + 1) /
-                        (actionableTasks.length.clamp(1, 5) + 1))
+                        (sessions.length + 1))
                     .round(),
         ),
-      );
-      final taskStart = _taskStartAfterCalendarReset(
-        entries,
-        currentTime,
-        target,
-        dayEnd,
       );
       final placedStart = _findNearestFreeStart(
         [...entries, ...plannedTaskEntries],
         duration,
-        target.isBefore(taskStart) ? taskStart : target,
+        target,
         dayStart,
         dayEnd,
-        earliestStart: taskStart,
       );
+      if (placedStart == null) continue;
 
-      if (placedStart != null) {
-        final plannedEnd = placedStart.add(duration);
-        if (plannedEnd.isAfter(dayEnd)) {
-          continue;
-        }
-
-        final snappedStart = PlannerExecutionService.snapToGrid(
-          placedStart,
-          timeGrid,
-        );
-        plannedTaskEntries.add(
-          DayPlannerEntry(
-            id: 'task-${task.id}',
-            title: task.task,
-            type: 'task',
-            start: snappedStart,
-            end: snappedStart.add(duration),
-            subtitle: _taskSubtitle(task),
-            task: task,
-            category: PlannerEventCategory.planned,
-          ),
-        );
-        remainingTaskCapacity -= duration.inMinutes;
-
-        final effectivePlannedEnd = snappedStart.add(duration);
-        currentTime = effectivePlannedEnd;
-
-        if (index == 1 &&
-            !hasShownLunchBreak &&
-            effectivePlannedEnd.add(_defaultLunchBreak).isBefore(dayEnd) &&
-            _intervalIsFree(
-              [...entries, ...plannedTaskEntries],
-              effectivePlannedEnd,
-              effectivePlannedEnd.add(_defaultLunchBreak),
-            )) {
-          plannedTaskEntries.add(
-            DayPlannerEntry(
-              id: 'break-lunch-$index',
-              title: 'Lunch / reset break',
-              type: 'break',
-              start: effectivePlannedEnd,
-              end: effectivePlannedEnd.add(_defaultLunchBreak),
-              subtitle: 'Take a longer pause before the next block',
-            ),
-          );
-          currentTime = effectivePlannedEnd.add(_defaultLunchBreak);
-        } else if (effectivePlannedEnd.add(_defaultBreak).isBefore(dayEnd) &&
-            index < 4 &&
-            _intervalIsFree(
-              [...entries, ...plannedTaskEntries],
-              effectivePlannedEnd,
-              effectivePlannedEnd.add(_defaultBreak),
-            )) {
-          plannedTaskEntries.add(
-            DayPlannerEntry(
-              id: 'break-$index',
-              title: 'Short break',
-              type: 'break',
-              start: effectivePlannedEnd,
-              end: effectivePlannedEnd.add(_defaultBreak),
-              subtitle: 'Stretch, hydrate, or reset',
-            ),
-          );
-          currentTime = effectivePlannedEnd.add(_defaultBreak);
-        }
-      }
+      final snappedStart = PlannerExecutionService.snapToGrid(
+        placedStart,
+        timeGrid,
+      );
+      final task = session.primaryTask;
+      plannedTaskEntries.add(
+        DayPlannerEntry(
+          id: session.isAdmin
+              ? 'admin-${task.id}'
+              : session.sessionCount == 1
+              ? 'task-${task.id}'
+              : 'task-${task.id}-session-${session.sessionIndex}',
+          title: session.isAdmin
+              ? 'Admin Block'
+              : session.sessionCount == 1
+              ? task.task
+              : '${task.task} (Session ${session.sessionIndex}/${session.sessionCount})',
+          type: session.isAdmin ? 'admin' : 'task',
+          start: snappedStart,
+          end: snappedStart.add(duration),
+          subtitle: session.isAdmin
+              ? 'Includes: ${session.tasks.map((task) => task.task).join(', ')}'
+              : _taskSubtitle(task),
+          task: task,
+          category: PlannerEventCategory.planned,
+        ),
+      );
+      remainingTaskCapacity -= duration.inMinutes;
+      scheduledTaskIds.addAll(session.tasks.map((task) => task.id));
     }
+    final cumulativeBreaks = _insertCumulativeFocusBreaks(
+      [...entries, ...plannedTaskEntries],
+      dayStart,
+      dayEnd,
+    );
+    plannedTaskEntries.addAll(cumulativeBreaks);
 
     final merged = <DayPlannerEntry>[];
     merged.addAll(entries);
@@ -525,7 +492,7 @@ class DayPlannerService {
     if (zwiftEntry != null) {
       merged.add(zwiftEntry);
     }
-    final movementEntries = _buildMovementEntries(
+    final movementEntries = _placeMovementEvents(
       day: day,
       dayContext: dayContext,
       occupiedEntries: merged,
@@ -543,7 +510,11 @@ class DayPlannerService {
     final overridden = entryOverrides.isEmpty
         ? merged
         : _applyEntryOverrides(merged, entryOverrides, dayStart, dayEnd);
-    final normalizedEntries = _removeTaskOverlaps(overridden);
+    final normalizedEntries = _validatePlan(
+      _removeTaskOverlaps(overridden),
+      dayStart,
+      dayEnd,
+    );
     for (var index = 0; index < normalizedEntries.length; index++) {
       final entry = normalizedEntries[index];
       normalizedEntries[index] = entry.copyWith(
@@ -575,14 +546,209 @@ class DayPlannerService {
         '${todaysEvents.length} calendar item${todaysEvents.length == 1 ? '' : 's'}',
       );
     }
-
+    final rolloverTasks = actionableTasks
+        .where((task) => !scheduledTaskIds.contains(task.id))
+        .toList();
+    final rolloverSummary = _buildRolloverSummary(rolloverTasks);
+    if (rolloverSummary != null) summarySegments.add(rolloverSummary);
     return DayPlannerResult(
       entries: normalizedEntries,
       summary: summarySegments.isEmpty
           ? 'A light day is ready.'
           : summarySegments.join(' • '),
       recommendations: recommendations,
+      rolloverTasks: rolloverTasks,
     );
+  }
+
+  static List<_PrioritizedTask> _prioritizeTasks(
+    List<Task> tasks,
+    DateTime day,
+  ) {
+    final targetDay = DateTime(day.year, day.month, day.day);
+    final priorityScore = {'high': 40, 'medium': 20, 'low': 0};
+    final scored = tasks.where((task) => _isTaskEligibleForDay(task, day)).map((
+      task,
+    ) {
+      final due = _parseTaskDate(task.dueDate);
+      final doDate = _parseTaskDate(task.doDate);
+      final planningDate = doDate ?? due;
+      final overdueDays = due == null
+          ? 0
+          : targetDay.difference(DateTime(due.year, due.month, due.day)).inDays;
+      final urgency = planningDate == null
+          ? 0
+          : (targetDay
+                        .difference(
+                          DateTime(
+                            planningDate.year,
+                            planningDate.month,
+                            planningDate.day,
+                          ),
+                        )
+                        .inDays >=
+                    0
+                ? 30
+                : 0);
+      final rolloverBonus =
+          planningDate != null && planningDate.isBefore(targetDay) ? 15 : 0;
+      final contextPenalty =
+          task.category.trim().isEmpty ||
+              task.category.trim().toLowerCase() == 'none'
+          ? 0
+          : -5;
+      return _PrioritizedTask(
+        task: task,
+        score:
+            (priorityScore[task.priority] ?? 20) +
+            (overdueDays > 0 ? 35 + overdueDays.clamp(0, 14) : 0) +
+            urgency +
+            rolloverBonus +
+            contextPenalty.toDouble(),
+      );
+    }).toList();
+    scored.sort((a, b) {
+      final scoreCompare = b.score.compareTo(a.score);
+      if (scoreCompare != 0) return scoreCompare;
+      final aDate = _planningDateForTask(a.task);
+      final bDate = _planningDateForTask(b.task);
+      if (aDate == null && bDate == null) return 0;
+      if (aDate == null) return 1;
+      if (bDate == null) return -1;
+      return aDate.compareTo(bDate);
+    });
+    return scored;
+  }
+
+  static String? _buildRolloverSummary(List<Task> rolloverTasks) {
+    if (rolloverTasks.isEmpty) return null;
+    return '${rolloverTasks.length} task${rolloverTasks.length == 1 ? '' : 's'} rolled over';
+  }
+
+  static List<List<_PrioritizedTask>> _groupAdminTasks(
+    List<_PrioritizedTask> tasks,
+  ) {
+    final groups = <List<_PrioritizedTask>>[];
+    var current = <_PrioritizedTask>[];
+    var currentMinutes = 0;
+    for (final item in tasks) {
+      final minutes = _estimateTaskDuration(item.task).inMinutes;
+      if (minutes > 15) continue;
+      if (current.isNotEmpty && currentMinutes + minutes > 60) {
+        groups.add(current);
+        current = <_PrioritizedTask>[];
+        currentMinutes = 0;
+      }
+      current.add(item);
+      currentMinutes += minutes;
+    }
+    if (current.isNotEmpty) groups.add(current);
+    return groups;
+  }
+
+  static List<_TaskSession> _createTaskSessions(
+    List<_PrioritizedTask> prioritizedTasks,
+  ) {
+    final sessions = <_TaskSession>[];
+    final adminGroups = _groupAdminTasks(prioritizedTasks);
+    final adminTasks = adminGroups.expand((group) => group).toSet();
+    for (final item in prioritizedTasks) {
+      if (adminTasks.contains(item)) continue;
+      final minutes = _estimateTaskDuration(item.task).inMinutes;
+      if (minutes <= 90) {
+        sessions.add(
+          _TaskSession(
+            tasks: [item.task],
+            duration: Duration(minutes: minutes.clamp(25, 90)),
+          ),
+        );
+        continue;
+      }
+      final splitCount = (minutes / 60).ceil();
+      var remaining = minutes;
+      for (var index = 1; index <= splitCount; index++) {
+        final sessionsLeft = splitCount - index;
+        var sessionMinutes = remaining > 60 ? 60 : remaining;
+        if (sessionsLeft > 0 && remaining - sessionMinutes < 25) {
+          sessionMinutes = remaining - (sessionsLeft * 45);
+        }
+        sessionMinutes = sessionMinutes.clamp(25, 60);
+        sessions.add(
+          _TaskSession(
+            tasks: [item.task],
+            duration: Duration(minutes: sessionMinutes),
+            sessionIndex: index,
+            sessionCount: splitCount,
+          ),
+        );
+        remaining -= sessionMinutes;
+      }
+    }
+    for (final group in adminGroups) {
+      final minutes = group.fold<int>(
+        0,
+        (total, item) => total + _estimateTaskDuration(item.task).inMinutes,
+      );
+      sessions.add(
+        _TaskSession(
+          tasks: group.map((item) => item.task).toList(),
+          duration: Duration(minutes: minutes.clamp(25, 60)),
+          isAdmin: true,
+        ),
+      );
+    }
+    return sessions;
+  }
+
+  static List<DayPlannerEntry> _insertCumulativeFocusBreaks(
+    List<DayPlannerEntry> existingEntries,
+    DateTime dayStart,
+    DateTime dayEnd,
+  ) {
+    final focusEntries =
+        existingEntries
+            .where((entry) => entry.type == 'task' || entry.type == 'admin')
+            .toList()
+          ..sort((a, b) => a.start.compareTo(b.start));
+    final occupied = List<DayPlannerEntry>.from(existingEntries);
+    final breaks = <DayPlannerEntry>[];
+    var cumulativeFocusMinutes = 0;
+    var breakIndex = 0;
+    for (final focusEntry in focusEntries) {
+      cumulativeFocusMinutes += focusEntry.end
+          .difference(focusEntry.start)
+          .inMinutes;
+      final breakMinutes = cumulativeFocusMinutes >= 120
+          ? 15
+          : cumulativeFocusMinutes >= 90
+          ? 10
+          : cumulativeFocusMinutes >= 50
+          ? 5
+          : 0;
+      if (breakMinutes == 0) continue;
+      final duration = Duration(minutes: breakMinutes);
+      final placedStart = _findNearestFreeStart(
+        occupied,
+        duration,
+        focusEntry.end,
+        dayStart,
+        dayEnd,
+      );
+      if (placedStart == null) continue;
+      final breakEntry = DayPlannerEntry(
+        id: 'break-cumulative-$breakIndex',
+        title: 'Recovery break',
+        type: 'break',
+        start: placedStart,
+        end: placedStart.add(duration),
+        subtitle: 'Recovery after $cumulativeFocusMinutes min focus',
+      );
+      breaks.add(breakEntry);
+      occupied.add(breakEntry);
+      cumulativeFocusMinutes = 0;
+      breakIndex++;
+    }
+    return breaks;
   }
 
   static DayPlannerEntry? _buildZwiftEntry({
@@ -626,7 +792,7 @@ class DayPlannerService {
     return null;
   }
 
-  static List<DayPlannerEntry> _buildMovementEntries({
+  static List<DayPlannerEntry> _placeMovementEvents({
     required DateTime day,
     required DayContext? dayContext,
     required List<DayPlannerEntry> occupiedEntries,
@@ -787,11 +953,11 @@ class DayPlannerService {
     final blocks = <DayPlannerEntry>[];
     var cursor = dayStart;
     for (final entry in occupied) {
-      if (entry.start.isAfter(cursor)) {
+      if (entry.start.difference(cursor) > const Duration(minutes: 30)) {
         blocks.add(
           DayPlannerEntry(
             id: 'buffer-${blocks.length}',
-            title: 'Focus time',
+            title: 'Available Time',
             type: 'buffer',
             start: cursor,
             end: entry.start,
@@ -801,11 +967,11 @@ class DayPlannerService {
       }
       if (entry.end.isAfter(cursor)) cursor = entry.end;
     }
-    if (cursor.isBefore(dayEnd)) {
+    if (dayEnd.difference(cursor) > const Duration(minutes: 30)) {
       blocks.add(
         DayPlannerEntry(
           id: 'buffer-${blocks.length}',
-          title: 'Focus time',
+          title: 'Available Time',
           type: 'buffer',
           start: cursor,
           end: dayEnd,
@@ -846,13 +1012,43 @@ class DayPlannerService {
     }
     final workWindowMinutes = dayEnd.difference(dayStart).inMinutes;
     final reserveMinutes = (workWindowMinutes * 0.15).round();
+    final hasLunch = fixedEntries.any(
+      (entry) => entry.type == 'break' && entry.id == 'break-lunch',
+    );
     return _DailyCapacity(
       workWindowMinutes: workWindowMinutes,
       fixedEventMinutes: fixedMinutes,
-      lunchMinutes: const Duration(minutes: 30).inMinutes,
+      lunchMinutes: hasLunch ? 0 : const Duration(minutes: 30).inMinutes,
       requiredBreakMinutes: workWindowMinutes >= 120 ? 10 : 0,
       movementMinimumMinutes: 0,
       reserveMinutes: reserveMinutes,
+    );
+  }
+
+  static DayPlannerEntry? _placeLunch(
+    List<DayPlannerEntry> fixedEntries,
+    DateTime dayStart,
+    DateTime dayEnd,
+  ) {
+    const duration = Duration(minutes: 30);
+    final target = dayStart.add(
+      Duration(minutes: dayEnd.difference(dayStart).inMinutes ~/ 2),
+    );
+    final start = _findNearestFreeStart(
+      fixedEntries,
+      duration,
+      target,
+      dayStart,
+      dayEnd,
+    );
+    if (start == null) return null;
+    return DayPlannerEntry(
+      id: 'break-lunch',
+      title: 'Lunch / reset break',
+      type: 'break',
+      start: start,
+      end: start.add(duration),
+      subtitle: 'Protected midday recovery',
     );
   }
 
@@ -884,6 +1080,17 @@ class DayPlannerService {
       }
     }
     return normalized;
+  }
+
+  static List<DayPlannerEntry> _validatePlan(
+    List<DayPlannerEntry> entries,
+    DateTime dayStart,
+    DateTime dayEnd,
+  ) {
+    return entries.where((entry) {
+      if (entry.isAllDay) return true;
+      return entry.end.isAfter(entry.start);
+    }).toList();
   }
 
   static List<DayPlannerEntry> _extendShortGaps(
@@ -1227,9 +1434,7 @@ class DayPlannerService {
     }
 
     if (task.effortMinutes != null && task.effortMinutes! > 0) {
-      if (task.effortMinutes! <= 120) {
-        return Duration(minutes: task.effortMinutes!);
-      }
+      return Duration(minutes: task.effortMinutes!);
     }
 
     return switch (task.priority) {
