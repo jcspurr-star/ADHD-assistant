@@ -11,7 +11,6 @@ class TasksViewSection extends StatelessWidget {
     required this.showTaskList,
     required this.isNarrow,
     required this.priorityCardsTotalWidth,
-    required this.priorityCardCount,
     required this.priorityCardSpacing,
     required this.isGenerating,
     required this.prioritizeWorkOnWeekdays,
@@ -38,7 +37,6 @@ class TasksViewSection extends StatelessWidget {
   final bool showTaskList;
   final bool isNarrow;
   final double priorityCardsTotalWidth;
-  final int priorityCardCount;
   final double priorityCardSpacing;
   final bool isGenerating;
   final bool prioritizeWorkOnWeekdays;
@@ -72,7 +70,6 @@ class TasksViewSection extends StatelessWidget {
           TasksOverviewSection(
             isNarrow: isNarrow,
             priorityCardsTotalWidth: priorityCardsTotalWidth,
-            priorityCardCount: priorityCardCount,
             priorityCardSpacing: priorityCardSpacing,
             getTopTasks: getTopTasks,
             buildPriorityCard: buildPriorityCard,

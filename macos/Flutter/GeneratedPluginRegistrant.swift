@@ -7,7 +7,7 @@ import Foundation
 
 import cloud_firestore
 import desktop_webview_window
-import file_picker
+import file_picker_darwin
 import firebase_auth
 import firebase_core
 import flutter_web_auth_2

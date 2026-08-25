@@ -9,7 +9,6 @@ class SettingsPageResult {
   final List<String> otherMedicationOptions;
   final List<String> dopamineCrashSymptomOptions;
   final List<String> dopamineCrashAdditionalSymptomOptions;
-  final int priorityCardCount;
   final int outlookLookAheadDays;
 
   const SettingsPageResult({
@@ -20,7 +19,6 @@ class SettingsPageResult {
     required this.otherMedicationOptions,
     required this.dopamineCrashSymptomOptions,
     required this.dopamineCrashAdditionalSymptomOptions,
-    required this.priorityCardCount,
     required this.outlookLookAheadDays,
   });
 }
@@ -33,10 +31,10 @@ class SettingsPage extends StatefulWidget {
   final List<String> otherMedicationOptions;
   final List<String> dopamineCrashSymptomOptions;
   final List<String> dopamineCrashAdditionalSymptomOptions;
-  final int priorityCardCount;
   final int outlookLookAheadDays;
   final String defaultStarterStepPrompt;
   final String defaultTaskSubtaskPrompt;
+  final VoidCallback? onBackupTap;
 
   const SettingsPage({
     super.key,
@@ -47,10 +45,10 @@ class SettingsPage extends StatefulWidget {
     required this.otherMedicationOptions,
     required this.dopamineCrashSymptomOptions,
     required this.dopamineCrashAdditionalSymptomOptions,
-    required this.priorityCardCount,
     required this.outlookLookAheadDays,
     required this.defaultStarterStepPrompt,
     required this.defaultTaskSubtaskPrompt,
+    this.onBackupTap,
   });
 
   @override
@@ -85,7 +83,6 @@ class _SettingsPageState extends State<SettingsPage> {
       TextEditingController();
   final TextEditingController crashAdditionalEditController =
       TextEditingController();
-  late int priorityCardCount;
   late int outlookLookAheadDays;
   int? contextEditingIndex;
   int? otherMedicationEditingIndex;
@@ -107,7 +104,6 @@ class _SettingsPageState extends State<SettingsPage> {
     );
     promptController.text = widget.starterStepPrompt;
     taskSubtaskPromptController.text = widget.taskSubtaskPrompt;
-    priorityCardCount = widget.priorityCardCount;
     outlookLookAheadDays = widget.outlookLookAheadDays;
   }
 
@@ -205,7 +201,6 @@ class _SettingsPageState extends State<SettingsPage> {
       dopamineCrashSymptomOptions: dopamineCrashSymptomOptions,
       dopamineCrashAdditionalSymptomOptions:
           dopamineCrashAdditionalSymptomOptions,
-      priorityCardCount: priorityCardCount,
       outlookLookAheadDays: outlookLookAheadDays,
     );
     Navigator.pop(context, result);
@@ -570,36 +565,15 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget buildDisplaySection() {
     return buildSectionCard(
-      title: 'Display',
-      description:
-          'Choose how many priority cards are shown at the top and how many Outlook days appear on Today.',
-      child: Wrap(
-        spacing: 20,
-        runSpacing: 12,
-        crossAxisAlignment: WrapCrossAlignment.center,
+      title: 'Planner options',
+      description: 'Choose how many days the planner shows.',
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          const Text('Priority cards shown'),
-          DropdownButton<int>(
-            value: priorityCardCount,
-            items: const [1, 2, 3]
-                .map(
-                  (count) => DropdownMenuItem<int>(
-                    value: count,
-                    child: Text('$count'),
-                  ),
-                )
-                .toList(),
-            onChanged: (value) {
-              if (value == null) return;
-              setState(() {
-                priorityCardCount = value;
-              });
-            },
-          ),
-          const Text('Outlook days shown'),
+          const Text('Planner days shown'),
           DropdownButton<int>(
             value: outlookLookAheadDays,
-            items: const [1, 2, 3, 4, 5, 6, 7]
+            items: const [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
                 .map(
                   (days) =>
                       DropdownMenuItem<int>(value: days, child: Text('$days')),
@@ -1072,6 +1046,31 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Widget buildRestoreBackupButton() {
+    if (widget.onBackupTap == null) {
+      return const SizedBox.shrink();
+    }
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SizedBox(
+        width: 220,
+        child: ElevatedButton.icon(
+          icon: const Icon(Icons.restore_outlined, size: 22),
+          label: const Text('Restore Backup'),
+          style: ElevatedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            textStyle: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          onPressed: widget.onBackupTap,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope<void>(
@@ -1097,8 +1096,13 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ],
             bottom: const TabBar(
+              isScrollable: true,
+              tabAlignment: TabAlignment.start,
+              labelPadding: EdgeInsets.symmetric(horizontal: 10),
+              indicatorSize: TabBarIndicatorSize.label,
+              indicatorWeight: 3,
               tabs: [
-                Tab(text: 'Categories'),
+                Tab(text: 'General'),
                 Tab(text: 'AI Prompts'),
                 Tab(text: 'Tracker Options'),
               ],
@@ -1108,42 +1112,14 @@ class _SettingsPageState extends State<SettingsPage> {
             color: Colors.grey.shade100,
             child: Column(
               children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.shade50,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: Colors.blue.shade100),
-                    ),
-                    child: const Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'App settings',
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        SizedBox(height: 6),
-                        Text(
-                          'Manage AI prompts and task display/category options.',
-                          style: TextStyle(color: Colors.black87),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
                 Expanded(
                   child: TabBarView(
                     children: [
                       ListView(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
                         children: [
+                          buildRestoreBackupButton(),
+                          const SizedBox(height: 16),
                           buildCategorySection(),
                           const SizedBox(height: 16),
                           buildDisplaySection(),

@@ -53,6 +53,23 @@ END:VCALENDAR''';
       expect(events.first.subject, 'Detailed Project Sync');
     });
 
+    test('imports Outlook event categories as labels', () {
+      const icsContent = '''BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:evt-5
+DTSTART:20260812T140000Z
+DTEND:20260812T150000Z
+SUMMARY:Categorized event
+CATEGORIES:Important,Project
+END:VEVENT
+END:VCALENDAR''';
+
+      final events = IcsImportService.parseEvents(icsContent);
+
+      expect(events.single.labels, ['Important', 'Project']);
+    });
+
     test('unfolds folded SUMMARY lines', () {
       const icsContent = '''BEGIN:VCALENDAR
 VERSION:2.0

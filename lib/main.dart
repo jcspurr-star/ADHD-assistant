@@ -222,27 +222,31 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   static const List<int> focusTimerPresets = [5, 10, 25, 50];
 
   bool isGenerating = false;
+  bool isAppBusy = false;
+  bool isStartupLoading = true;
   bool groupTasksByPriority = false;
   int? selectedTaskPaneIndex;
   TaskListSortMode selectedTaskSortMode = TaskListSortMode.manual;
   int selectedMainSectionIndex = 0;
   int? pendingTaskScrollIndex;
-  int priorityCardCount = 3;
+  static const int priorityCardCount = 3;
   int outlookLookAheadDays = 1;
   int plannerDayOffset = 0;
+  DateTime? plannerPlanningStart;
   int plannerWorkdayStartMinutes = 9 * 60;
   int plannerWorkdayEndMinutes = 17 * 60;
-  TimeGrid plannerTimeGrid = TimeGrid.fifteenMinutes;
+  TimeGrid plannerTimeGrid = TimeGrid.thirtyMinutes;
   bool prioritizeWorkOnWeekdays = true;
   bool gymAvailable = false;
   bool wfhAvailable = false;
   bool eveningAvailable = false;
-  bool showWorkInPlanner = true;
-  bool showHomeInPlanner = true;
+  bool showWorkCalendarInPlanner = true;
+  bool showWorkTasksInPlanner = true;
+  bool showHomeCalendarInPlanner = true;
+  bool showHomeTasksInPlanner = true;
   bool showPersonalInPlanner = true;
   bool showMovementInPlanner = true;
   bool showBreakInPlanner = true;
-  bool showFocusInPlanner = true;
   int selectedFocusTimerMinutes = 25;
   int selectedFocusTimerSeconds = 0;
   Duration remainingFocusTime = const Duration(minutes: 25);
@@ -251,6 +255,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   Timer? timerCompletionBeepLoop;
   Timer? notesSaveDebounce;
   Future<List<OutlookCalendarEvent>>? upcomingOutlookEventsFuture;
+  String? _lastPlannerCalendarSyncSignature;
   bool _syncingNoteControllers = false;
   bool timerCompletionCueActive = false;
   bool hasShownOutlookConfigWarning = false;
@@ -268,6 +273,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   @override
   void initState() {
     super.initState();
+    plannerPlanningStart = DateTime.now();
     upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
     unawaited(_refreshFirebaseSyncStatus());
     unawaited(_maybeCompleteOutlookAuthFromCurrentUrl());
@@ -275,8 +281,12 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   }
 
   Future<void> _runStartupLoad() async {
-    await loadTasks().catchError((_) {});
-    await _loadImportedOutlookSummary();
+    try {
+      await loadTasks().catchError((_) {});
+    } finally {
+      if (mounted) setState(() => isStartupLoading = false);
+    }
+    unawaited(_loadImportedOutlookSummary());
   }
 
   Future<void> _loadImportedOutlookSummary() async {
@@ -315,14 +325,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     });
   }
 
-  int getDefaultPriorityCardCountForPlatform() {
-    final isMobile =
-        !kIsWeb &&
-        (defaultTargetPlatform == TargetPlatform.android ||
-            defaultTargetPlatform == TargetPlatform.iOS);
-    return isMobile ? 1 : 3;
-  }
-
   Future<void> loadTasks() async {
     try {
       final loadedTasks = await StorageService.loadTasks();
@@ -346,8 +348,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           await StorageService.loadDopamineCrashSymptomOptions();
       final loadedDopamineCrashAdditionalSymptomOptions =
           await StorageService.loadDopamineCrashAdditionalSymptomOptions();
-      final loadedPriorityCardCount =
-          await StorageService.loadPriorityCardCount();
       final loadedOutlookLookAheadDays =
           await StorageService.loadOutlookLookAheadDays();
       final loadedPrioritizeWorkOnWeekdays =
@@ -360,8 +360,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           await StorageService.loadPlannerWorkdayStartMinutes();
       final loadedPlannerWorkdayEndMinutes =
           await StorageService.loadPlannerWorkdayEndMinutes();
-      final loadedPlannerTimeGrid = await StorageService.loadPlannerTimeGrid();
-
       List<String> resolveOptionList(
         List<String>? loaded,
         List<String> fallback,
@@ -392,8 +390,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         loadedDopamineCrashAdditionalSymptomOptions,
         dopamineCrashAdditionalSymptomOptions,
       );
-      final resolvedPriorityCardCount =
-          loadedPriorityCardCount ?? getDefaultPriorityCardCountForPlatform();
       final resolvedOutlookLookAheadDays = loadedOutlookLookAheadDays ?? 1;
       final resolvedPrioritizeWorkOnWeekdays =
           loadedPrioritizeWorkOnWeekdays ?? true;
@@ -419,7 +415,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         taskSubtaskPrompt = loadedTaskSubtaskPrompt?.trim().isNotEmpty == true
             ? loadedTaskSubtaskPrompt!
             : GeminiService.defaultSubtaskPromptTemplate;
-        priorityCardCount = resolvedPriorityCardCount;
         outlookLookAheadDays = resolvedOutlookLookAheadDays;
         plannerDayOffset = plannerDayOffset.clamp(
           0,
@@ -431,7 +426,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         eveningAvailable = resolvedEveningAvailable;
         plannerWorkdayStartMinutes = resolvedPlannerWorkdayStartMinutes;
         plannerWorkdayEndMinutes = resolvedPlannerWorkdayEndMinutes;
-        plannerTimeGrid = loadedPlannerTimeGrid;
+        plannerTimeGrid = TimeGrid.thirtyMinutes;
         tasks = loadedTasks;
         activityLogs = loadedActivityLogs;
         weeklyActivityTotals = ActivityTrackingService.calculateWeeklyTotals(
@@ -513,10 +508,33 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   }
 
   Future<void> handleCloudSyncStatusTap() async {
-    await _refreshFirebaseSyncStatus(
-      triggerSyncAttempt: true,
-      showSnackBar: true,
+    await _runWithInteractionLock(
+      () => _refreshFirebaseSyncStatus(
+        triggerSyncAttempt: true,
+        showSnackBar: true,
+      ),
     );
+  }
+
+  Future<void> _runWithInteractionLock(Future<void> Function() action) async {
+    if (isAppBusy) return;
+    setState(() => isAppBusy = true);
+    try {
+      await action();
+    } finally {
+      if (mounted) setState(() => isAppBusy = false);
+    }
+  }
+
+  Future<void> undoLastAction() async {
+    await _runWithInteractionLock(() async {
+      final restored = await StorageService.undoLastChange();
+      if (!restored || !mounted) return;
+      await loadTasks();
+      await _loadImportedOutlookSummary();
+      _refreshUpcomingOutlookEvents();
+      setState(() {});
+    });
   }
 
   Future<void> openBackupRecoveryDialog() async {
@@ -554,41 +572,43 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   }
 
   Future<void> importIcsCalendarFile() async {
-    try {
-      String? content;
-      String status = 'No calendar file was selected.';
+    await _runWithInteractionLock(() async {
+      try {
+        String? content;
+        String status = 'No calendar file was selected.';
 
-      if (kIsWeb) {
-        content = await IcsFileLoader.pickAndReadContent();
-      } else {
-        final loadResult =
-            await WorkCalendarAutoImportLoader.loadWithDiagnostics();
-        content = loadResult.content;
-        status = loadResult.status;
+        if (kIsWeb) {
+          content = await IcsFileLoader.pickAndReadContent();
+        } else {
+          final loadResult =
+              await WorkCalendarAutoImportLoader.loadWithDiagnostics();
+          content = loadResult.content;
+          status = loadResult.status;
+
+          if (content == null || content.trim().isEmpty) {
+            content = await IcsFileLoader.pickAndReadContent();
+            status = content == null || content.trim().isEmpty
+                ? loadResult.status
+                : 'Loaded ICS content from selected file.';
+          }
+        }
 
         if (content == null || content.trim().isEmpty) {
-          content = await IcsFileLoader.pickAndReadContent();
-          status = content == null || content.trim().isEmpty
-              ? loadResult.status
-              : 'Loaded ICS content from selected file.';
+          if (!mounted) return;
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(status)));
+          return;
         }
-      }
 
-      if (content == null || content.trim().isEmpty) {
+        await _importIcsCalendarContent(content, forceCalendarSource: 'work');
+      } catch (error) {
         if (!mounted) return;
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(status)));
-        return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Unable to open the selected file: $error')),
+        );
       }
-
-      await _importIcsCalendarContent(content, forceCalendarSource: 'work');
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Unable to open the selected file: $error')),
-      );
-    }
+    });
   }
 
   Future<void> clearImportedOutlookEvents() async {
@@ -662,6 +682,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                   end: event.end,
                   isAllDay: event.isAllDay,
                   calendarSource: forceCalendarSource,
+                  labels: event.labels,
                 ),
               )
               .toList();
@@ -694,6 +715,18 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     );
 
     await StorageService.saveImportedOutlookEvents(importResult.eventsToSave);
+    String? exportError;
+    int? exportedWorkEventCount;
+    if (forceCalendarSource == 'work') {
+      try {
+        exportedWorkEventCount =
+            await OneDriveSyncService.syncWorkCalendarEventsToPersonalCalendar(
+              importResult.eventsToSave,
+            );
+      } catch (error) {
+        exportError = error.toString();
+      }
+    }
     await _loadImportedOutlookSummary();
     if (!mounted) return;
     _refreshUpcomingOutlookEvents();
@@ -704,10 +737,15 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     final removedSuffix = importResult.removedCount > 0
         ? ' ${importResult.removedCount} removed.'
         : '';
+    final exportSuffix = exportedWorkEventCount == null
+        ? exportError == null
+              ? ''
+              : ' Work diary export failed: $exportError'
+        : ' Exported $exportedWorkEventCount work diary event(s) to Outlook.';
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          'Imported ${importedEvents.length} event(s).$movedSuffix$removedSuffix',
+          'Imported ${importedEvents.length} event(s).$movedSuffix$removedSuffix$exportSuffix',
         ),
       ),
     );
@@ -796,16 +834,41 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   }
 
   void _refreshUpcomingOutlookEvents() {
+    _lastPlannerCalendarSyncSignature = null;
     unawaited(_refreshUpcomingOutlookEventsAndRestoreRemoved());
   }
 
   Future<void> _refreshUpcomingOutlookEventsAndRestoreRemoved() async {
-    await StorageService.clearRemovedCalendarEventIds();
     if (!mounted) return;
     setState(() {
-      removedCalendarEventIds = <String>{};
       upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
     });
+  }
+
+  void _syncPlannerResultToPersonalCalendar(
+    DateTime day,
+    List<DayPlannerEntry> entries,
+  ) {
+    final signature = [
+      DateTime(day.year, day.month, day.day).toIso8601String(),
+      ...entries
+          .where((entry) => !entry.isAllDay)
+          .map(
+            (entry) =>
+                '${entry.id}:${entry.title}:${entry.start.toIso8601String()}:${entry.end.toIso8601String()}',
+          ),
+    ].join('|');
+    if (_lastPlannerCalendarSyncSignature == signature) return;
+    _lastPlannerCalendarSyncSignature = signature;
+    unawaited(
+      OneDriveSyncService.syncPlannerEntriesToCalendar(
+        day: day,
+        entries: entries,
+      ).catchError((error) {
+        debugPrint('Planner calendar sync skipped: $error');
+        return 0;
+      }),
+    );
   }
 
   Future<void> saveTasks() async {
@@ -844,6 +907,16 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
 
   Future<void> saveInboxEntries() async {
     await StorageService.saveInboxEntries(inboxEntries);
+  }
+
+  Widget buildQuickCaptureSection() {
+    return QuickCaptureSection(
+      inboxEntries: inboxEntries,
+      inboxCaptureController: inboxCaptureController,
+      onAddInboxEntry: addInboxEntry,
+      onConvertInboxEntryToNote: convertInboxEntryToNote,
+      onRemoveInboxEntry: removeInboxEntry,
+    );
   }
 
   Future<void> saveDailyCheckinsByDate() async {
@@ -1427,11 +1500,11 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           dopamineCrashSymptomOptions: dopamineCrashSymptomOptions,
           dopamineCrashAdditionalSymptomOptions:
               dopamineCrashAdditionalSymptomOptions,
-          priorityCardCount: priorityCardCount,
           outlookLookAheadDays: outlookLookAheadDays,
           defaultStarterStepPrompt:
               GeminiService.defaultStarterStepPromptTemplate,
           defaultTaskSubtaskPrompt: GeminiService.defaultSubtaskPromptTemplate,
+          onBackupTap: openBackupRecoveryDialog,
         ),
       ),
     );
@@ -1451,7 +1524,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           updatedSettings.dopamineCrashAdditionalSymptomOptions;
       starterStepPrompt = updatedSettings.starterStepPrompt;
       taskSubtaskPrompt = updatedSettings.taskSubtaskPrompt;
-      priorityCardCount = updatedSettings.priorityCardCount;
       outlookLookAheadDays = updatedSettings.outlookLookAheadDays;
       plannerDayOffset = plannerDayOffset.clamp(
         0,
@@ -1465,20 +1537,21 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     await saveStarterStepPrompt();
     await saveTaskSubtaskPrompt();
     await saveTrackerOptions();
-    await StorageService.savePriorityCardCount(priorityCardCount);
     await StorageService.saveOutlookLookAheadDays(outlookLookAheadDays);
     await saveTasks();
     _refreshUpcomingOutlookEvents();
   }
 
   Future<void> handleOutlookLink() async {
-    await OutlookLinkCoordinator.handleOutlookLink(
-      context: context,
-      outlookLookAheadDays: outlookLookAheadDays,
-      refreshUpcomingOutlookEvents: () async {
-        _refreshUpcomingOutlookEvents();
-      },
-      showCopyableErrorDialog: showCopyableErrorDialog,
+    await _runWithInteractionLock(
+      () => OutlookLinkCoordinator.handleOutlookLink(
+        context: context,
+        outlookLookAheadDays: outlookLookAheadDays,
+        refreshUpcomingOutlookEvents: () async {
+          _refreshUpcomingOutlookEvents();
+        },
+        showCopyableErrorDialog: showCopyableErrorDialog,
+      ),
     );
   }
 
@@ -1568,6 +1641,72 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     final raw =
         dailyCheckinsByDate[getDateKey(date)]?['nonBlockingCalendarEventIds'];
     return parseStringList(raw).toSet();
+  }
+
+  Set<String> includedCalendarEventIdsForDate(DateTime date) {
+    final raw =
+        dailyCheckinsByDate[getDateKey(date)]?['includedCalendarEventIds'];
+    return parseStringList(raw).toSet();
+  }
+
+  ({
+    bool gymAvailable,
+    bool wfhAvailable,
+    bool eveningAvailable,
+    int workdayStartMinutes,
+    int workdayEndMinutes,
+  })
+  plannerContextForDate(DateTime date) {
+    final settings = dailyCheckinsByDate[getDateKey(date)];
+    return (
+      gymAvailable: settings?['plannerGymAvailable'] as bool? ?? false,
+      wfhAvailable: settings?['plannerWfhAvailable'] as bool? ?? false,
+      eveningAvailable: settings?['plannerEveningAvailable'] as bool? ?? false,
+      workdayStartMinutes:
+          (settings?['plannerWorkdayStartMinutes'] as num?)?.toInt() ?? 9 * 60,
+      workdayEndMinutes:
+          (settings?['plannerWorkdayEndMinutes'] as num?)?.toInt() ?? 17 * 60,
+    );
+  }
+
+  Future<void> updatePlannerContext(
+    DateTime date, {
+    bool? gymAvailable,
+    bool? wfhAvailable,
+    bool? eveningAvailable,
+    int? workdayStartMinutes,
+    int? workdayEndMinutes,
+  }) async {
+    final dateKey = getDateKey(date);
+    final current = Map<String, dynamic>.from(
+      dailyCheckinsByDate[dateKey] ?? defaultDailyCheckin(),
+    );
+    final existing = plannerContextForDate(date);
+    current['plannerGymAvailable'] = gymAvailable ?? existing.gymAvailable;
+    current['plannerWfhAvailable'] = wfhAvailable ?? existing.wfhAvailable;
+    current['plannerEveningAvailable'] =
+        eveningAvailable ?? existing.eveningAvailable;
+    current['plannerWorkdayStartMinutes'] =
+        workdayStartMinutes ?? existing.workdayStartMinutes;
+    current['plannerWorkdayEndMinutes'] =
+        workdayEndMinutes ?? existing.workdayEndMinutes;
+    current['trackerVersion'] = 2;
+    setState(() => dailyCheckinsByDate[dateKey] = current);
+    await saveDailyCheckinsByDate();
+  }
+
+  Future<void> setIncludedCalendarEventIds(
+    DateTime date,
+    Set<String> ids,
+  ) async {
+    final dateKey = getDateKey(date);
+    final current = Map<String, dynamic>.from(
+      dailyCheckinsByDate[dateKey] ?? defaultDailyCheckin(),
+    );
+    current['includedCalendarEventIds'] = ids.toList()..sort();
+    current['trackerVersion'] = 2;
+    setState(() => dailyCheckinsByDate[dateKey] = current);
+    await saveDailyCheckinsByDate();
   }
 
   Future<void> setNonBlockingCalendarEventIds(
@@ -1709,6 +1848,78 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     await saveDailyCheckinsByDate();
   }
 
+  Future<void> removePersonalBlock(DateTime date, String blockId) async {
+    final dateKey = getDateKey(date);
+    final current = Map<String, dynamic>.from(
+      dailyCheckinsByDate[dateKey] ?? defaultDailyCheckin(),
+    );
+    final blocks = personalBlocksForDate(
+      date,
+    ).where((block) => block.id != blockId).toList();
+    current['personalPlannerBlocks'] = blocks
+        .map(
+          (block) => jsonEncode({
+            'id': block.id,
+            'title': block.title,
+            'startMinutes': block.startMinutes,
+            'endMinutes': block.endMinutes,
+          }),
+        )
+        .toList();
+    current['trackerVersion'] = 2;
+    setState(() => dailyCheckinsByDate[dateKey] = current);
+    await saveDailyCheckinsByDate();
+  }
+
+  Future<void> removePlannerEntry(DateTime date, String entryId) async {
+    if (personalBlocksForDate(date).any((block) => block.id == entryId)) {
+      await removePersonalBlock(date, entryId);
+      return;
+    }
+
+    final next = removedPlannerEntryIdsForDate(date)..add(entryId);
+    await setRemovedPlannerEntryIds(date, next);
+    if (!entryId.startsWith('calendar-')) return;
+
+    final eventId = entryId.substring('calendar-'.length);
+    final removedCalendarIds = Set<String>.from(removedCalendarEventIds)
+      ..add(eventId);
+    setState(() => removedCalendarEventIds = removedCalendarIds);
+    await StorageService.saveRemovedCalendarEventIds(removedCalendarIds);
+  }
+
+  Future<void> deletePlannerActivity(
+    DateTime date,
+    DayPlannerEntry entry,
+  ) async {
+    await _runWithInteractionLock(() async {
+      if (personalBlocksForDate(date).any((block) => block.id == entry.id)) {
+        await removePersonalBlock(date, entry.id);
+      } else {
+        final next = removedPlannerEntryIdsForDate(date)..add(entry.id);
+        await setRemovedPlannerEntryIds(date, next);
+        if (entry.id.startsWith('calendar-')) {
+          final eventId = entry.id.substring('calendar-'.length);
+          final removedCalendarIds = Set<String>.from(removedCalendarEventIds)
+            ..add(eventId);
+          setState(() => removedCalendarEventIds = removedCalendarIds);
+          await StorageService.saveRemovedCalendarEventIds(removedCalendarIds);
+        }
+      }
+
+      if (date.year == DateTime.now().year &&
+          date.month == DateTime.now().month &&
+          date.day == DateTime.now().day) {
+        setState(() => plannerPlanningStart = DateTime.now());
+      }
+      try {
+        await OneDriveSyncService.deleteExportedCalendarEvent(entry, day: date);
+      } catch (error) {
+        debugPrint('Planner Outlook deletion skipped: $error');
+      }
+    });
+  }
+
   Map<String, ExecutionState> plannerExecutionStatesForDate(DateTime date) {
     final raw =
         dailyCheckinsByDate[getDateKey(date)]?['plannerExecutionStates'];
@@ -1756,6 +1967,19 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           final taskIndex = tasks.indexWhere((task) => task.id == taskId);
           if (taskIndex >= 0) await toggleTask(taskIndex, true);
         }
+      }
+    }
+
+    if (state == ExecutionState.pending &&
+        existingState == ExecutionState.completed &&
+        (entry.type == 'task' || entry.type == 'admin') &&
+        !entry.id.contains('-session-')) {
+      final taskIds = entry.relatedTaskIds.isEmpty && entry.task != null
+          ? <String>[entry.task!.id]
+          : entry.relatedTaskIds;
+      for (final taskId in taskIds) {
+        final taskIndex = tasks.indexWhere((task) => task.id == taskId);
+        if (taskIndex >= 0) await toggleTask(taskIndex, false);
       }
     }
 
@@ -1916,6 +2140,11 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       'dopamineCrashSymptoms': <String>[],
       'dopamineCrashSymptomsAdditional': <String>[],
       'contextTags': <String>[],
+      'plannerGymAvailable': false,
+      'plannerWfhAvailable': false,
+      'plannerEveningAvailable': false,
+      'plannerWorkdayStartMinutes': 9 * 60,
+      'plannerWorkdayEndMinutes': 17 * 60,
       'preferredConcurrentEntryIds': <String>[],
       'nonBlockingCalendarEventIds': <String>[],
       'removedPlannerEntryIds': <String>[],
@@ -2988,7 +3217,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   }
 
   bool _isWorkTask(Task task) {
-    return task.category.trim().toLowerCase() == 'work';
+    final normalizedCategory = task.category.trim().toLowerCase();
+    return normalizedCategory == 'work' || normalizedCategory == 'work tasks';
   }
 
   Future<void> toggleWorkdayPriorityMode() async {
@@ -3004,38 +3234,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       gymAvailable = enabled;
     });
     await StorageService.saveGymAvailable(enabled);
-  }
-
-  Future<void> resetPlannerDay(DateTime date) async {
-    final dateKey = getDateKey(date);
-    final current = Map<String, dynamic>.from(
-      dailyCheckinsByDate[dateKey] ?? defaultDailyCheckin(),
-    );
-    current['preferredConcurrentEntryIds'] = <String>[];
-    current['nonBlockingCalendarEventIds'] = <String>[];
-    current['removedPlannerEntryIds'] = <String>[];
-    current['plannerEntryOverrides'] = <String>[];
-    current['plannerExecutionStates'] = <String>[];
-    current['trackerVersion'] = 2;
-
-    final nextLogs = activityLogs.where((entry) {
-      final completedAt = entry.completedAt.toLocal();
-      final isSameDay =
-          completedAt.year == date.year &&
-          completedAt.month == date.month &&
-          completedAt.day == date.day;
-      return entry.source != ActivitySource.plannerTimeline || !isSameDay;
-    }).toList();
-
-    setState(() {
-      dailyCheckinsByDate[dateKey] = current;
-      activityLogs = nextLogs;
-      weeklyActivityTotals = ActivityTrackingService.calculateWeeklyTotals(
-        nextLogs,
-      );
-    });
-    await saveDailyCheckinsByDate();
-    await StorageService.saveActivityLogs(nextLogs);
   }
 
   Future<void> logHomeEventAsGym(DayPlannerEntry event) async {
@@ -3794,19 +3992,17 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           );
         }
 
-        Widget buildCaptureInboxSection() {
-          return QuickCaptureSection(
-            inboxEntries: inboxEntries,
-            inboxCaptureController: inboxCaptureController,
-            onAddInboxEntry: addInboxEntry,
-            onConvertInboxEntryToNote: convertInboxEntryToNote,
-            onRemoveInboxEntry: removeInboxEntry,
-          );
-        }
-
         Widget buildDayPlannerSection({bool dashboardMode = false}) {
+          final plannerDate = DateTime.now().add(
+            Duration(days: plannerDayOffset),
+          );
+          final plannerContext = plannerContextForDate(plannerDate);
           return DayPlannerSection(
             dashboardMode: dashboardMode,
+            quickCaptureSection: buildQuickCaptureSection(),
+            onPlannerResultBuilt: isStartupLoading
+                ? null
+                : _syncPlannerResultToPersonalCalendar,
             onOpenPlanner: () {
               setState(() {
                 selectedMainSectionIndex = 0;
@@ -3816,15 +4012,16 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             loadUpcomingOutlookEvents: _loadUpcomingOutlookEvents,
             outlookLookAheadDays: outlookLookAheadDays,
             plannerDayOffset: plannerDayOffset,
-            showWorkInPlanner: showWorkInPlanner,
-            showHomeInPlanner: showHomeInPlanner,
+            showWorkCalendarInPlanner: showWorkCalendarInPlanner,
+            showWorkTasksInPlanner: showWorkTasksInPlanner,
+            showHomeCalendarInPlanner: showHomeCalendarInPlanner,
+            showHomeTasksInPlanner: showHomeTasksInPlanner,
             showMovementInPlanner: showMovementInPlanner,
             showBreakInPlanner: showBreakInPlanner,
-            showFocusInPlanner: showFocusInPlanner,
             showPersonalInPlanner: showPersonalInPlanner,
-            gymAvailable: gymAvailable,
-            wfhAvailable: wfhAvailable,
-            eveningAvailable: eveningAvailable,
+            gymAvailable: plannerContext.gymAvailable,
+            wfhAvailable: plannerContext.wfhAvailable,
+            eveningAvailable: plannerContext.eveningAvailable,
             weeklyActivityTotals: weeklyActivityTotals,
             dailyActivityTotals: ActivityTrackingService.calculateDailyTotals(
               activityLogs,
@@ -3842,9 +4039,13 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             nonBlockingCalendarEventIds: nonBlockingCalendarEventIdsForDate(
               DateTime.now().add(Duration(days: plannerDayOffset)),
             ),
+            includedCalendarEventIds: includedCalendarEventIdsForDate(
+              DateTime.now().add(Duration(days: plannerDayOffset)),
+            ),
             removedPlannerEntryIds: removedPlannerEntryIdsForDate(
               DateTime.now().add(Duration(days: plannerDayOffset)),
             ),
+            planningStart: plannerPlanningStart,
             removedCalendarEventIds: removedCalendarEventIds,
             plannerEntryOverrides: plannerEntryOverridesForDate(
               DateTime.now().add(Duration(days: plannerDayOffset)),
@@ -3852,8 +4053,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             personalBlocks: personalBlocksForDate(
               DateTime.now().add(Duration(days: plannerDayOffset)),
             ),
-            workdayStartMinutes: plannerWorkdayStartMinutes,
-            workdayEndMinutes: plannerWorkdayEndMinutes,
+            workdayStartMinutes: plannerContext.workdayStartMinutes,
+            workdayEndMinutes: plannerContext.workdayEndMinutes,
             tasks: tasks,
             isNarrow: isNarrow,
             useWideWebOverviewColumns: useWideWebOverviewColumns,
@@ -3864,35 +4065,33 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                 plannerDayOffset = nextOffset;
               });
             },
-            onShowWorkInPlannerChanged: (next) {
-              setState(() {
-                showWorkInPlanner = next;
-              });
-            },
-            onShowHomeInPlannerChanged: (next) {
-              setState(() {
-                showHomeInPlanner = next;
-              });
-            },
+            onShowWorkCalendarInPlannerChanged: (next) =>
+                setState(() => showWorkCalendarInPlanner = next),
+            onShowWorkTasksInPlannerChanged: (next) =>
+                setState(() => showWorkTasksInPlanner = next),
+            onShowHomeCalendarInPlannerChanged: (next) =>
+                setState(() => showHomeCalendarInPlanner = next),
+            onShowHomeTasksInPlannerChanged: (next) =>
+                setState(() => showHomeTasksInPlanner = next),
             onShowMovementInPlannerChanged: (next) =>
                 setState(() => showMovementInPlanner = next),
             onShowBreakInPlannerChanged: (next) =>
                 setState(() => showBreakInPlanner = next),
-            onShowFocusInPlannerChanged: (next) =>
-                setState(() => showFocusInPlanner = next),
             onShowPersonalInPlannerChanged: (next) {
               setState(() {
                 showPersonalInPlanner = next;
               });
             },
             onGymAvailableChanged: (next) {
-              unawaited(setGymAvailable(next));
+              unawaited(updatePlannerContext(plannerDate, gymAvailable: next));
             },
             onWfhAvailableChanged: (next) {
-              unawaited(setWfhAvailable(next));
+              unawaited(updatePlannerContext(plannerDate, wfhAvailable: next));
             },
             onEveningAvailableChanged: (next) {
-              unawaited(setEveningAvailable(next));
+              unawaited(
+                updatePlannerContext(plannerDate, eveningAvailable: next),
+              );
             },
             onCompleteRecommendation: (recommendation) {
               unawaited(completeActivityRecommendation(recommendation));
@@ -3906,13 +4105,16 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               final date = DateTime.now().add(Duration(days: plannerDayOffset));
               unawaited(setNonBlockingCalendarEventIds(date, ids));
             },
+            onToggleIncludedCalendarPlanning: (ids) {
+              final date = DateTime.now().add(Duration(days: plannerDayOffset));
+              unawaited(setIncludedCalendarEventIds(date, ids));
+            },
             onLogHomeEventAsGym: (event) {
               unawaited(logHomeEventAsGym(event));
             },
-            onRemovePlannerEntry: (entryId) {
+            onDeleteActivity: (entry) {
               final date = DateTime.now().add(Duration(days: plannerDayOffset));
-              final next = removedPlannerEntryIdsForDate(date)..add(entryId);
-              unawaited(setRemovedPlannerEntryIds(date, next));
+              unawaited(deletePlannerActivity(date, entry));
             },
             onEditPlannerEntryTime: (entryId, startMinutes, endMinutes) {
               final date = DateTime.now().add(Duration(days: plannerDayOffset));
@@ -3927,11 +4129,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             onAddPersonalBlock: (date, title, start, end) {
               unawaited(addPersonalBlock(date, title, start, end));
             },
-            onImportCalendar: importIcsCalendarFile,
-            onResetPlanner: () {
-              final date = DateTime.now().add(Duration(days: plannerDayOffset));
-              unawaited(resetPlannerDay(date));
-            },
             onExecutePlannerEntry: (entry, state) {
               final date = DateTime.now().add(Duration(days: plannerDayOffset));
               unawaited(executePlannerEntry(date, entry, state));
@@ -3940,14 +4137,11 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               unawaited(openTaskFromPriorityCard(task));
             },
             onWorkdayHoursChanged: (hours) {
-              setState(() {
-                plannerWorkdayStartMinutes = hours.$1;
-                plannerWorkdayEndMinutes = hours.$2;
-              });
               unawaited(
-                StorageService.savePlannerWorkdayHours(
-                  startMinutes: hours.$1,
-                  endMinutes: hours.$2,
+                updatePlannerContext(
+                  plannerDate,
+                  workdayStartMinutes: hours.$1,
+                  workdayEndMinutes: hours.$2,
                 ),
               );
             },
@@ -4052,7 +4246,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           showTaskList: showTaskList,
           isNarrow: isNarrow,
           priorityCardsTotalWidth: priorityCardsTotalWidth,
-          priorityCardCount: priorityCardCount,
           priorityCardSpacing: priorityCardSpacing,
           isGenerating: isGenerating,
           prioritizeWorkOnWeekdays: prioritizeWorkOnWeekdays,
@@ -4078,7 +4271,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           getTopTasks: getTopTasks,
           buildPriorityCard: buildPriorityCard,
           onToggleWorkdayPriorityMode: toggleWorkdayPriorityMode,
-          buildCaptureInboxSection: buildCaptureInboxSection(),
+          buildCaptureInboxSection: buildQuickCaptureSection(),
           buildOutlookSection: buildOutlookSection(),
           buildDailyCheckinSection: buildDailyCheckinSection(),
           buildDayPlannerSection: buildDayPlannerSection(),
@@ -4362,22 +4555,31 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         final isNarrow = constraints.maxWidth < 720;
         final useWideWebOverviewColumns =
             !isNarrow && constraints.maxWidth >= 1200;
+        final plannerDate = DateTime.now().add(
+          Duration(days: plannerDayOffset),
+        );
+        final plannerContext = plannerContextForDate(plannerDate);
         final planner = DayPlannerSection(
           dashboardMode: dashboardMode,
+          quickCaptureSection: buildQuickCaptureSection(),
+          onPlannerResultBuilt: isStartupLoading
+              ? null
+              : _syncPlannerResultToPersonalCalendar,
           onOpenPlanner: () => setState(() => selectedMainSectionIndex = 0),
           upcomingOutlookEventsFuture: upcomingOutlookEventsFuture,
           loadUpcomingOutlookEvents: _loadUpcomingOutlookEvents,
           outlookLookAheadDays: outlookLookAheadDays,
           plannerDayOffset: plannerDayOffset,
-          showWorkInPlanner: showWorkInPlanner,
-          showHomeInPlanner: showHomeInPlanner,
+          showWorkCalendarInPlanner: showWorkCalendarInPlanner,
+          showWorkTasksInPlanner: showWorkTasksInPlanner,
+          showHomeCalendarInPlanner: showHomeCalendarInPlanner,
+          showHomeTasksInPlanner: showHomeTasksInPlanner,
           showMovementInPlanner: showMovementInPlanner,
           showBreakInPlanner: showBreakInPlanner,
-          showFocusInPlanner: showFocusInPlanner,
           showPersonalInPlanner: showPersonalInPlanner,
-          gymAvailable: gymAvailable,
-          wfhAvailable: wfhAvailable,
-          eveningAvailable: eveningAvailable,
+          gymAvailable: plannerContext.gymAvailable,
+          wfhAvailable: plannerContext.wfhAvailable,
+          eveningAvailable: plannerContext.eveningAvailable,
           weeklyActivityTotals: weeklyActivityTotals,
           dailyActivityTotals: ActivityTrackingService.calculateDailyTotals(
             activityLogs,
@@ -4395,9 +4597,13 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           nonBlockingCalendarEventIds: nonBlockingCalendarEventIdsForDate(
             DateTime.now().add(Duration(days: plannerDayOffset)),
           ),
+          includedCalendarEventIds: includedCalendarEventIdsForDate(
+            DateTime.now().add(Duration(days: plannerDayOffset)),
+          ),
           removedPlannerEntryIds: removedPlannerEntryIdsForDate(
             DateTime.now().add(Duration(days: plannerDayOffset)),
           ),
+          planningStart: plannerPlanningStart,
           removedCalendarEventIds: removedCalendarEventIds,
           plannerEntryOverrides: plannerEntryOverridesForDate(
             DateTime.now().add(Duration(days: plannerDayOffset)),
@@ -4405,8 +4611,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           personalBlocks: personalBlocksForDate(
             DateTime.now().add(Duration(days: plannerDayOffset)),
           ),
-          workdayStartMinutes: plannerWorkdayStartMinutes,
-          workdayEndMinutes: plannerWorkdayEndMinutes,
+          workdayStartMinutes: plannerContext.workdayStartMinutes,
+          workdayEndMinutes: plannerContext.workdayEndMinutes,
           timeGrid: plannerTimeGrid,
           tasks: tasks,
           isNarrow: isNarrow,
@@ -4415,29 +4621,29 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           formatPlannerDate: OutlookFormattingService.formatPlannerDate,
           onPlannerDayOffsetChanged: (value) =>
               setState(() => plannerDayOffset = value),
-          onShowWorkInPlannerChanged: (value) =>
-              setState(() => showWorkInPlanner = value),
-          onShowHomeInPlannerChanged: (value) =>
-              setState(() => showHomeInPlanner = value),
+          onShowWorkCalendarInPlannerChanged: (value) =>
+              setState(() => showWorkCalendarInPlanner = value),
+          onShowWorkTasksInPlannerChanged: (value) =>
+              setState(() => showWorkTasksInPlanner = value),
+          onShowHomeCalendarInPlannerChanged: (value) =>
+              setState(() => showHomeCalendarInPlanner = value),
+          onShowHomeTasksInPlannerChanged: (value) =>
+              setState(() => showHomeTasksInPlanner = value),
           onShowMovementInPlannerChanged: (value) =>
               setState(() => showMovementInPlanner = value),
           onShowBreakInPlannerChanged: (value) =>
               setState(() => showBreakInPlanner = value),
-          onShowFocusInPlannerChanged: (value) =>
-              setState(() => showFocusInPlanner = value),
           onShowPersonalInPlannerChanged: (value) =>
               setState(() => showPersonalInPlanner = value),
-          onGymAvailableChanged: (value) => unawaited(setGymAvailable(value)),
-          onWfhAvailableChanged: (value) => unawaited(setWfhAvailable(value)),
-          onEveningAvailableChanged: (value) =>
-              unawaited(setEveningAvailable(value)),
+          onGymAvailableChanged: (value) =>
+              unawaited(updatePlannerContext(plannerDate, gymAvailable: value)),
+          onWfhAvailableChanged: (value) =>
+              unawaited(updatePlannerContext(plannerDate, wfhAvailable: value)),
+          onEveningAvailableChanged: (value) => unawaited(
+            updatePlannerContext(plannerDate, eveningAvailable: value),
+          ),
           onAddPersonalBlock: (date, title, start, end) {
             unawaited(addPersonalBlock(date, title, start, end));
-          },
-          onImportCalendar: importIcsCalendarFile,
-          onResetPlanner: () {
-            final date = DateTime.now().add(Duration(days: plannerDayOffset));
-            unawaited(resetPlannerDay(date));
           },
           onCompleteRecommendation: (value) =>
               unawaited(completeActivityRecommendation(value)),
@@ -4450,40 +4656,25 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             final date = DateTime.now().add(Duration(days: plannerDayOffset));
             unawaited(setNonBlockingCalendarEventIds(date, ids));
           },
+          onToggleIncludedCalendarPlanning: (ids) {
+            final date = DateTime.now().add(Duration(days: plannerDayOffset));
+            unawaited(setIncludedCalendarEventIds(date, ids));
+          },
           onLogHomeEventAsGym: (event) {
             unawaited(logHomeEventAsGym(event));
           },
-          onRemovePlannerEntry: (entryId) {
+          onDeleteActivity: (entry) {
             final date = DateTime.now().add(Duration(days: plannerDayOffset));
-            unawaited(
-              setRemovedPlannerEntryIds(
-                date,
-                removedPlannerEntryIdsForDate(date)..add(entryId),
-              ),
-            );
-            if (entryId.startsWith('calendar-')) {
-              final eventId = entryId.substring('calendar-'.length);
-              final next = Set<String>.from(removedCalendarEventIds)
-                ..add(eventId);
-              setState(() => removedCalendarEventIds = next);
-              unawaited(StorageService.saveRemovedCalendarEventIds(next));
-            }
+            unawaited(deletePlannerActivity(date, entry));
           },
           onWorkdayHoursChanged: (hours) {
-            setState(() {
-              plannerWorkdayStartMinutes = hours.$1;
-              plannerWorkdayEndMinutes = hours.$2;
-            });
             unawaited(
-              StorageService.savePlannerWorkdayHours(
-                startMinutes: hours.$1,
-                endMinutes: hours.$2,
+              updatePlannerContext(
+                plannerDate,
+                workdayStartMinutes: hours.$1,
+                workdayEndMinutes: hours.$2,
               ),
             );
-          },
-          onTimeGridChanged: (grid) {
-            setState(() => plannerTimeGrid = grid);
-            unawaited(StorageService.savePlannerTimeGrid(grid));
           },
           onEditPlannerEntryTime: (entryId, start, end) {
             final date = DateTime.now().add(Duration(days: plannerDayOffset));
@@ -4544,16 +4735,18 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Expanded(
+                flex: 3,
                 child: Padding(
                   padding: const EdgeInsets.only(right: 6),
-                  child: _buildPlannerExperience(dashboardMode: true),
+                  child: _buildPlannerExperience(dashboardMode: false),
                 ),
               ),
               Expanded(
+                flex: 1,
                 child: Padding(
                   padding: const EdgeInsets.only(left: 6),
                   child: SizedBox.expand(
-                    child: _buildPlannerExperience(dashboardMode: false),
+                    child: _buildPlannerExperience(dashboardMode: true),
                   ),
                 ),
               ),
@@ -4567,46 +4760,74 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: Padding(
-          padding: const EdgeInsets.all(kPageHorizontalPadding),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              HomeHeader(
-                tabs: MainSectionTabs(
-                  selectedIndex: selectedMainSectionIndex,
-                  onSelectIndex: (index) {
-                    setState(() {
-                      selectedMainSectionIndex = index;
-                    });
-                  },
-                ),
-                syncBadge: buildFirebaseSyncStatusBadge(),
-                onBackupTap: openBackupRecoveryDialog,
-                onOutlookTap: handleOutlookLink,
-                onSettingsTap: openSettings,
+      body: Stack(
+        children: [
+          SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.all(kPageHorizontalPadding),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  HomeHeader(
+                    isBusy: isAppBusy,
+                    tabs: MainSectionTabs(
+                      selectedIndex: selectedMainSectionIndex,
+                      onSelectIndex: (index) {
+                        setState(() {
+                          selectedMainSectionIndex = index;
+                        });
+                      },
+                    ),
+                    syncBadge: buildFirebaseSyncStatusBadge(),
+                    onUndo: undoLastAction,
+                    onOutlookTap: handleOutlookLink,
+                    onImportCalendar: importIcsCalendarFile,
+                    onSettingsTap: openSettings,
+                  ),
+                  const SizedBox(height: 10),
+                  Expanded(
+                    child: MainContentView(
+                      selectedMainSectionIndex: selectedMainSectionIndex,
+                      buildTasksView: buildTasksView,
+                      buildTasksV2View: buildTasksV2View,
+                      buildHomeDashboard: () =>
+                          _buildPlannerExperience(dashboardMode: true),
+                      buildCombinedHomePlanner: _buildCombinedHomePlanner,
+                      buildCountdownView: buildCountdownView,
+                      buildInsightsView: buildInsightsView,
+                      buildNotesView: buildNotesView,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 10),
-              Expanded(
-                child: MainContentView(
-                  selectedMainSectionIndex: selectedMainSectionIndex,
-                  buildTasksView: buildTasksView,
-                  buildTasksV2View: buildTasksV2View,
-                  buildHomeDashboard: () =>
-                      _buildPlannerExperience(dashboardMode: true),
-                  buildCombinedHomePlanner: _buildCombinedHomePlanner,
-                  buildCountdownView: buildCountdownView,
-                  buildInsightsView: buildInsightsView,
-                  buildNotesView: buildNotesView,
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
+          if (isAppBusy)
+            const Positioned.fill(
+              child: ModalBarrier(dismissible: false, color: Color(0xEEFFFFFF)),
+            ),
+          if (isAppBusy)
+            Center(
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 18,
+                    vertical: 14,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.hourglass_top, size: 18),
+                      const SizedBox(width: 10),
+                      Text('Working...'),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
-      bottomNavigationBar: selectedMainSectionIndex == 2 ? null : null,
     );
   }
 }

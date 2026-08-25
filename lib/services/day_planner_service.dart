@@ -2,6 +2,7 @@ import '../models/activity_recommendation.dart';
 import '../models/task.dart';
 import 'movement_recommendation_service.dart';
 import 'one_drive_sync_service.dart';
+import 'planner_break_policy.dart';
 import 'planner_execution_service.dart';
 
 class DayPlannerEntry {
@@ -20,6 +21,7 @@ class DayPlannerEntry {
     this.executionState = ExecutionState.pending,
     this.category = PlannerEventCategory.planned,
     this.isZeroDuration = false,
+    this.labels = const <String>[],
   });
 
   final String id;
@@ -37,6 +39,7 @@ class DayPlannerEntry {
   final ExecutionState executionState;
   final PlannerEventCategory category;
   final bool isZeroDuration;
+  final List<String> labels;
 
   DayPlannerEntry copyWith({
     DateTime? start,
@@ -45,6 +48,7 @@ class DayPlannerEntry {
     ExecutionState? executionState,
     PlannerEventCategory? category,
     bool? isZeroDuration,
+    List<String>? labels,
   }) {
     return DayPlannerEntry(
       id: id,
@@ -61,6 +65,7 @@ class DayPlannerEntry {
       executionState: executionState ?? this.executionState,
       category: category ?? this.category,
       isZeroDuration: isZeroDuration ?? this.isZeroDuration,
+      labels: labels ?? this.labels,
     );
   }
 }
@@ -136,6 +141,7 @@ class _TaskSession {
     this.sessionIndex = 1,
     this.sessionCount = 1,
     this.isAdmin = false,
+    this.isPulledForward = false,
   });
 
   final List<Task> tasks;
@@ -143,6 +149,8 @@ class _TaskSession {
   final int sessionIndex;
   final int sessionCount;
   final bool isAdmin;
+  // True when this task isn't due yet but was pulled forward to fill spare capacity.
+  final bool isPulledForward;
 
   Task get primaryTask => tasks.first;
 }
@@ -167,8 +175,14 @@ class DayPlannerService {
   static bool _occupiesPlanningTime(DayPlannerEntry entry) {
     return !entry.isAllDay &&
         entry.type != 'buffer' &&
-        entry.category != PlannerEventCategory.informational &&
+        (entry.category != PlannerEventCategory.informational ||
+            _isWorkCalendarEntry(entry)) &&
         !(entry.type == 'calendar' && entry.isZeroDuration);
+  }
+
+  static bool _isWorkCalendarEntry(DayPlannerEntry entry) {
+    return entry.type == 'calendar' &&
+        entry.subtitle?.toLowerCase().contains('work calendar') == true;
   }
 
   static DateTime? _parseTaskDate(String? raw) {
@@ -196,12 +210,28 @@ class DayPlannerService {
       return !normalizedDoDate.isAfter(targetDay);
     }
 
-    final subtaskDate = _currentSubtaskPlanningDate(task, day);
-    if (subtaskDate != null) {
-      return true;
+    for (final subtask in task.subtasks) {
+      if (subtask.done == true) continue;
+      final subtaskDate = _parseTaskDate(subtask.doDate);
+      if (subtaskDate == null) continue;
+      final normalizedSubtaskDate = DateTime(
+        subtaskDate.year,
+        subtaskDate.month,
+        subtaskDate.day,
+      );
+      if (!normalizedSubtaskDate.isAfter(targetDay)) {
+        return true;
+      }
     }
 
-    return _parseTaskDate(task.dueDate) != null;
+    final dueDate = _parseTaskDate(task.dueDate);
+    if (dueDate == null) return false;
+    final normalizedDueDate = DateTime(
+      dueDate.year,
+      dueDate.month,
+      dueDate.day,
+    );
+    return !normalizedDueDate.isAfter(targetDay);
   }
 
   static DateTime? _firstPlannedIncompleteSubtaskDate(Task task) {
@@ -223,29 +253,6 @@ class DayPlannerService {
     return earliest;
   }
 
-  static DateTime? _currentSubtaskPlanningDate(Task task, DateTime day) {
-    final targetDay = DateTime(day.year, day.month, day.day);
-    DateTime? firstFutureDate;
-    for (final subtask in task.subtasks) {
-      if (subtask.done == true) {
-        continue;
-      }
-
-      final date = _parseTaskDate(subtask.doDate);
-      if (date == null) {
-        continue;
-      }
-
-      final normalizedDate = DateTime(date.year, date.month, date.day);
-      if (!normalizedDate.isAfter(targetDay)) {
-        return normalizedDate;
-      }
-
-      firstFutureDate ??= normalizedDate;
-    }
-    return firstFutureDate;
-  }
-
   static DayPlannerResult buildPlan({
     required List<Task> tasks,
     required List<OutlookCalendarEvent> calendarEvents,
@@ -258,8 +265,11 @@ class DayPlannerService {
     int workdayEndMinutes = 17 * 60,
     Set<String> preferredConcurrentEntryIds = const <String>{},
     Set<String> nonBlockingCalendarEventIds = const <String>{},
+    Set<String> includedCalendarEventIds = const <String>{},
     Map<String, PlannerEntryOverride> entryOverrides =
         const <String, PlannerEntryOverride>{},
+    Set<String> excludedPlannerEntryIds = const <String>{},
+    DateTime? planningStart,
     List<PersonalPlannerBlock> personalBlocks = const <PersonalPlannerBlock>[],
     Map<String, ExecutionState> executionStates =
         const <String, ExecutionState>{},
@@ -269,7 +279,13 @@ class DayPlannerService {
         day.weekday == DateTime.saturday || day.weekday == DateTime.sunday;
     final normalizedStart = workdayStartMinutes.clamp(0, 23 * 60 + 59);
     final normalizedEnd = workdayEndMinutes.clamp(1, 24 * 60);
-    final dayStart = _dateAtMinutes(day, normalizedStart);
+    final configuredDayStart = _dateAtMinutes(day, normalizedStart);
+    final dayStart =
+        planningStart == null ||
+            planningStart.isBefore(configuredDayStart) ||
+            planningStart.day != day.day
+        ? configuredDayStart
+        : planningStart;
     final dayEnd = _dateAtMinutes(day, normalizedEnd);
     final displayStart = DateTime(day.year, day.month, day.day);
     final displayEnd = displayStart.add(const Duration(days: 1));
@@ -331,6 +347,19 @@ class DayPlannerService {
           ? displayStart
           : eventStart;
       var adjustedEnd = eventEnd.isAfter(displayEnd) ? displayEnd : eventEnd;
+      final isZeroDuration =
+          !event.isAllDay &&
+          event.end != null &&
+          !event.end!.toLocal().isAfter(event.start!.toLocal());
+      if (event.calendarSource == 'work' &&
+          !event.isAllDay &&
+          !isZeroDuration &&
+          adjustedEnd.isAfter(adjustedStart)) {
+        final durationMinutes = adjustedEnd.difference(adjustedStart).inMinutes;
+        final roundedMinutes = ((durationMinutes + 14) ~/ 15) * 15;
+        adjustedEnd = adjustedStart.add(Duration(minutes: roundedMinutes));
+        if (adjustedEnd.isAfter(displayEnd)) adjustedEnd = displayEnd;
+      }
 
       if (!event.isAllDay && !adjustedEnd.isAfter(adjustedStart)) {
         final minimumEnd = adjustedStart.add(_minimumEventDuration);
@@ -348,10 +377,15 @@ class DayPlannerService {
       }
 
       if (!adjustedStart.isAfter(adjustedEnd)) {
-        final isZeroDuration =
-            !event.isAllDay &&
-            event.end != null &&
-            !event.end!.toLocal().isAfter(event.start!.toLocal());
+        final isHomeCalendar = event.calendarSource != 'work';
+        final hasPersonalLabel = event.labels.any(
+          (label) => label.trim().toLowerCase() == 'personal',
+        );
+        final isIncludedHomeEvent =
+            !isHomeCalendar ||
+            (!nonBlockingCalendarEventIds.contains('calendar-${event.id}') &&
+                (hasPersonalLabel ||
+                    includedCalendarEventIds.contains('calendar-${event.id}')));
         entries.add(
           DayPlannerEntry(
             id: 'calendar-${event.id}',
@@ -365,9 +399,10 @@ class DayPlannerService {
                 ? 'Work calendar'
                 : 'Home calendar',
             isAllDay: event.isAllDay,
+            labels: event.labels,
             category: event.isAllDay
                 ? PlannerEventCategory.informational
-                : nonBlockingCalendarEventIds.contains('calendar-${event.id}')
+                : !isIncludedHomeEvent
                 ? PlannerEventCategory.informational
                 : PlannerEventCategory.fixed,
             isZeroDuration: isZeroDuration,
@@ -380,7 +415,9 @@ class DayPlannerService {
     }
 
     if (!isWeekend) {
-      final lunchEntry = _placeLunch(entries, dayStart, dayEnd);
+      final lunchEntry = excludedPlannerEntryIds.contains('break-lunch')
+          ? null
+          : _placeLunch(entries, dayStart, dayEnd);
       if (lunchEntry != null) entries.add(lunchEntry);
     }
 
@@ -401,79 +438,204 @@ class DayPlannerService {
       );
     }
 
+    final movementEntries = <DayPlannerEntry>[];
+
+    final isOfficeDay = dayContext?.workLocation == WorkLocation.office;
     final prioritizedTasks = _prioritizeTasks(tasks, day);
     final actionableTasks = prioritizedTasks.map((item) => item.task).toList();
 
+    if (isOfficeDay) {
+      entries.addAll(_buildCommuteEntries(day, dayStart, dayEnd));
+    } else if (dayContext?.workLocation == WorkLocation.home) {
+      final switchOffEntry = _buildSwitchOffEntry(day, dayEnd);
+      if (switchOffEntry != null) entries.add(switchOffEntry);
+    }
+
+    // Every work day opens with an hour of Focus Time unless a calendar event
+    // blocks it; this is reserved before tasks so it can't be claimed by them.
+    final openingFocusEntry = _buildOpeningFocusEntry(
+      entries,
+      dayStart,
+      dayEnd,
+    );
+    if (openingFocusEntry != null) entries.add(openingFocusEntry);
+
+    // Insert a recovery break for the reserved opening hour now, before tasks
+    // are scheduled, so tasks naturally space themselves around it instead of
+    // packing solid and forcing several breaks into whatever's left later.
+    final earlyRecoveryBreaks = isOfficeDay
+        ? const <DayPlannerEntry>[]
+        : _insertCumulativeFocusBreaks(
+            entries,
+            dayStart,
+            dayEnd,
+            excludedPlannerEntryIds: excludedPlannerEntryIds,
+          );
+    entries.addAll(earlyRecoveryBreaks);
+
+    // Guarantee at least one break in the first 3 hours and one in the last
+    // 3 hours before tasks can pack the day solid and crowd them out.
+    if (dayContext != null) {
+      entries.addAll(
+        _ensureBreakCoverage(
+          entries,
+          dayContext: dayContext,
+          dayStart: dayStart,
+          dayEnd: dayEnd,
+          excludedPlannerEntryIds: excludedPlannerEntryIds,
+        ),
+      );
+    }
+
+    // Fixed calendar/lunch/opening-focus/early-break commitments only; real
+    // tasks (scheduled below) fill whatever gaps remain after that.
+    final taskSchedulingOccupants = List<DayPlannerEntry>.from(entries);
+
     final plannedTaskEntries = <DayPlannerEntry>[];
-    final dailyCapacity = _calculateDailyCapacity(entries, dayStart, dayEnd);
+    final dailyCapacity = _calculateDailyCapacity(
+      taskSchedulingOccupants,
+      dayStart,
+      dayEnd,
+    );
     var remainingTaskCapacity = dailyCapacity.availableMinutes;
     final sessions = _createTaskSessions(prioritizedTasks);
     final scheduledTaskIds = <String>{};
+    final overflowSessions = <_TaskSession>[];
 
-    for (
-      var index = 0;
-      index < sessions.length && remainingTaskCapacity > 0;
-      index++
-    ) {
-      final session = sessions[index];
+    for (final session in sessions) {
+      if (_isExcludedTaskSession(session, excludedPlannerEntryIds)) continue;
       final duration = session.duration;
-      if (duration.inMinutes > remainingTaskCapacity) break;
-      final target = dayStart.add(
-        Duration(
-          minutes: sessions.length == 1
-              ? 0
-              : (dayEnd.difference(dayStart).inMinutes *
-                        (index + 1) /
-                        (sessions.length + 1))
-                    .round(),
-        ),
-      );
+      // A single oversized session shouldn't block smaller ones later in the
+      // priority order from still fitting within the remaining capacity.
+      if (duration.inMinutes > remainingTaskCapacity) {
+        overflowSessions.add(session);
+        continue;
+      }
       final placedStart = _findNearestFreeStart(
-        [...entries, ...plannedTaskEntries],
+        [...taskSchedulingOccupants, ...plannedTaskEntries],
         duration,
-        target,
+        dayStart,
+        dayStart,
+        dayEnd,
+      );
+      if (placedStart == null) {
+        overflowSessions.add(session);
+        continue;
+      }
+
+      final snappedStart = _snapToAvailableStart(
+        occupied: [...taskSchedulingOccupants, ...plannedTaskEntries],
+        start: placedStart,
+        duration: duration,
+        timeGrid: timeGrid,
+        dayEnd: dayEnd,
+      );
+      if (snappedStart == null) {
+        overflowSessions.add(session);
+        continue;
+      }
+      plannedTaskEntries.add(_buildTaskEntry(session, snappedStart));
+      remainingTaskCapacity -= duration.inMinutes;
+      scheduledTaskIds.addAll(session.tasks.map((task) => task.id));
+    }
+
+    // The soft capacity/reserve above is meant to leave breathing room, but any
+    // gap it leaves behind still gets visually filled with a generic "Focus
+    // Time" block later. Prefer using that same physical space for real
+    // backlog tasks so days don't look empty of actual work.
+    for (final session in overflowSessions) {
+      if (_isExcludedTaskSession(session, excludedPlannerEntryIds)) continue;
+      final duration = session.duration;
+      final placedStart = _findNearestFreeStart(
+        [...taskSchedulingOccupants, ...plannedTaskEntries],
+        duration,
+        dayStart,
         dayStart,
         dayEnd,
       );
       if (placedStart == null) continue;
-
-      final snappedStart = PlannerExecutionService.snapToGrid(
-        placedStart,
-        timeGrid,
+      final snappedStart = _snapToAvailableStart(
+        occupied: [...taskSchedulingOccupants, ...plannedTaskEntries],
+        start: placedStart,
+        duration: duration,
+        timeGrid: timeGrid,
+        dayEnd: dayEnd,
       );
-      final task = session.primaryTask;
-      plannedTaskEntries.add(
-        DayPlannerEntry(
-          id: session.isAdmin
-              ? 'admin-${task.id}'
-              : session.sessionCount == 1
-              ? 'task-${task.id}'
-              : 'task-${task.id}-session-${session.sessionIndex}',
-          title: session.isAdmin
-              ? 'Admin Block'
-              : session.sessionCount == 1
-              ? task.task
-              : '${task.task} (Session ${session.sessionIndex}/${session.sessionCount})',
-          type: session.isAdmin ? 'admin' : 'task',
-          start: snappedStart,
-          end: snappedStart.add(duration),
-          subtitle: session.isAdmin
-              ? 'Includes: ${session.tasks.map((task) => task.task).join(', ')}'
-              : _taskSubtitle(task),
-          task: task,
-          relatedTaskIds: session.tasks.map((task) => task.id).toList(),
-          category: PlannerEventCategory.planned,
-        ),
-      );
-      remainingTaskCapacity -= duration.inMinutes;
+      if (snappedStart == null) continue;
+      plannedTaskEntries.add(_buildTaskEntry(session, snappedStart));
       scheduledTaskIds.addAll(session.tasks.map((task) => task.id));
     }
-    final cumulativeBreaks = _insertCumulativeFocusBreaks(
-      [...entries, ...plannedTaskEntries],
-      dayStart,
-      dayEnd,
+
+    // Still gaps left? Pull forward backlog tasks that aren't due yet rather
+    // than leaving the day looking empty until their due date arrives.
+    final futureSessions = _createTaskSessions(
+      _prioritizeFutureTasks(tasks, day),
+      pulledForward: true,
     );
-    plannedTaskEntries.addAll(cumulativeBreaks);
+    for (final session in futureSessions) {
+      if (_isExcludedTaskSession(session, excludedPlannerEntryIds)) continue;
+      final duration = session.duration;
+      final placedStart = _findNearestFreeStart(
+        [...taskSchedulingOccupants, ...plannedTaskEntries],
+        duration,
+        dayStart,
+        dayStart,
+        dayEnd,
+      );
+      if (placedStart == null) continue;
+      final snappedStart = _snapToAvailableStart(
+        occupied: [...taskSchedulingOccupants, ...plannedTaskEntries],
+        start: placedStart,
+        duration: duration,
+        timeGrid: timeGrid,
+        dayEnd: dayEnd,
+      );
+      if (snappedStart == null) continue;
+      plannedTaskEntries.add(_buildTaskEntry(session, snappedStart));
+      scheduledTaskIds.addAll(session.tasks.map((task) => task.id));
+    }
+
+    // Now that real tasks have claimed whatever gap time they need, add any
+    // further recovery breaks their own cumulative focus time requires
+    // (_resetsFocusWork treats the early break/lunch above as a reset point).
+    final lateRecoveryBreaks = isOfficeDay
+        ? const <DayPlannerEntry>[]
+        : _insertCumulativeFocusBreaks(
+            [...entries, ...plannedTaskEntries],
+            dayStart,
+            dayEnd,
+            excludedPlannerEntryIds: excludedPlannerEntryIds,
+          );
+    plannedTaskEntries.addAll(lateRecoveryBreaks);
+    if (dayContext != null) {
+      entries.addAll(
+        _ensureBreakCoverage(
+          [...entries, ...plannedTaskEntries],
+          dayContext: dayContext,
+          dayStart: dayStart,
+          dayEnd: dayEnd,
+          excludedPlannerEntryIds: excludedPlannerEntryIds,
+        ),
+      );
+    }
+
+    if (dayContext != null) {
+      // Placed after tasks, the opening focus placeholder, and recovery
+      // breaks so standing/walking can pair concurrently with any of them
+      // (real work or flexible focus time isn't "planning work" that
+      // movement needs its own exclusive block to avoid).
+      final placedMovementEntries = _placeMovementEvents(
+        day: day,
+        dayContext: dayContext,
+        occupiedEntries: [...entries, ...plannedTaskEntries],
+        dayStart: dayStart,
+        dayEnd: dayEnd,
+        preferredConcurrentEntryIds: preferredConcurrentEntryIds,
+        timeGrid: timeGrid,
+      );
+      movementEntries.addAll(placedMovementEntries);
+      entries.addAll(placedMovementEntries);
+    }
 
     final merged = <DayPlannerEntry>[];
     merged.addAll(entries);
@@ -494,16 +656,25 @@ class DayPlannerService {
     if (zwiftEntry != null) {
       merged.add(zwiftEntry);
     }
-    final movementEntries = _placeMovementEvents(
-      day: day,
-      dayContext: dayContext,
+    final mobilityEntry = _placeOptionalMobility(
+      recommendations: recommendations,
       occupiedEntries: merged,
       dayStart: dayStart,
       dayEnd: dayEnd,
-      preferredConcurrentEntryIds: preferredConcurrentEntryIds,
       timeGrid: timeGrid,
     );
-    merged.addAll(movementEntries);
+    if (mobilityEntry != null) {
+      merged.add(mobilityEntry);
+    }
+    merged.addAll(
+      _ensureBreakCoverage(
+        merged,
+        dayContext: dayContext,
+        dayStart: dayStart,
+        dayEnd: dayEnd,
+        excludedPlannerEntryIds: excludedPlannerEntryIds,
+      ),
+    );
     final mergedWithShortGaps = _extendShortGaps(merged, dayStart, dayEnd);
     merged
       ..clear()
@@ -512,10 +683,8 @@ class DayPlannerService {
     final overridden = entryOverrides.isEmpty
         ? merged
         : _applyEntryOverrides(merged, entryOverrides, dayStart, dayEnd);
-    final normalizedEntries = _validatePlan(
-      _removeTaskOverlaps(overridden),
-      dayStart,
-      dayEnd,
+    final normalizedEntries = _removeFocusOverlaps(
+      _validatePlan(_removeTaskOverlaps(overridden), dayStart, dayEnd),
     );
     for (var index = 0; index < normalizedEntries.length; index++) {
       final entry = normalizedEntries[index];
@@ -526,9 +695,12 @@ class DayPlannerService {
     normalizedEntries.sort((a, b) => a.start.compareTo(b.start));
 
     final summarySegments = <String>[];
-    if (plannedTaskEntries.isNotEmpty) {
+    final plannedTaskCount = plannedTaskEntries
+        .where((entry) => entry.type == 'task' || entry.type == 'admin')
+        .length;
+    if (plannedTaskCount > 0) {
       summarySegments.add(
-        '${plannedTaskEntries.where((entry) => entry.type == 'task').length} focus block${plannedTaskEntries.where((entry) => entry.type == 'task').length == 1 ? '' : 's'}',
+        '$plannedTaskCount focus block${plannedTaskCount == 1 ? '' : 's'}',
       );
     }
     if (plannedTaskEntries.where((entry) => entry.type == 'break').isNotEmpty) {
@@ -563,51 +735,29 @@ class DayPlannerService {
     );
   }
 
+  static bool _isExcludedTaskSession(
+    _TaskSession session,
+    Set<String> excludedEntryIds,
+  ) {
+    if (excludedEntryIds.isEmpty) return false;
+    final task = session.primaryTask;
+    final entryId = session.isAdmin
+        ? 'admin-${task.id}'
+        : session.sessionCount == 1
+        ? 'task-${task.id}'
+        : 'task-${task.id}-session-${session.sessionIndex}';
+    return excludedEntryIds.contains(entryId);
+  }
+
   static List<_PrioritizedTask> _prioritizeTasks(
     List<Task> tasks,
     DateTime day,
   ) {
     final targetDay = DateTime(day.year, day.month, day.day);
-    final priorityScore = {'high': 40, 'medium': 20, 'low': 0};
     final scored = tasks.where((task) => _isTaskEligibleForDay(task, day)).map((
       task,
     ) {
-      final due = _parseTaskDate(task.dueDate);
-      final doDate = _parseTaskDate(task.doDate);
-      final planningDate = doDate ?? due;
-      final overdueDays = due == null
-          ? 0
-          : targetDay.difference(DateTime(due.year, due.month, due.day)).inDays;
-      final urgency = planningDate == null
-          ? 0
-          : (targetDay
-                        .difference(
-                          DateTime(
-                            planningDate.year,
-                            planningDate.month,
-                            planningDate.day,
-                          ),
-                        )
-                        .inDays >=
-                    0
-                ? 30
-                : 0);
-      final rolloverBonus =
-          planningDate != null && planningDate.isBefore(targetDay) ? 15 : 0;
-      final contextPenalty =
-          task.category.trim().isEmpty ||
-              task.category.trim().toLowerCase() == 'none'
-          ? 0
-          : -5;
-      return _PrioritizedTask(
-        task: task,
-        score:
-            (priorityScore[task.priority] ?? 20) +
-            (overdueDays > 0 ? 35 + overdueDays.clamp(0, 14) : 0) +
-            urgency +
-            rolloverBonus +
-            contextPenalty.toDouble(),
-      );
+      return _PrioritizedTask(task: task, score: _taskScore(task, targetDay));
     }).toList();
     scored.sort((a, b) {
       final scoreCompare = b.score.compareTo(a.score);
@@ -620,6 +770,75 @@ class DayPlannerService {
       return aDate.compareTo(bDate);
     });
     return scored;
+  }
+
+  /// Tasks not yet due today (future due/do date, or no date at all), kept in
+  /// reserve to fill spare capacity so days don't sit empty while backlog waits.
+  static List<_PrioritizedTask> _prioritizeFutureTasks(
+    List<Task> tasks,
+    DateTime day,
+  ) {
+    final targetDay = DateTime(day.year, day.month, day.day);
+    final scored = tasks
+        .where((task) => task.done != true && !_isTaskEligibleForDay(task, day))
+        .map((task) {
+          return _PrioritizedTask(
+            task: task,
+            score: _taskScore(task, targetDay),
+          );
+        })
+        .toList();
+    scored.sort((a, b) {
+      final aDate = _planningDateForTask(a.task);
+      final bDate = _planningDateForTask(b.task);
+      if (aDate == null && bDate != null) return 1;
+      if (aDate != null && bDate == null) return -1;
+      if (aDate != null && bDate != null && aDate != bDate) {
+        return aDate.compareTo(bDate);
+      }
+      return b.score.compareTo(a.score);
+    });
+    return scored;
+  }
+
+  static double _taskScore(Task task, DateTime targetDay) {
+    final dueDate = _dateOnly(_parseTaskDate(task.dueDate));
+    final planningDate = _dateOnly(
+      _parseTaskDate(task.doDate) ?? _parseTaskDate(task.dueDate),
+    );
+    final overdueDays = dueDate == null
+        ? 0
+        : targetDay.difference(dueDate).inDays;
+    final isDueForPlanning =
+        planningDate != null && !planningDate.isAfter(targetDay);
+    final isRolledOver =
+        planningDate != null && planningDate.isBefore(targetDay);
+    final priorityScore = switch (task.priority) {
+      'high' => 40,
+      'medium' => 20,
+      'low' => 0,
+      _ => 20,
+    };
+    final overdueScore = overdueDays > 0 ? 35 + overdueDays.clamp(0, 14) : 0;
+    final urgencyScore = isDueForPlanning ? 30 : 0;
+    final rolloverScore = isRolledOver ? 15 : 0;
+    final contextPenalty = _hasCategory(task) ? -5 : 0;
+    return (priorityScore +
+            overdueScore +
+            urgencyScore +
+            rolloverScore +
+            contextPenalty)
+        .toDouble();
+  }
+
+  static DateTime? _dateOnly(DateTime? value) {
+    if (value == null) return null;
+    return DateTime(value.year, value.month, value.day);
+  }
+
+  static bool _hasCategory(Task task) {
+    final category = task.category.trim().toLowerCase();
+    return category.isNotEmpty && category != 'none';
   }
 
   static String? _buildRolloverSummary(List<Task> rolloverTasks) {
@@ -648,56 +867,164 @@ class DayPlannerService {
     return groups;
   }
 
-  static List<_TaskSession> _createTaskSessions(
-    List<_PrioritizedTask> prioritizedTasks,
+  static DayPlannerEntry _buildTaskEntry(_TaskSession session, DateTime start) {
+    final duration = session.duration;
+    final task = session.primaryTask;
+    return DayPlannerEntry(
+      id: session.isAdmin
+          ? 'admin-${task.id}'
+          : session.sessionCount == 1
+          ? 'task-${task.id}'
+          : 'task-${task.id}-session-${session.sessionIndex}',
+      title: session.isAdmin
+          ? 'Admin Block'
+          : session.sessionCount == 1
+          ? task.task
+          : '${task.task} (Session ${session.sessionIndex}/${session.sessionCount})',
+      type: session.isAdmin ? 'admin' : 'task',
+      start: start,
+      end: start.add(duration),
+      subtitle: session.isAdmin
+          ? 'Includes: ${session.tasks.map((task) => task.task).join(', ')}'
+          : session.isPulledForward
+          ? '${_taskSubtitle(task)} • Pulled forward from backlog'
+          : _taskSubtitle(task),
+      task: task,
+      relatedTaskIds: session.tasks.map((task) => task.id).toList(),
+      category: PlannerEventCategory.planned,
+    );
+  }
+
+  static List<DayPlannerEntry> _buildCommuteEntries(
+    DateTime day,
+    DateTime dayStart,
+    DateTime dayEnd,
   ) {
+    final dayBeginning = DateTime(day.year, day.month, day.day);
+    final dayFinish = dayBeginning.add(const Duration(days: 1));
+    Task commuteTask(String direction) => Task(
+      id: 'commute-$direction-${day.year}-${day.month}-${day.day}',
+      task: 'Commute',
+      category: 'Work',
+      effortMinutes: 60,
+      nextSessionEffortMinutes: 60,
+    );
+    final entries = <DayPlannerEntry>[];
+    final beforeStart = dayStart.subtract(const Duration(hours: 1));
+    if (beforeStart.isAfter(dayBeginning)) {
+      entries.add(
+        DayPlannerEntry(
+          id: 'commute-before-${day.year}-${day.month}-${day.day}',
+          title: 'Commute',
+          type: 'task',
+          start: beforeStart,
+          end: dayStart,
+          subtitle: 'Before work window',
+          task: commuteTask('before'),
+          category: PlannerEventCategory.planned,
+        ),
+      );
+    }
+
+    final afterEnd = dayEnd.add(const Duration(hours: 1));
+    if (afterEnd.isAfter(dayEnd) && afterEnd.isBefore(dayFinish)) {
+      entries.add(
+        DayPlannerEntry(
+          id: 'commute-after-${day.year}-${day.month}-${day.day}',
+          title: 'Commute',
+          type: 'task',
+          start: dayEnd,
+          end: afterEnd,
+          subtitle: 'After work window',
+          task: commuteTask('after'),
+          category: PlannerEventCategory.planned,
+        ),
+      );
+    }
+    return entries;
+  }
+
+  static DayPlannerEntry? _buildSwitchOffEntry(DateTime day, DateTime dayEnd) {
+    final end = dayEnd.add(const Duration(minutes: 15));
+    final dayFinish = DateTime(day.year, day.month, day.day + 1);
+    if (!end.isBefore(dayFinish)) return null;
+    return DayPlannerEntry(
+      id: 'switch-off-${day.year}-${day.month}-${day.day}',
+      title: 'Switch off',
+      type: 'task',
+      start: dayEnd,
+      end: end,
+      subtitle: 'End of work window',
+      task: Task(
+        id: 'switch-off-${day.year}-${day.month}-${day.day}',
+        task: 'Switch off',
+        category: 'Work',
+        effortMinutes: 15,
+        nextSessionEffortMinutes: 15,
+      ),
+      category: PlannerEventCategory.planned,
+    );
+  }
+
+  static List<_TaskSession> _createTaskSessions(
+    List<_PrioritizedTask> prioritizedTasks, {
+    bool pulledForward = false,
+  }) {
     final sessions = <_TaskSession>[];
     final adminGroups = _groupAdminTasks(prioritizedTasks);
     final adminTasks = adminGroups.expand((group) => group).toSet();
+
     for (final item in prioritizedTasks) {
       if (adminTasks.contains(item)) continue;
       final minutes = _estimateTaskDuration(item.task).inMinutes;
-      if (minutes <= 90) {
-        sessions.add(
-          _TaskSession(
-            tasks: [item.task],
-            duration: Duration(minutes: minutes.clamp(25, 90)),
-          ),
-        );
-        continue;
-      }
-      final splitCount = (minutes / 60).ceil();
+      final splitCount = (minutes / PlannerBreakPolicy.maxFocusSessionMinutes)
+          .ceil();
       var remaining = minutes;
+
       for (var index = 1; index <= splitCount; index++) {
-        final sessionsLeft = splitCount - index;
-        var sessionMinutes = remaining > 60 ? 60 : remaining;
-        if (sessionsLeft > 0 && remaining - sessionMinutes < 25) {
-          sessionMinutes = remaining - (sessionsLeft * 45);
-        }
-        sessionMinutes = sessionMinutes.clamp(25, 60);
+        final sessionMinutes =
+            remaining > PlannerBreakPolicy.maxFocusSessionMinutes
+            ? PlannerBreakPolicy.maxFocusSessionMinutes
+            : remaining;
         sessions.add(
           _TaskSession(
             tasks: [item.task],
             duration: Duration(minutes: sessionMinutes),
             sessionIndex: index,
             sessionCount: splitCount,
+            isPulledForward: pulledForward,
           ),
         );
         remaining -= sessionMinutes;
       }
     }
+
     for (final group in adminGroups) {
       final minutes = group.fold<int>(
         0,
         (total, item) => total + _estimateTaskDuration(item.task).inMinutes,
       );
-      sessions.add(
-        _TaskSession(
-          tasks: group.map((item) => item.task).toList(),
-          duration: Duration(minutes: minutes.clamp(25, 60)),
-          isAdmin: true,
-        ),
-      );
+      final splitCount = (minutes / PlannerBreakPolicy.maxFocusSessionMinutes)
+          .ceil();
+      var remaining = minutes;
+
+      for (var index = 1; index <= splitCount; index++) {
+        final sessionMinutes =
+            remaining > PlannerBreakPolicy.maxFocusSessionMinutes
+            ? PlannerBreakPolicy.maxFocusSessionMinutes
+            : remaining;
+        sessions.add(
+          _TaskSession(
+            tasks: group.map((item) => item.task).toList(),
+            duration: Duration(minutes: sessionMinutes),
+            sessionIndex: index,
+            sessionCount: splitCount,
+            isAdmin: true,
+            isPulledForward: pulledForward,
+          ),
+        );
+        remaining -= sessionMinutes;
+      }
     }
     return sessions;
   }
@@ -705,11 +1032,14 @@ class DayPlannerService {
   static List<DayPlannerEntry> _insertCumulativeFocusBreaks(
     List<DayPlannerEntry> existingEntries,
     DateTime dayStart,
-    DateTime dayEnd,
-  ) {
+    DateTime dayEnd, {
+    Set<String> excludedPlannerEntryIds = const <String>{},
+  }) {
     final focusEntries =
         existingEntries
-            .where((entry) => entry.type == 'task' || entry.type == 'admin')
+            .where(
+              (entry) => _countsAsFocusWork(entry) || _resetsFocusWork(entry),
+            )
             .toList()
           ..sort((a, b) => a.start.compareTo(b.start));
     final occupied = List<DayPlannerEntry>.from(existingEntries);
@@ -717,24 +1047,42 @@ class DayPlannerService {
     var cumulativeFocusMinutes = 0;
     var breakIndex = 0;
     for (final focusEntry in focusEntries) {
+      if (_resetsFocusWork(focusEntry)) {
+        cumulativeFocusMinutes = 0;
+        continue;
+      }
       cumulativeFocusMinutes += focusEntry.end
           .difference(focusEntry.start)
           .inMinutes;
-      final breakMinutes = cumulativeFocusMinutes >= 120
-          ? 15
-          : cumulativeFocusMinutes >= 90
-          ? 10
-          : cumulativeFocusMinutes >= 50
-          ? 5
-          : 0;
+      final breakMinutes = PlannerBreakPolicy.recoveryBreakMinutesForFocus(
+        cumulativeFocusMinutes,
+      );
       if (breakMinutes == 0) continue;
+      final lunchBreak = existingEntries.cast<DayPlannerEntry?>().firstWhere(
+        (entry) => entry?.id == 'break-lunch',
+        orElse: () => null,
+      );
+      if (lunchBreak != null &&
+          !lunchBreak.start.isBefore(focusEntry.end) &&
+          lunchBreak.start.difference(focusEntry.end) <=
+              const Duration(minutes: 30)) {
+        cumulativeFocusMinutes = 0;
+        continue;
+      }
       final duration = Duration(minutes: breakMinutes);
+      final workWindowMinutes = dayEnd.difference(dayStart).inMinutes;
+      final finalHourBoundary = workWindowMinutes >= 480
+          ? dayEnd.subtract(const Duration(hours: 1))
+          : dayEnd;
       final placedStart = _findNearestFreeStart(
         occupied,
         duration,
         focusEntry.end,
         dayStart,
         dayEnd,
+        minimumGap: const Duration(hours: 1),
+        separateFromTypes: const {'break', 'movement'},
+        latestAllowedStart: finalHourBoundary.subtract(duration),
       );
       if (placedStart == null) continue;
       final breakEntry = DayPlannerEntry(
@@ -745,12 +1093,122 @@ class DayPlannerService {
         end: placedStart.add(duration),
         subtitle: 'Recovery after $cumulativeFocusMinutes min focus',
       );
+      breakIndex++;
+      if (excludedPlannerEntryIds.contains(breakEntry.id)) {
+        cumulativeFocusMinutes = 0;
+        continue;
+      }
       breaks.add(breakEntry);
       occupied.add(breakEntry);
       cumulativeFocusMinutes = 0;
-      breakIndex++;
     }
     return breaks;
+  }
+
+  static bool _countsAsFocusWork(DayPlannerEntry entry) {
+    if (entry.isAllDay || entry.isZeroDuration) return false;
+    if (entry.type == 'task' ||
+        entry.type == 'admin' ||
+        entry.type == 'focus') {
+      return true;
+    }
+    return entry.type == 'calendar' &&
+        entry.subtitle?.toLowerCase().contains('work calendar') == true;
+  }
+
+  static List<DayPlannerEntry> _ensureBreakCoverage(
+    List<DayPlannerEntry> entries, {
+    required DayContext? dayContext,
+    required DateTime dayStart,
+    required DateTime dayEnd,
+    Set<String> excludedPlannerEntryIds = const <String>{},
+  }) {
+    if (dayContext == null) return const <DayPlannerEntry>[];
+    // Breaks are never allowed in the final hour of the day, so every
+    // required window is clamped to end by then.
+    final lastAllowedBreakEnd = dayEnd.subtract(const Duration(hours: 1));
+    final requiredWindows = <({DateTime start, DateTime end})>[];
+
+    // At least one break in the first 3 hours (lunch, 12pm-2pm, is handled
+    // separately by _placeLunch and already counts as break-like coverage).
+    final firstWindowEnd = dayStart.add(const Duration(hours: 3));
+    final firstWindow = (
+      start: dayStart,
+      end: firstWindowEnd.isBefore(lastAllowedBreakEnd)
+          ? firstWindowEnd
+          : lastAllowedBreakEnd,
+    );
+    if (firstWindow.end.isAfter(firstWindow.start)) {
+      requiredWindows.add(firstWindow);
+    }
+
+    // At least one break in the last 3 hours (excluding the final hour).
+    final lastWindowStart = dayEnd.subtract(const Duration(hours: 3));
+    final lastWindow = (
+      start: lastWindowStart.isBefore(dayStart) ? dayStart : lastWindowStart,
+      end: lastAllowedBreakEnd,
+    );
+    if (lastWindow.end.isAfter(lastWindow.start)) {
+      requiredWindows.add(lastWindow);
+    }
+
+    final additions = <DayPlannerEntry>[];
+    final occupied = List<DayPlannerEntry>.from(entries);
+    final isOfficeDay = dayContext.workLocation == WorkLocation.office;
+    for (var index = 0; index < requiredWindows.length; index++) {
+      final window = requiredWindows[index];
+      final hasBreak = occupied.any(
+        (entry) =>
+            _isBreakLikeEntry(entry) &&
+            entry.start.isBefore(window.end) &&
+            entry.end.isAfter(window.start),
+      );
+      if (hasBreak) continue;
+
+      final duration = const Duration(minutes: 15);
+      final target = window.start.add(
+        Duration(minutes: window.end.difference(window.start).inMinutes ~/ 2),
+      );
+      final start = _findNearestFreeStart(
+        occupied,
+        duration,
+        target,
+        dayStart,
+        dayEnd,
+        earliestStart: window.start,
+        latestAllowedStart: window.end.subtract(duration),
+        minimumGap: const Duration(hours: 1),
+        separateFromTypes: const {'break', 'movement'},
+      );
+      if (start == null) continue;
+      final breakEntry = DayPlannerEntry(
+        id: 'break-coverage-$index',
+        title: isOfficeDay ? 'Walk break' : 'Recovery break',
+        type: isOfficeDay ? 'movement' : 'break',
+        start: start,
+        end: start.add(duration),
+        subtitle: isOfficeDay ? 'Office movement' : 'Scheduled recovery',
+      );
+      if (excludedPlannerEntryIds.contains(breakEntry.id)) continue;
+      additions.add(breakEntry);
+      occupied.add(breakEntry);
+    }
+    return additions;
+  }
+
+  static bool _isBreakLikeEntry(DayPlannerEntry entry) {
+    return entry.type == 'break' ||
+        (entry.type == 'movement' &&
+            !entry.isConcurrent &&
+            entry.title.toLowerCase().contains('walk'));
+  }
+
+  static bool _isLunchBreak(DayPlannerEntry entry) {
+    return entry.id == 'break-lunch';
+  }
+
+  static bool _resetsFocusWork(DayPlannerEntry entry) {
+    return entry.id == 'break-lunch' || entry.title == 'Recovery break';
   }
 
   static DayPlannerEntry? _buildZwiftEntry({
@@ -844,9 +1302,9 @@ class DayPlannerService {
       });
     for (var blockIndex = 0; blockIndex < blockDurations.length; blockIndex++) {
       final block = blockDurations[blockIndex];
-      final duration = _snapDurationToFiveMinutes(
-        Duration(minutes: block.$2 == 'Walk break' ? 15 : block.$1),
-      );
+      final duration = mode == 'office'
+          ? const Duration(minutes: 15)
+          : _snapDurationToFiveMinutes(Duration(minutes: block.$1));
       final movementLabel = block.$3;
       final canRunConcurrently =
           mode != 'office' || preferredConcurrentEntryIds.isNotEmpty;
@@ -880,13 +1338,10 @@ class DayPlannerService {
             : concurrentEntry.end;
         if (concurrentEnd.difference(concurrentStart) >= duration) {
           final concurrentTitle = concurrentEntry.title;
-          final movementTitle = mode == 'office'
-              ? 'Walk while you work'
-              : block.$2;
           entries.add(
             DayPlannerEntry(
               id: 'movement-$mode-${entries.length}',
-              title: movementTitle,
+              title: mode == 'office' ? 'Walk while you work' : block.$2,
               type: 'movement',
               start: concurrentStart,
               end: concurrentEnd,
@@ -904,8 +1359,14 @@ class DayPlannerService {
         movementTarget,
         dayStart,
         dayEnd,
-        minimumGap: const Duration(minutes: 30),
+        minimumGap: const Duration(hours: 1),
         separateFromTypes: const {'movement', 'break'},
+        minimumGapByType: mode == 'office'
+            ? const {
+                'movement': Duration(minutes: 60),
+                'break': Duration(hours: 1),
+              }
+            : const <String, Duration>{},
       );
       if (placedStart == null) break;
 
@@ -931,6 +1392,52 @@ class DayPlannerService {
     return entries;
   }
 
+  static DayPlannerEntry? _placeOptionalMobility({
+    required List<ActivityRecommendation> recommendations,
+    required List<DayPlannerEntry> occupiedEntries,
+    required DateTime dayStart,
+    required DateTime dayEnd,
+    required TimeGrid timeGrid,
+  }) {
+    final hasMobilityRecommendation = recommendations.any(
+      (recommendation) => recommendation.pillar == ActivityPillar.mobility,
+    );
+    if (!hasMobilityRecommendation) return null;
+
+    const duration = Duration(minutes: 10);
+    final dayBoundary = DateTime(
+      dayStart.year,
+      dayStart.month,
+      dayStart.day,
+    ).add(const Duration(days: 1));
+    if (!dayBoundary.isAfter(dayEnd)) return null;
+
+    final target = dayEnd.add(
+      Duration(minutes: (dayBoundary.difference(dayEnd).inMinutes / 2).round()),
+    );
+    final placedStart = _findNearestFreeStart(
+      occupiedEntries,
+      duration,
+      target,
+      dayEnd,
+      dayBoundary,
+    );
+    if (placedStart == null) return null;
+
+    final start = PlannerExecutionService.snapToGrid(placedStart, timeGrid);
+    final end = start.add(duration);
+    if (start.isBefore(dayEnd) || end.isAfter(dayBoundary)) return null;
+    return DayPlannerEntry(
+      id: 'activity-mobility',
+      title: 'Mobility session',
+      type: 'movement',
+      start: start,
+      end: end,
+      subtitle: 'Optional recovery movement',
+      category: PlannerEventCategory.planned,
+    );
+  }
+
   static List<DayPlannerEntry> _buildOpenBlocks(
     List<DayPlannerEntry> entries,
     DateTime dayStart,
@@ -952,36 +1459,168 @@ class DayPlannerService {
             .where((entry) => entry.end.isAfter(entry.start))
             .toList()
           ..sort((a, b) => a.start.compareTo(b.start));
+
     final blocks = <DayPlannerEntry>[];
     var cursor = dayStart;
+
     for (final entry in occupied) {
-      if (entry.start.difference(cursor) > const Duration(minutes: 30)) {
-        blocks.add(
-          DayPlannerEntry(
-            id: 'buffer-${blocks.length}',
-            title: 'Available Time',
-            type: 'buffer',
-            start: cursor,
-            end: entry.start,
-            subtitle: 'Free time for a quick task or reset',
-          ),
-        );
+      if (entry.start.isAfter(cursor)) {
+        final gapStart = cursor;
+        final gapEnd = entry.start;
+        final isStartGap = gapStart.isAtSameMomentAs(dayStart);
+        if (isStartGap &&
+            gapEnd.difference(gapStart) >= const Duration(minutes: 30)) {
+          final focusMinutes = gapEnd
+              .difference(gapStart)
+              .inMinutes
+              .clamp(30, PlannerBreakPolicy.maxFocusSessionMinutes);
+          final focusEnd = gapStart.add(Duration(minutes: focusMinutes));
+          blocks.add(
+            DayPlannerEntry(
+              id: 'buffer-${blocks.length}',
+              title: 'Focus Time',
+              type: 'focus',
+              start: gapStart,
+              end: focusEnd,
+              subtitle: 'Opening focus session',
+            ),
+          );
+          if (gapEnd.difference(focusEnd) >=
+              const Duration(
+                minutes: PlannerBreakPolicy.minAvailableTimeMinutes,
+              )) {
+            blocks.add(
+              DayPlannerEntry(
+                id: 'focus-${blocks.length}',
+                title: 'Focus Time',
+                type: 'focus',
+                start: focusEnd,
+                end: gapEnd,
+                subtitle: 'Filled planning gap',
+              ),
+            );
+          }
+          cursor = gapEnd;
+        } else if (gapEnd.difference(gapStart) >=
+            const Duration(
+              minutes: PlannerBreakPolicy.minAvailableTimeMinutes,
+            )) {
+          blocks.add(
+            DayPlannerEntry(
+              id: 'focus-${blocks.length}',
+              title: 'Focus Time',
+              type: 'focus',
+              start: gapStart,
+              end: gapEnd,
+              subtitle: 'Filled planning gap',
+            ),
+          );
+          cursor = gapEnd;
+        }
       }
       if (entry.end.isAfter(cursor)) cursor = entry.end;
     }
-    if (dayEnd.difference(cursor) > const Duration(minutes: 30)) {
-      blocks.add(
-        DayPlannerEntry(
-          id: 'buffer-${blocks.length}',
-          title: 'Available Time',
-          type: 'buffer',
-          start: cursor,
-          end: dayEnd,
-          subtitle: 'Free time for the rest of the day',
-        ),
-      );
+
+    if (dayEnd.isAfter(cursor)) {
+      final gapStart = cursor;
+      final gapEnd = dayEnd;
+      if (gapStart.isAtSameMomentAs(dayStart) &&
+          gapEnd.difference(gapStart) >= const Duration(minutes: 30)) {
+        final focusMinutes = gapEnd
+            .difference(gapStart)
+            .inMinutes
+            .clamp(30, PlannerBreakPolicy.maxFocusSessionMinutes);
+        final focusEnd = gapStart.add(Duration(minutes: focusMinutes));
+        blocks.add(
+          DayPlannerEntry(
+            id: 'buffer-${blocks.length}',
+            title: 'Focus Time',
+            type: 'focus',
+            start: gapStart,
+            end: focusEnd,
+            subtitle: 'Opening focus session',
+          ),
+        );
+        if (gapEnd.difference(focusEnd) >=
+            const Duration(
+              minutes: PlannerBreakPolicy.minAvailableTimeMinutes,
+            )) {
+          blocks.add(
+            DayPlannerEntry(
+              id: 'focus-${blocks.length}',
+              title: 'Focus Time',
+              type: 'focus',
+              start: focusEnd,
+              end: gapEnd,
+              subtitle: 'Filled planning gap',
+            ),
+          );
+        }
+      } else if (gapEnd.difference(gapStart) >=
+          const Duration(minutes: PlannerBreakPolicy.minAvailableTimeMinutes)) {
+        blocks.add(
+          DayPlannerEntry(
+            id: 'focus-${blocks.length}',
+            title: 'Focus Time',
+            type: 'focus',
+            start: gapStart,
+            end: gapEnd,
+            subtitle: 'Filled planning gap',
+          ),
+        );
+      }
     }
+
     return blocks;
+  }
+
+  static DayPlannerEntry? _buildOpeningFocusEntry(
+    List<DayPlannerEntry> entries,
+    DateTime dayStart,
+    DateTime dayEnd,
+  ) {
+    if (entries.any(
+      (entry) =>
+          (_occupiesPlanningTime(entry) &&
+              !entry.start.isAfter(dayStart) &&
+              entry.end.isAfter(dayStart)) ||
+          (entry.type == 'calendar' &&
+              _isWorkCalendarEntry(entry) &&
+              entry.start.isAtSameMomentAs(dayStart)),
+    )) {
+      return null;
+    }
+    var focusEnd = dayStart.add(
+      const Duration(minutes: PlannerBreakPolicy.maxFocusSessionMinutes),
+    );
+    final openingOccupant = entries
+        .where(
+          (entry) =>
+              _occupiesPlanningTime(entry) &&
+              entry.start.isBefore(focusEnd) &&
+              entry.end.isAfter(dayStart),
+        )
+        .map((entry) => entry.start.isBefore(dayStart) ? dayStart : entry.start)
+        .where((start) => start.isAfter(dayStart))
+        .fold<DateTime?>(null, (earliest, start) {
+          if (earliest == null || start.isBefore(earliest)) return start;
+          return earliest;
+        });
+    if (openingOccupant != null) focusEnd = openingOccupant;
+    if (focusEnd.isAfter(dayEnd)) focusEnd = dayEnd;
+    if (focusEnd.difference(dayStart) <
+        const Duration(minutes: PlannerBreakPolicy.minAvailableTimeMinutes)) {
+      return null;
+    }
+
+    return DayPlannerEntry(
+      id: 'focus-opening',
+      title: 'Focus Time',
+      type: 'focus',
+      start: dayStart,
+      end: focusEnd,
+      subtitle: 'Opening focus session',
+    );
   }
 
   static _DailyCapacity _calculateDailyCapacity(
@@ -1033,15 +1672,35 @@ class DayPlannerService {
     DateTime dayEnd,
   ) {
     const duration = Duration(minutes: 30);
-    final target = dayStart.add(
+    final midday = DateTime(dayStart.year, dayStart.month, dayStart.day, 12);
+    final middayLatestStart = DateTime(
+      dayStart.year,
+      dayStart.month,
+      dayStart.day,
+      13,
+      30,
+    );
+    final latestLunchStart =
+        dayEnd.subtract(duration).isBefore(middayLatestStart)
+        ? dayEnd.subtract(duration)
+        : middayLatestStart;
+    if (!dayEnd.isAfter(midday)) return null;
+    final midpoint = dayStart.add(
       Duration(minutes: dayEnd.difference(dayStart).inMinutes ~/ 2),
     );
+    final target = midpoint.isBefore(midday)
+        ? midday
+        : midpoint.isAfter(latestLunchStart)
+        ? latestLunchStart
+        : midpoint;
     final start = _findNearestFreeStart(
       fixedEntries,
       duration,
       target,
       dayStart,
       dayEnd,
+      earliestStart: midday.isAfter(dayStart) ? midday : dayStart,
+      latestAllowedStart: latestLunchStart,
     );
     if (start == null) return null;
     return DayPlannerEntry(
@@ -1071,7 +1730,9 @@ class DayPlannerService {
         final overlaps =
             current.start.isBefore(task.end) && current.end.isAfter(task.start);
         if (!overlaps) continue;
-        if (current.type == 'buffer' || !current.start.isBefore(task.start)) {
+        if (current.type == 'buffer' ||
+            current.title == 'Recovery break' ||
+            !current.start.isBefore(task.start)) {
           adjusted = null;
           break;
         }
@@ -1089,10 +1750,419 @@ class DayPlannerService {
     DateTime dayStart,
     DateTime dayEnd,
   ) {
-    return entries.where((entry) {
+    var normalized = entries.where((entry) {
       if (entry.isAllDay) return true;
       return entry.end.isAfter(entry.start);
     }).toList();
+
+    normalized = normalized
+        .where((entry) {
+          if (entry.title != 'Recovery break') return true;
+          return entry.start
+                  .add(
+                    const Duration(
+                      minutes: PlannerBreakPolicy.recoveryBreakMinutes,
+                    ),
+                  )
+                  .isBefore(dayEnd) ||
+              entry.start
+                  .add(
+                    const Duration(
+                      minutes: PlannerBreakPolicy.recoveryBreakMinutes,
+                    ),
+                  )
+                  .isAtSameMomentAs(dayEnd);
+        })
+        .map(
+          (entry) => entry.title == 'Recovery break'
+              ? entry.copyWith(
+                  end: entry.start.add(
+                    const Duration(
+                      minutes: PlannerBreakPolicy.recoveryBreakMinutes,
+                    ),
+                  ),
+                )
+              : entry,
+        )
+        .toList();
+    normalized = _removeBreakConflicts(normalized);
+    normalized = _removeTaskOverlaps(normalized);
+    normalized = _removeFocusTaskOverlaps(normalized);
+    normalized = _ensureOpeningAvailableTime(normalized, dayStart, dayEnd);
+    normalized = _fillGapsWithPlannerTime(normalized, dayStart, dayEnd);
+    normalized = _normalizeLunchBoundary(normalized);
+    normalized = _removeBreakCalendarOverlaps(normalized);
+    normalized.sort((a, b) => a.start.compareTo(b.start));
+    return normalized;
+  }
+
+  static List<DayPlannerEntry> _normalizeLunchBoundary(
+    List<DayPlannerEntry> entries,
+  ) {
+    final lunchEntry = entries.cast<DayPlannerEntry?>().firstWhere(
+      (entry) => entry?.id == 'break-lunch',
+      orElse: () => null,
+    );
+    if (lunchEntry == null) return entries;
+    var lunch = lunchEntry;
+
+    final latestLunchStart = DateTime(
+      lunch.start.year,
+      lunch.start.month,
+      lunch.start.day,
+      13,
+      30,
+    );
+    final precedingBreak = entries
+        .where(
+          (entry) =>
+              _isBreakLikeEntry(entry) && entry.end.isBefore(lunch.start),
+        )
+        .fold<DayPlannerEntry?>(null, (candidate, entry) {
+          if (candidate == null || entry.end.isAfter(candidate.end)) {
+            return entry;
+          }
+          return candidate;
+        });
+    if (precedingBreak != null &&
+        lunch.start.difference(precedingBreak.end) < const Duration(hours: 1)) {
+      final shiftedStart = precedingBreak.end.add(const Duration(hours: 1));
+      final shiftedEnd = shiftedStart.add(const Duration(minutes: 30));
+      final conflictsWithPlanningEntry = entries.any(
+        (entry) =>
+            entry.id != lunch.id &&
+            _occupiesPlanningTime(entry) &&
+            shiftedStart.isBefore(entry.end) &&
+            shiftedEnd.isAfter(entry.start),
+      );
+      if (!shiftedStart.isAfter(latestLunchStart) &&
+          !conflictsWithPlanningEntry) {
+        lunch = lunch.copyWith(start: shiftedStart, end: shiftedEnd);
+      }
+    }
+
+    final result = entries
+        .where((entry) {
+          if (entry.title != 'Recovery break') return true;
+          return lunch.start.difference(entry.end) > const Duration(hours: 1) ||
+              entry.end.isAfter(lunch.start);
+        })
+        .map((entry) => entry.id == lunch.id ? lunch : entry)
+        .toList();
+
+    final previous = result
+        .where(
+          (entry) =>
+              entry.type == 'task' &&
+              !entry.end.isAfter(lunch.start) &&
+              lunch.start.difference(entry.end) <= const Duration(minutes: 30),
+        )
+        .fold<DayPlannerEntry?>(null, (candidate, entry) {
+          if (candidate == null || entry.start.isAfter(candidate.start)) {
+            return entry;
+          }
+          return candidate;
+        });
+    if (previous == null) return result;
+
+    final resultIndex = result.indexWhere((entry) => entry.id == previous.id);
+    if (resultIndex < 0) return result;
+    result[resultIndex] = previous.copyWith(end: lunch.start);
+    return result;
+  }
+
+  static List<DayPlannerEntry> _removeBreakCalendarOverlaps(
+    List<DayPlannerEntry> entries,
+  ) {
+    final calendarEntries = entries.where(
+      (entry) => entry.type == 'calendar' && _occupiesPlanningTime(entry),
+    );
+    return entries.where((entry) {
+      if (!_isBreakLikeEntry(entry)) return true;
+      return !calendarEntries.any(
+        (calendar) =>
+            entry.start.isBefore(calendar.end) &&
+            entry.end.isAfter(calendar.start),
+      );
+    }).toList();
+  }
+
+  static List<DayPlannerEntry> _removeFocusTaskOverlaps(
+    List<DayPlannerEntry> entries,
+  ) {
+    final tasks = entries
+        .where(
+          (entry) =>
+              !entry.isConcurrent &&
+              (entry.type == 'task' ||
+                  entry.type == 'admin' ||
+                  (entry.type == 'calendar' && _occupiesPlanningTime(entry))),
+        )
+        .toList();
+    return entries.where((entry) {
+      if (entry.type != 'focus') return true;
+      return !tasks.any(
+        (task) =>
+            entry.start.isBefore(task.end) && entry.end.isAfter(task.start),
+      );
+    }).toList();
+  }
+
+  static List<DayPlannerEntry> _removeFocusOverlaps(
+    List<DayPlannerEntry> entries,
+  ) {
+    return entries.where((entry) {
+      if (entry.type != 'focus' || entry.isAllDay) return true;
+      return entries.every(
+        (other) =>
+            identical(entry, other) ||
+            other.isAllDay ||
+            other.isConcurrent ||
+            !entry.start.isBefore(other.end) ||
+            !entry.end.isAfter(other.start),
+      );
+    }).toList();
+  }
+
+  static List<DayPlannerEntry> _removeBreakConflicts(
+    List<DayPlannerEntry> entries,
+  ) {
+    final result = <DayPlannerEntry>[];
+    final sorted = List<DayPlannerEntry>.from(entries)
+      ..sort((a, b) => a.start.compareTo(b.start));
+
+    for (final entry in sorted) {
+      final hasBreakConflict =
+          _isBreakLikeEntry(entry) &&
+          result.any(
+            (previous) =>
+                _isBreakLikeEntry(previous) &&
+                entry.start.isBefore(
+                  previous.end.add(const Duration(hours: 1)),
+                ) &&
+                entry.end.isAfter(previous.start),
+          );
+      if (hasBreakConflict) {
+        if (_isLunchBreak(entry)) {
+          result.removeWhere(
+            (previous) =>
+                _isBreakLikeEntry(previous) &&
+                previous.end.add(const Duration(hours: 1)).isAfter(entry.start),
+          );
+        } else {
+          continue;
+        }
+      }
+
+      result.add(entry);
+    }
+
+    return result;
+  }
+
+  static List<DayPlannerEntry> _ensureOpeningAvailableTime(
+    List<DayPlannerEntry> entries,
+    DateTime dayStart,
+    DateTime dayEnd,
+  ) {
+    if (entries.any(
+      (entry) =>
+          entry.type == 'focus' &&
+          entry.start.isAtSameMomentAs(dayStart) &&
+          entry.subtitle == 'Opening focus session',
+    )) {
+      return entries;
+    }
+    final occupied =
+        entries
+            .where(
+              (entry) =>
+                  !entry.isAllDay &&
+                  entry.type != 'buffer' &&
+                  entry.type != 'focus' &&
+                  entry.start.isBefore(dayEnd) &&
+                  entry.end.isAfter(dayStart),
+            )
+            .toList()
+          ..sort((a, b) => a.start.compareTo(b.start));
+
+    if (occupied.isEmpty) {
+      return entries;
+    }
+
+    final firstEntry = occupied.first;
+    if (!firstEntry.start.isAtSameMomentAs(dayStart)) {
+      final gapMinutes = firstEntry.start.difference(dayStart).inMinutes;
+      if (gapMinutes >= PlannerBreakPolicy.minAvailableTimeMinutes) {
+        final availableMinutes = gapMinutes.clamp(
+          PlannerBreakPolicy.minAvailableTimeMinutes,
+          PlannerBreakPolicy.maxAvailableTimeMinutes,
+        );
+        final block = DayPlannerEntry(
+          id: 'buffer-open',
+          title: 'Available Time',
+          type: 'buffer',
+          start: dayStart,
+          end: dayStart.add(Duration(minutes: availableMinutes)),
+          subtitle: 'Intentional free capacity',
+        );
+        final result = List<DayPlannerEntry>.from(entries)
+          ..add(block)
+          ..sort((a, b) => a.start.compareTo(b.start));
+        return result;
+      }
+    }
+
+    return entries;
+  }
+
+  static List<DayPlannerEntry> _fillGapsWithPlannerTime(
+    List<DayPlannerEntry> entries,
+    DateTime dayStart,
+    DateTime dayEnd,
+  ) {
+    final occupied =
+        entries
+            .where(
+              (entry) =>
+                  !entry.isAllDay &&
+                  entry.end.isAfter(entry.start) &&
+                  entry.start.isBefore(dayEnd) &&
+                  entry.end.isAfter(dayStart),
+            )
+            .toList()
+          ..sort((a, b) => a.start.compareTo(b.start));
+
+    final result = List<DayPlannerEntry>.from(entries);
+    var cursor = dayStart;
+
+    for (final entry in occupied) {
+      if (entry.start.isAfter(cursor)) {
+        final gapStart = cursor;
+        final gapEnd = entry.start;
+        if (gapEnd.difference(gapStart) < const Duration(minutes: 15)) {
+          cursor = gapEnd;
+          continue;
+        }
+        final isOpeningGap =
+            gapStart.isAtSameMomentAs(dayStart) &&
+            !result.any(
+              (candidate) =>
+                  candidate.type != 'focus' &&
+                  candidate.type != 'buffer' &&
+                  candidate.start.isAtSameMomentAs(dayStart),
+            );
+
+        if (isOpeningGap &&
+            gapEnd.difference(gapStart) >= const Duration(minutes: 30)) {
+          final availableMinutes = gapEnd
+              .difference(gapStart)
+              .inMinutes
+              .clamp(
+                PlannerBreakPolicy.minAvailableTimeMinutes,
+                PlannerBreakPolicy.maxAvailableTimeMinutes,
+              );
+          final availableEnd = gapStart.add(
+            Duration(minutes: availableMinutes),
+          );
+          result.add(
+            DayPlannerEntry(
+              id: 'buffer-gap-${result.length}',
+              title: 'Available Time',
+              type: 'buffer',
+              start: gapStart,
+              end: availableEnd,
+              subtitle: 'Intentional free capacity',
+            ),
+          );
+          if (gapEnd.difference(availableEnd) >=
+              const Duration(
+                minutes: PlannerBreakPolicy.minAvailableTimeMinutes,
+              )) {
+            result.add(
+              DayPlannerEntry(
+                id: 'focus-gap-${result.length}',
+                title: 'Focus Time',
+                type: 'focus',
+                start: availableEnd,
+                end: gapEnd,
+                subtitle: 'Filled planning gap',
+              ),
+            );
+          }
+        } else if (gapEnd.difference(gapStart) >=
+            const Duration(
+              minutes: PlannerBreakPolicy.minAvailableTimeMinutes,
+            )) {
+          result.add(
+            DayPlannerEntry(
+              id: 'focus-gap-${result.length}',
+              title: 'Focus Time',
+              type: 'focus',
+              start: gapStart,
+              end: gapEnd,
+              subtitle: 'Filled planning gap',
+            ),
+          );
+        }
+      }
+      cursor = entry.end.isAfter(cursor) ? entry.end : cursor;
+    }
+
+    if (dayEnd.isAfter(cursor)) {
+      final gapStart = cursor;
+      final gapEnd = dayEnd;
+      if (gapStart.isAtSameMomentAs(dayStart) &&
+          gapEnd.difference(gapStart) >= const Duration(minutes: 30)) {
+        final availableMinutes = gapEnd
+            .difference(gapStart)
+            .inMinutes
+            .clamp(
+              PlannerBreakPolicy.minAvailableTimeMinutes,
+              PlannerBreakPolicy.maxAvailableTimeMinutes,
+            );
+        final availableEnd = gapStart.add(Duration(minutes: availableMinutes));
+        result.add(
+          DayPlannerEntry(
+            id: 'buffer-gap-${result.length}',
+            title: 'Available Time',
+            type: 'buffer',
+            start: gapStart,
+            end: availableEnd,
+            subtitle: 'Intentional free capacity',
+          ),
+        );
+        if (gapEnd.difference(availableEnd) >=
+            const Duration(
+              minutes: PlannerBreakPolicy.minAvailableTimeMinutes,
+            )) {
+          result.add(
+            DayPlannerEntry(
+              id: 'focus-gap-${result.length}',
+              title: 'Focus Time',
+              type: 'focus',
+              start: availableEnd,
+              end: gapEnd,
+              subtitle: 'Filled planning gap',
+            ),
+          );
+        }
+      } else if (gapEnd.difference(gapStart) >=
+          const Duration(minutes: PlannerBreakPolicy.minAvailableTimeMinutes)) {
+        result.add(
+          DayPlannerEntry(
+            id: 'focus-gap-${result.length}',
+            title: 'Focus Time',
+            type: 'focus',
+            start: gapStart,
+            end: gapEnd,
+            subtitle: 'Filled planning gap',
+          ),
+        );
+      }
+    }
+
+    return result;
   }
 
   static List<DayPlannerEntry> _extendShortGaps(
@@ -1121,7 +2191,9 @@ class DayPlannerService {
       final canExtend =
           previous.type == 'task' ||
           previous.type == 'break' ||
-          (previous.type == 'movement' && !previous.isConcurrent);
+          (previous.type == 'movement' &&
+              !previous.isConcurrent &&
+              !previous.title.toLowerCase().contains('walk'));
       final crossesTask = previous.type != 'task' && current.type == 'task';
       if (canExtend &&
           !crossesTask &&
@@ -1212,47 +2284,38 @@ class DayPlannerService {
       }
       if (entry.end.difference(entry.start) < duration) continue;
       final isPreferred = preferredConcurrentEntryIds.contains(entry.id);
-      if (entry.type == 'calendar' &&
+      final canPairCalendar =
+          entry.type == 'calendar' &&
           ((mode != 'office' &&
                   (isPreferred || preferredConcurrentEntryIds.isEmpty)) ||
               (mode == 'office' &&
                   isPreferred &&
-                  entry.subtitle?.toLowerCase().contains('work') == true)) &&
-          !_intervalOverlapsPersonal(entry.start, entry.end, occupied) &&
-          _concurrentWindowIsExclusive(
+                  entry.subtitle?.toLowerCase().contains('work') == true));
+      final canPairTask = entry.type == 'task' && mode != 'office';
+      // Generic Focus Time is unclaimed flexible time, not a real
+      // commitment, so standing/walking can overlay it too on WFH days.
+      final canPairFocus = entry.type == 'focus' && mode != 'office';
+      if ((!canPairCalendar && !canPairTask && !canPairFocus) ||
+          _overlapsPersonal(entry.start, entry.end, occupied) ||
+          !_concurrentWindowIsExclusive(
             entry,
             occupied,
             duration,
             dayStart,
             dayEnd,
           )) {
-        final distance = entry.start.difference(target).abs();
-        if (bestDistance == null || distance < bestDistance) {
-          best = entry;
-          bestDistance = distance;
-        }
+        continue;
       }
-      if (entry.type == 'task' &&
-          mode != 'office' &&
-          !_intervalOverlapsPersonal(entry.start, entry.end, occupied) &&
-          _concurrentWindowIsExclusive(
-            entry,
-            occupied,
-            duration,
-            dayStart,
-            dayEnd,
-          )) {
-        final distance = entry.start.difference(target).abs();
-        if (bestDistance == null || distance < bestDistance) {
-          best = entry;
-          bestDistance = distance;
-        }
+      final distance = entry.start.difference(target).abs();
+      if (bestDistance == null || distance < bestDistance) {
+        best = entry;
+        bestDistance = distance;
       }
     }
     return best;
   }
 
-  static bool _intervalOverlapsPersonal(
+  static bool _overlapsPersonal(
     DateTime start,
     DateTime end,
     Iterable<DayPlannerEntry> entries,
@@ -1279,11 +2342,8 @@ class DayPlannerService {
     if (windowEnd.isAfter(dayEnd) || windowEnd.isAfter(selectedEntry.end)) {
       return false;
     }
-
     return occupied.every((entry) {
-      if (identical(entry, selectedEntry) || entry.isAllDay) {
-        return true;
-      }
+      if (identical(entry, selectedEntry) || entry.isAllDay) return true;
       if (entry.type == 'personal') return true;
       return !entry.start.isBefore(windowEnd) ||
           !entry.end.isAfter(windowStart);
@@ -1297,18 +2357,21 @@ class DayPlannerService {
     DateTime dayStart,
     DateTime dayEnd, {
     DateTime? earliestStart,
+    DateTime? latestAllowedStart,
     Duration minimumGap = Duration.zero,
     String? separateFromType,
     Set<String> separateFromTypes = const <String>{},
+    Map<String, Duration> minimumGapByType = const <String, Duration>{},
   }) {
     final boundaries = <DateTime>[dayStart, dayEnd];
     for (final entry in occupied) {
       if (!_occupiesPlanningTime(entry)) continue;
       final separation =
-          entry.type == separateFromType ||
-              separateFromTypes.contains(entry.type)
-          ? minimumGap
-          : Duration.zero;
+          minimumGapByType[entry.type] ??
+          (entry.type == separateFromType ||
+                  separateFromTypes.contains(entry.type)
+              ? minimumGap
+              : Duration.zero);
       if (entry.end.isAfter(dayStart) && entry.start.isBefore(dayEnd)) {
         boundaries.add(
           entry.start.subtract(separation).isBefore(dayStart)
@@ -1340,6 +2403,9 @@ class DayPlannerService {
           : target.isAfter(latestStart)
           ? latestStart
           : target;
+      if (latestAllowedStart != null && candidate.isAfter(latestAllowedStart)) {
+        continue;
+      }
       if (occupied.any(
         (entry) =>
             _occupiesPlanningTime(entry) &&
@@ -1355,6 +2421,31 @@ class DayPlannerService {
       }
     }
     return best;
+  }
+
+  static DateTime? _snapToAvailableStart({
+    required List<DayPlannerEntry> occupied,
+    required DateTime start,
+    required Duration duration,
+    required TimeGrid timeGrid,
+    required DateTime dayEnd,
+  }) {
+    final interval = Duration(
+      minutes: timeGrid == TimeGrid.fifteenMinutes ? 15 : 30,
+    );
+    var candidate = PlannerExecutionService.snapToGrid(start, timeGrid);
+    while (candidate.add(duration).isBefore(dayEnd) ||
+        candidate.add(duration).isAtSameMomentAs(dayEnd)) {
+      final overlaps = occupied.any(
+        (entry) =>
+            _occupiesPlanningTime(entry) &&
+            candidate.isBefore(entry.end) &&
+            candidate.add(duration).isAfter(entry.start),
+      );
+      if (!overlaps) return candidate;
+      candidate = candidate.add(interval);
+    }
+    return null;
   }
 
   static Duration _estimateTaskDuration(Task task) {

@@ -85,7 +85,7 @@ class MovementRecommendationPanel extends StatelessWidget {
           runSpacing: 4,
           children: [
             _contextChip(
-              label: 'Gym morning',
+              label: dayContext.gymMorning ? 'Gym morning' : 'No Gym',
               selected: dayContext.gymMorning,
               onChanged: onGymAvailableChanged,
             ),
@@ -99,7 +99,7 @@ class MovementRecommendationPanel extends StatelessWidget {
             _contextChip(
               label: dayContext.eveningAvailable
                   ? 'Evening available'
-                  : 'Evening unavailable',
+                  : 'Evening Unavailable',
               selected: dayContext.eveningAvailable,
               onChanged: onEveningAvailableChanged,
             ),
@@ -271,43 +271,45 @@ class MovementRecommendationPanel extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 6),
-          SizedBox(
-            width: metricsWidth,
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
+          Flexible(
+            child: SizedBox(
+              width: metricsWidth,
+              child: Align(
                 alignment: Alignment.centerRight,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      '$current/$target ${_pillarUnit(pillar)}',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: Colors.grey.shade700,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      '${(percent * 100).toStringAsFixed(0)}%',
-                      style: TextStyle(
-                        fontSize: 9,
-                        color: Colors.grey.shade700,
-                      ),
-                    ),
-                    if (status != null) ...[
-                      const SizedBox(width: 6),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerRight,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
                       Text(
-                        status,
+                        '$current/$target ${_pillarUnit(pillar)}',
                         style: TextStyle(
-                          fontSize: 9,
-                          fontWeight: FontWeight.w700,
-                          color: statusColor,
+                          fontSize: 10,
+                          color: Colors.grey.shade700,
                         ),
                       ),
+                      const SizedBox(width: 6),
+                      Text(
+                        '${(percent * 100).toStringAsFixed(0)}%',
+                        style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.grey.shade700,
+                        ),
+                      ),
+                      if (status != null) ...[
+                        const SizedBox(width: 6),
+                        Text(
+                          status,
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                            color: statusColor,
+                          ),
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
               ),
             ),

@@ -6,7 +6,9 @@ plugins {
 
 android {
     namespace = "com.example.adhd_assistant"
-    compileSdk = flutter.compileSdkVersion
+    // flutter.compileSdkVersion lags behind what some plugins (e.g. file_picker's
+    // flutter_plugin_android_lifecycle dependency) now require; pin to 36.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../secrets.dart';
+import 'day_planner_service.dart';
 
 class OneDriveDeviceCodeSession {
   final String deviceCode;
@@ -38,6 +39,7 @@ class OutlookCalendarEvent {
   final DateTime? end;
   final bool isAllDay;
   final String calendarSource;
+  final List<String> labels;
 
   const OutlookCalendarEvent({
     required this.id,
@@ -46,12 +48,25 @@ class OutlookCalendarEvent {
     required this.end,
     required this.isAllDay,
     this.calendarSource = 'home',
+    this.labels = const <String>[],
   });
 }
 
-class OneDriveSyncService {
-  static final RegExp _dateTimeHasExplicitZone = RegExp(r'(Z|[+-]\d\d:\d\d)$');
+class _PlannerCalendarEvent {
+  const _PlannerCalendarEvent({required this.id, required this.marker});
 
+  final String id;
+  final String marker;
+}
+
+class _WorkCalendarExportEvent {
+  const _WorkCalendarExportEvent({required this.id, required this.marker});
+
+  final String id;
+  final String marker;
+}
+
+class OneDriveSyncService {
   static String get _authorityTenant {
     final trimmed = oneDriveAuthorityTenant.trim();
     return trimmed.isEmpty ? 'consumers' : trimmed;
@@ -62,8 +77,12 @@ class OneDriveSyncService {
   static String get _deviceCodeEndpoint =>
       'https://login.microsoftonline.com/$_authorityTenant/oauth2/v2.0/devicecode';
   static const String _scope =
-      'offline_access User.Read Calendars.Read Files.ReadWrite.AppFolder';
+      'offline_access User.Read Calendars.ReadWrite Files.ReadWrite.AppFolder';
+  static const String _plannerEventMarker = 'adhd-assistant-planner';
+  static const String _workCalendarEventMarker = 'adhd-assistant-work-diary';
   static const String _stateFileName = 'adhd_assistant_app_state.json';
+  static Future<int>? _plannerSyncInFlight;
+  static ({DateTime day, List<DayPlannerEntry> entries})? _pendingPlannerSync;
 
   static const String _accessTokenKey = 'onedrive_access_token';
   static const String _refreshTokenKey = 'onedrive_refresh_token';
@@ -502,20 +521,18 @@ class OneDriveSyncService {
     required DateTime endUtc,
     required int maxItems,
   }) async {
-    final query = {
-      'startDateTime': nowUtc.toIso8601String(),
-      'endDateTime': endUtc.toIso8601String(),
-      r'$top': maxItems.toString(),
-      r'$orderby': 'start/dateTime',
-      r'$select': 'id,subject,isAllDay,start,end',
-    };
-
     final response = await http.get(
-      Uri.https('graph.microsoft.com', '/v1.0/me/calendarView', query),
+      Uri.https('graph.microsoft.com', '/v1.0/me/calendarView', {
+        'startDateTime': nowUtc.toIso8601String(),
+        'endDateTime': endUtc.toIso8601String(),
+        r'$top': maxItems.toString(),
+        r'$orderby': 'start/dateTime',
+        r'$select': 'id,subject,isAllDay,start,end,categories,body',
+      }),
       headers: {
         'Authorization': 'Bearer $accessToken',
         'Accept': 'application/json',
-        'Prefer': 'outlook.timezone="UTC"',
+        'Prefer': 'outlook.timezone="GMT Standard Time"',
       },
     );
 
@@ -528,7 +545,7 @@ class OneDriveSyncService {
 
     if (response.statusCode == 403) {
       throw Exception(
-        'Calendar permission denied. Ensure Calendars.Read is granted in your Azure app registration.',
+        'Calendar permission denied. Ensure Calendars.ReadWrite is granted in your Azure app registration.',
       );
     }
 
@@ -540,7 +557,412 @@ class OneDriveSyncService {
 
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     final rawEvents = body['value'] as List<dynamic>? ?? const [];
-    return _mapGraphEvents(rawEvents, calendarSource: 'home');
+    final visibleEvents = rawEvents.where((raw) {
+      return raw is Map &&
+          !isAppGeneratedCalendarEvent(Map<String, dynamic>.from(raw));
+    }).toList();
+    return _mapGraphEvents(visibleEvents, calendarSource: 'home');
+  }
+
+  static Future<int> syncPlannerEntriesToCalendar({
+    required DateTime day,
+    required List<DayPlannerEntry> entries,
+  }) {
+    _pendingPlannerSync = (day: day, entries: List.of(entries));
+    final inFlight = _plannerSyncInFlight;
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    final sync = _drainPlannerSyncQueue();
+    _plannerSyncInFlight = sync.whenComplete(() {
+      _plannerSyncInFlight = null;
+    });
+    return _plannerSyncInFlight!;
+  }
+
+  static Future<int> _drainPlannerSyncQueue() async {
+    var syncedEntryCount = 0;
+    while (_pendingPlannerSync != null) {
+      final request = _pendingPlannerSync!;
+      _pendingPlannerSync = null;
+      syncedEntryCount = await _syncPlannerEntriesToCalendar(
+        day: request.day,
+        entries: request.entries,
+      );
+    }
+    return syncedEntryCount;
+  }
+
+  static bool isPlannerEntryExportable(DayPlannerEntry entry) {
+    return entry.type != 'calendar' && !entry.isAllDay;
+  }
+
+  static bool isPlannerGeneratedCalendarEvent(Map<String, dynamic> event) {
+    final eventBody = event['body'];
+    return eventBody is Map &&
+        eventBody['content'].toString().contains('$_plannerEventMarker:');
+  }
+
+  static bool isLegacyPlannerCalendarEvent(Map<String, dynamic> event) {
+    final categories = event['categories'];
+    return categories is List &&
+        categories.any(
+          (category) =>
+              category.toString().trim().toLowerCase() == 'adhd assistant',
+        );
+  }
+
+  static bool isAppGeneratedCalendarEvent(Map<String, dynamic> event) {
+    final eventBody = event['body'];
+    if (eventBody is! Map) return false;
+    final content = eventBody['content'].toString();
+    return content.contains('$_plannerEventMarker:') ||
+        content.contains('$_workCalendarEventMarker:') ||
+        isLegacyPlannerCalendarEvent(event);
+  }
+
+  static Future<int> syncWorkCalendarEventsToPersonalCalendar(
+    List<OutlookCalendarEvent> events,
+  ) {
+    return _syncWorkCalendarEventsToPersonalCalendar(events);
+  }
+
+  static List<OutlookCalendarEvent> workCalendarEventsToExport(
+    Iterable<OutlookCalendarEvent> events,
+  ) {
+    return events
+        .where((event) => event.calendarSource == 'work')
+        .where((event) => event.start != null)
+        .toList();
+  }
+
+  static Future<int> _syncWorkCalendarEventsToPersonalCalendar(
+    List<OutlookCalendarEvent> events,
+  ) async {
+    final accessToken = await _getValidAccessToken();
+    if (accessToken == null) {
+      throw Exception('No Microsoft sign-in session found.');
+    }
+    final workEvents = workCalendarEventsToExport(events);
+    if (workEvents.isEmpty) return 0;
+
+    final start = workEvents
+        .map((event) => event.start!.toLocal())
+        .reduce((left, right) => left.isBefore(right) ? left : right);
+    final end = workEvents
+        .map(
+          (event) => (event.end ?? event.start!).toLocal().add(
+            const Duration(days: 1),
+          ),
+        )
+        .reduce((left, right) => left.isAfter(right) ? left : right);
+    final response = await http.get(
+      Uri.https('graph.microsoft.com', '/v1.0/me/calendarView', {
+        'startDateTime': DateTime(
+          start.year,
+          start.month,
+          start.day,
+        ).toUtc().toIso8601String(),
+        'endDateTime': end.toUtc().toIso8601String(),
+        r'$top': '1000',
+        r'$select': 'id,body',
+      }),
+      headers: {
+        'Authorization': 'Bearer $accessToken',
+        'Accept': 'application/json',
+      },
+    );
+    if (response.statusCode != 200) {
+      throw Exception(
+        'Unable to find existing work diary events. ${_extractGraphError(response.body)}',
+      );
+    }
+    final rawEvents =
+        (jsonDecode(response.body) as Map<String, dynamic>)['value']
+            as List<dynamic>? ??
+        const [];
+    final existing = <String, _WorkCalendarExportEvent>{};
+    for (final raw in rawEvents) {
+      if (raw is! Map ||
+          !isWorkCalendarExportEvent(Map<String, dynamic>.from(raw))) {
+        continue;
+      }
+      final event = Map<String, dynamic>.from(raw);
+      final content = (event['body'] as Map?)?['content']?.toString() ?? '';
+      final marker = RegExp(
+        '$_workCalendarEventMarker:[A-Za-z0-9_.:@-]+',
+      ).firstMatch(content)?.group(0);
+      if (marker != null) {
+        existing[marker] = _WorkCalendarExportEvent(
+          id: (event['id'] ?? '').toString(),
+          marker: marker,
+        );
+      }
+    }
+
+    final desired = <String>{};
+    for (final event in workEvents) {
+      final marker = '$_workCalendarEventMarker:${event.id}';
+      desired.add(marker);
+      final payload = {
+        'subject': event.subject,
+        'body': {
+          'contentType': 'text',
+          'content': '$marker\nImported work diary event.',
+        },
+        'start': {
+          'dateTime': _formatOutlookWallClock(event.start!.toLocal()),
+          'timeZone': 'GMT Standard Time',
+        },
+        'end': {
+          'dateTime': _formatOutlookWallClock(
+            (event.end ?? event.start!).toLocal(),
+          ),
+          'timeZone': 'GMT Standard Time',
+        },
+        'isAllDay': event.isAllDay,
+        'categories': <String>['Work'],
+        'showAs': 'free',
+        'isReminderOn': false,
+        'reminderMinutesBeforeStart': 0,
+      };
+      final matching = existing[marker];
+      await _saveCalendarEvent(
+        accessToken: accessToken,
+        eventId: matching?.id,
+        payload: payload,
+        failureMessage: 'Unable to sync work diary event.',
+      );
+    }
+    for (final event in existing.values) {
+      if (!desired.contains(event.marker)) {
+        await _deletePlannerEvent(accessToken: accessToken, eventId: event.id);
+      }
+    }
+    return workEvents.length;
+  }
+
+  static bool isWorkCalendarExportEvent(Map<String, dynamic> event) {
+    final eventBody = event['body'];
+    return eventBody is Map &&
+        eventBody['content'].toString().contains('$_workCalendarEventMarker:');
+  }
+
+  static Future<int> _syncPlannerEntriesToCalendar({
+    required DateTime day,
+    required List<DayPlannerEntry> entries,
+  }) async {
+    final accessToken = await _getValidAccessToken();
+    if (accessToken == null) {
+      throw Exception('No Microsoft sign-in session found.');
+    }
+    final existing = await _fetchPlannerEvents(
+      accessToken: accessToken,
+      start: DateTime(day.year, day.month, day.day),
+      end: DateTime(day.year, day.month, day.day + 1),
+    );
+    final existingByMarker = <String, _PlannerCalendarEvent>{};
+    for (final event in existing) {
+      final previous = existingByMarker[event.marker];
+      if (previous == null) {
+        existingByMarker[event.marker] = event;
+      } else {
+        await _deletePlannerEvent(accessToken: accessToken, eventId: event.id);
+      }
+    }
+    final syncableEntries = entries.where(isPlannerEntryExportable).toList();
+    final desiredMarkers = syncableEntries
+        .map((entry) => '$_plannerEventMarker:${entry.id}')
+        .toSet();
+    for (final event in existingByMarker.values) {
+      if (!desiredMarkers.contains(event.marker)) {
+        await _deletePlannerEvent(accessToken: accessToken, eventId: event.id);
+      }
+    }
+    for (final entry in syncableEntries) {
+      final marker = '$_plannerEventMarker:${entry.id}';
+      final payload = {
+        'subject': entry.title,
+        'body': {
+          'contentType': 'text',
+          'content': '$marker\nGenerated by ADHD Assistant.',
+        },
+        'start': {
+          'dateTime': _formatOutlookWallClock(entry.start),
+          'timeZone': 'GMT Standard Time',
+        },
+        'end': {
+          'dateTime': _formatOutlookWallClock(entry.end),
+          'timeZone': 'GMT Standard Time',
+        },
+        'categories': <String>['Work'],
+        'showAs': 'free',
+        'isReminderOn': false,
+        'reminderMinutesBeforeStart': 0,
+      };
+      final matching = existingByMarker[marker];
+      await _saveCalendarEvent(
+        accessToken: accessToken,
+        eventId: matching?.id,
+        payload: payload,
+        failureMessage: 'Unable to sync planner event.',
+      );
+    }
+    return syncableEntries.length;
+  }
+
+  static Map<String, String> _jsonHeaders(String accessToken) => {
+    'Authorization': 'Bearer $accessToken',
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+  };
+
+  static Future<void> _saveCalendarEvent({
+    required String accessToken,
+    required String? eventId,
+    required Map<String, dynamic> payload,
+    required String failureMessage,
+  }) async {
+    final response = eventId == null
+        ? await http.post(
+            Uri.https('graph.microsoft.com', '/v1.0/me/events'),
+            headers: _jsonHeaders(accessToken),
+            body: jsonEncode(payload),
+          )
+        : await http.patch(
+            Uri.https('graph.microsoft.com', '/v1.0/me/events/$eventId'),
+            headers: _jsonHeaders(accessToken),
+            body: jsonEncode(payload),
+          );
+    final expectedStatus = eventId == null ? 201 : 200;
+    if (response.statusCode != expectedStatus) {
+      throw Exception('$failureMessage ${_extractGraphError(response.body)}');
+    }
+  }
+
+  static String _formatOutlookWallClock(DateTime value) {
+    String twoDigits(int number) => number.toString().padLeft(2, '0');
+    return '${value.year.toString().padLeft(4, '0')}-${twoDigits(value.month)}-${twoDigits(value.day)}T${twoDigits(value.hour)}:${twoDigits(value.minute)}:${twoDigits(value.second)}';
+  }
+
+  static Future<void> _deletePlannerEvent({
+    required String accessToken,
+    required String eventId,
+  }) async {
+    final response = await http.delete(
+      Uri.https('graph.microsoft.com', '/v1.0/me/events/$eventId'),
+      headers: _jsonHeaders(accessToken),
+    );
+    if (response.statusCode != 204 && response.statusCode != 404) {
+      throw Exception(
+        'Unable to remove a duplicate planner event. ${_extractGraphError(response.body)}',
+      );
+    }
+  }
+
+  static Future<bool> deleteExportedCalendarEvent(
+    DayPlannerEntry entry, {
+    required DateTime day,
+  }) async {
+    final accessToken = await _getValidAccessToken();
+    if (accessToken == null) {
+      throw Exception('No Microsoft sign-in session found.');
+    }
+    final marker = entry.type == 'calendar' && entry.subtitle == 'Work calendar'
+        ? '$_workCalendarEventMarker:${entry.id.substring('calendar-'.length)}'
+        : '$_plannerEventMarker:${entry.id}';
+    final response = await http.get(
+      Uri.https('graph.microsoft.com', '/v1.0/me/calendarView', {
+        'startDateTime': DateTime(
+          day.year,
+          day.month,
+          day.day,
+        ).toUtc().toIso8601String(),
+        'endDateTime': DateTime(
+          day.year,
+          day.month,
+          day.day + 1,
+        ).toUtc().toIso8601String(),
+        r'$top': '100',
+        r'$select': 'id,body',
+      }),
+      headers: {
+        'Authorization': 'Bearer $accessToken',
+        'Accept': 'application/json',
+      },
+    );
+    if (response.statusCode != 200) {
+      throw Exception(
+        'Unable to find the exported Outlook event. ${_extractGraphError(response.body)}',
+      );
+    }
+    final rawEvents =
+        (jsonDecode(response.body) as Map<String, dynamic>)['value']
+            as List<dynamic>? ??
+        const [];
+    var deleted = false;
+    for (final raw in rawEvents) {
+      if (raw is! Map) continue;
+      final event = Map<String, dynamic>.from(raw);
+      final content = (event['body'] as Map?)?['content']?.toString() ?? '';
+      if (content.contains(marker)) {
+        await _deletePlannerEvent(
+          accessToken: accessToken,
+          eventId: (event['id'] ?? '').toString(),
+        );
+        deleted = true;
+      }
+    }
+    return deleted;
+  }
+
+  static Future<List<_PlannerCalendarEvent>> _fetchPlannerEvents({
+    required String accessToken,
+    required DateTime start,
+    required DateTime end,
+  }) async {
+    final response = await http.get(
+      Uri.https('graph.microsoft.com', '/v1.0/me/calendarView', {
+        'startDateTime': start.toUtc().toIso8601String(),
+        'endDateTime': end.toUtc().toIso8601String(),
+        r'$top': '100',
+        r'$select': 'id,subject,isAllDay,start,end,categories,body',
+      }),
+      headers: {
+        'Authorization': 'Bearer $accessToken',
+        'Accept': 'application/json',
+      },
+    );
+    if (response.statusCode != 200) {
+      throw Exception(
+        'Unable to find existing planner events. ${_extractGraphError(response.body)}',
+      );
+    }
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    final rawEvents = body['value'] as List<dynamic>? ?? const [];
+    return rawEvents
+        .where((raw) {
+          return raw is Map &&
+              (isPlannerGeneratedCalendarEvent(
+                    Map<String, dynamic>.from(raw),
+                  ) ||
+                  isLegacyPlannerCalendarEvent(Map<String, dynamic>.from(raw)));
+        })
+        .map((raw) {
+          final event = Map<String, dynamic>.from(raw as Map);
+          final content = (event['body'] as Map?)?['content']?.toString() ?? '';
+          final marker =
+              RegExp(
+                '$_plannerEventMarker:[A-Za-z0-9_-]+',
+              ).firstMatch(content)?.group(0) ??
+              '';
+          return _PlannerCalendarEvent(
+            id: (event['id'] ?? '').toString(),
+            marker: marker,
+          );
+        })
+        .toList();
   }
 
   static List<OutlookCalendarEvent> _mapGraphEvents(
@@ -549,15 +971,30 @@ class OneDriveSyncService {
   }) {
     return rawEvents.map((raw) {
       final event = Map<String, dynamic>.from(raw as Map);
+      final labels = (event['categories'] as List<dynamic>? ?? const [])
+          .map((label) => label.toString().trim())
+          .where((label) => label.isNotEmpty)
+          .toList();
+      if (calendarSource == 'work' &&
+          !labels.any((label) => label.toLowerCase() == 'work')) {
+        labels.add('Work');
+      }
       return OutlookCalendarEvent(
         id: (event['id'] ?? '').toString(),
         subject: (event['subject'] ?? '').toString().trim().isEmpty
             ? '(No title)'
             : (event['subject'] ?? '').toString(),
-        start: _parseGraphDateTimeField(event['start']),
-        end: _parseGraphDateTimeField(event['end']),
+        start: _parseGraphDateTimeField(
+          event['start'],
+          isAllDay: event['isAllDay'] == true,
+        ),
+        end: _parseGraphDateTimeField(
+          event['end'],
+          isAllDay: event['isAllDay'] == true,
+        ),
         isAllDay: event['isAllDay'] == true,
         calendarSource: calendarSource,
+        labels: labels,
       );
     }).toList();
   }
@@ -644,7 +1081,10 @@ class OneDriveSyncService {
     }
   }
 
-  static DateTime? _parseGraphDateTimeField(dynamic rawValue) {
+  static DateTime? _parseGraphDateTimeField(
+    dynamic rawValue, {
+    bool isAllDay = false,
+  }) {
     if (rawValue is Map<String, dynamic>) {
       final dateTimeText = (rawValue['dateTime'] ?? '').toString();
       if (dateTimeText.isEmpty) {
@@ -656,13 +1096,13 @@ class OneDriveSyncService {
         return null;
       }
 
-      // calendarView is requested with Prefer: outlook.timezone="UTC".
-      // Graph can still return a zone-less dateTime alongside a timezone
-      // label; interpret that value as UTC rather than local machine time.
-      if (!_dateTimeHasExplicitZone.hasMatch(dateTimeText)) {
-        return DateTime.parse('${dateTimeText}Z');
+      if (isAllDay) {
+        return DateTime(parsed.year, parsed.month, parsed.day);
       }
 
+      // With Prefer: outlook.timezone="GMT Standard Time", Graph returns
+      // timed values without an offset in the requested UK wall-clock time.
+      // Keep those values local; appending Z would apply the BST offset twice.
       return parsed;
     }
 

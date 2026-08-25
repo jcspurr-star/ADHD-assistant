@@ -7,6 +7,18 @@ import 'package:adhd_assistant/services/storage_service.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('undo restores the previous persisted state', () async {
+    SharedPreferences.setMockInitialValues({});
+
+    await StorageService.saveTasks([Task(task: 'First')]);
+    await StorageService.saveTasks([Task(task: 'Second')]);
+
+    expect(await StorageService.undoLastChange(), isTrue);
+    final restored = await StorageService.loadTasks();
+
+    expect(restored.single.task, 'First');
+  });
+
   test('StorageService saves and loads Task objects', () async {
     SharedPreferences.setMockInitialValues({});
 

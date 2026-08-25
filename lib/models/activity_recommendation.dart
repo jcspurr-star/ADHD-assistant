@@ -98,6 +98,24 @@ class DayTypeTargets {
   final RecommendationLevel mobility;
   final RecommendationLevel zwift;
   final String notes;
+
+  DayTypeTargets copyWith({
+    MinutesRange? standingMinutes,
+    MinutesRange? walkingMinutes,
+    RecommendationLevel? gym,
+    RecommendationLevel? mobility,
+    RecommendationLevel? zwift,
+    String? notes,
+  }) {
+    return DayTypeTargets(
+      standingMinutes: standingMinutes ?? this.standingMinutes,
+      walkingMinutes: walkingMinutes ?? this.walkingMinutes,
+      gym: gym ?? this.gym,
+      mobility: mobility ?? this.mobility,
+      zwift: zwift ?? this.zwift,
+      notes: notes ?? this.notes,
+    );
+  }
 }
 
 /// A min/max weekly target for a single pillar.

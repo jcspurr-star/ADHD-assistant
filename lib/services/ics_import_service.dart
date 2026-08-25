@@ -14,6 +14,7 @@ class IcsImportService {
     String? currentStart;
     String? currentEnd;
     bool currentIsAllDay = false;
+    var currentLabels = <String>[];
 
     void flushCurrentEvent() {
       if (currentUid == null &&
@@ -36,6 +37,7 @@ class IcsImportService {
             end: end,
             isAllDay: currentIsAllDay,
             calendarSource: calendarSource,
+            labels: currentLabels,
           ),
         );
       }
@@ -53,6 +55,7 @@ class IcsImportService {
         currentStart = null;
         currentEnd = null;
         currentIsAllDay = false;
+        currentLabels = <String>[];
         continue;
       }
 
@@ -63,6 +66,7 @@ class IcsImportService {
         currentStart = null;
         currentEnd = null;
         currentIsAllDay = false;
+        currentLabels = <String>[];
         continue;
       }
 
@@ -92,6 +96,13 @@ class IcsImportService {
             currentIsAllDay ||
             propertyWithParams.toUpperCase().contains('VALUE=DATE');
         currentEnd = _extractValue(line);
+      } else if (propertyName == 'CATEGORIES') {
+        currentLabels = _extractValue(line)
+            .split(',')
+            .map(_decodeValue)
+            .map((label) => label.trim())
+            .where((label) => label.isNotEmpty)
+            .toList();
       }
     }
 

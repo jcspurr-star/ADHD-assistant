@@ -40,7 +40,7 @@ class OutlookLinkCoordinator {
             return AlertDialog(
               title: const Text('Enable Outlook Access'),
               content: const Text(
-                'Your current Microsoft link does not include Outlook calendar permission yet. Re-link now to grant Calendars.Read?',
+                'Your current Microsoft link does not include Outlook calendar write permission yet. Re-link now to grant Calendars.ReadWrite?',
               ),
               actions: [
                 TextButton(

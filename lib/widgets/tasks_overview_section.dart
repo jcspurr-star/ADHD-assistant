@@ -7,7 +7,6 @@ class TasksOverviewSection extends StatelessWidget {
     super.key,
     required this.isNarrow,
     required this.priorityCardsTotalWidth,
-    required this.priorityCardCount,
     required this.priorityCardSpacing,
     required this.getTopTasks,
     required this.buildPriorityCard,
@@ -23,7 +22,6 @@ class TasksOverviewSection extends StatelessWidget {
 
   final bool isNarrow;
   final double priorityCardsTotalWidth;
-  final int priorityCardCount;
   final double priorityCardSpacing;
   final List<Task> Function(int count) getTopTasks;
   final Widget Function(int position, Task? task) buildPriorityCard;
@@ -40,6 +38,7 @@ class TasksOverviewSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final showWebRightColumnLayout =
         !isNarrow && MediaQuery.of(context).size.width >= 1200;
+    const priorityCardCount = 3;
     final topTasks = getTopTasks(priorityCardCount);
     final cards = List.generate(priorityCardCount, (position) {
       final task = position < topTasks.length ? topTasks[position] : null;
@@ -291,13 +290,13 @@ class TasksOverviewSection extends StatelessWidget {
               children: [
                 Expanded(
                   child: buildWebColumnShell(
-                    child: SizedBox.expand(child: buildOutlookSection),
+                    child: SizedBox.expand(child: buildDayPlannerSection),
                   ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: buildWebColumnShell(
-                    child: SizedBox.expand(child: buildDayPlannerSection),
+                    child: SizedBox.expand(child: buildOutlookSection),
                   ),
                 ),
                 const SizedBox(width: 10),

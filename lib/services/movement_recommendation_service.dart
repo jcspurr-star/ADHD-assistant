@@ -7,81 +7,24 @@ import '../models/activity_recommendation.dart';
 /// against seeded targets, and the remaining opportunities in the day.
 class MovementRecommendationService {
   /// Resolves the standing/walking/gym/mobility/zwift targets for one of the
-  /// 8 day-type combinations described by [context].
+  /// day contexts described by [context]. Location supplies the baseline;
+  /// gym and evening availability then modify that baseline.
   static DayTypeTargets resolveDayTypeTargets(DayContext context) {
-    if (context.gymMorning) {
-      if (context.workLocation == WorkLocation.home) {
-        return context.eveningAvailable
-            ? const DayTypeTargets(
-                standingMinutes: MinutesRange(180, 240),
-                walkingMinutes: MinutesRange(45, 60),
-                gym: RecommendationLevel.yes,
-                mobility: RecommendationLevel.yes,
-                zwift: RecommendationLevel.optional,
-                notes:
-                    'Gym provides the main training stimulus. Focus the rest '
-                    'of the day on movement accumulation.',
-              )
-            : const DayTypeTargets(
-                standingMinutes: MinutesRange(180, 240),
-                walkingMinutes: MinutesRange(30, 60),
-                gym: RecommendationLevel.yes,
-                mobility: RecommendationLevel.yes,
-                zwift: RecommendationLevel.no,
-                notes:
-                    'Typical family-heavy day. Walking pad should be '
-                    'prioritised.',
-              );
-      }
-      return context.eveningAvailable
-          ? const DayTypeTargets(
-              standingMinutes: MinutesRange(120, 180),
-              walkingMinutes: MinutesRange(30, 45),
-              gym: RecommendationLevel.yes,
-              mobility: RecommendationLevel.yes,
-              zwift: RecommendationLevel.optional,
-              notes:
-                  'Walking comes from walking breaks, walking meetings and a '
-                  'lunch walk.',
-            )
-          : const DayTypeTargets(
-              standingMinutes: MinutesRange(120, 180),
-              walkingMinutes: MinutesRange(20, 40),
-              gym: RecommendationLevel.yes,
-              mobility: RecommendationLevel.yes,
-              zwift: RecommendationLevel.no,
-              notes: 'Lower target due to office + commute + family demands.',
-            );
-    }
+    var targets = _baseTargetsForLocation(context.workLocation);
+    targets = _applyGymModifier(targets, context);
+    targets = _applyEveningModifier(targets, context);
+    return targets.copyWith(notes: _notesFor(context));
+  }
 
-    if (context.workLocation == WorkLocation.home) {
-      return context.eveningAvailable
-          ? const DayTypeTargets(
-              standingMinutes: MinutesRange(180, 240),
-              walkingMinutes: MinutesRange(60, 90),
-              gym: RecommendationLevel.no,
-              mobility: RecommendationLevel.optional,
-              zwift: RecommendationLevel.recommended,
-              notes: 'One of the best days for aerobic volume.',
-            )
-          : const DayTypeTargets(
-              standingMinutes: MinutesRange(180, 240),
-              walkingMinutes: MinutesRange(60, 90),
-              gym: RecommendationLevel.no,
-              mobility: RecommendationLevel.optional,
-              zwift: RecommendationLevel.no,
-              notes: 'Walking pad should replace evening exercise.',
-            );
-    }
-
-    return context.eveningAvailable
+  static DayTypeTargets _baseTargetsForLocation(WorkLocation location) {
+    return location == WorkLocation.home
         ? const DayTypeTargets(
-            standingMinutes: MinutesRange(120, 180),
-            walkingMinutes: MinutesRange(30, 60),
+            standingMinutes: MinutesRange(180, 240),
+            walkingMinutes: MinutesRange(60, 90),
             gym: RecommendationLevel.no,
             mobility: RecommendationLevel.optional,
-            zwift: RecommendationLevel.recommended,
-            notes: 'Ideal Zwift day.',
+            zwift: RecommendationLevel.no,
+            notes: '',
           )
         : const DayTypeTargets(
             standingMinutes: MinutesRange(120, 180),
@@ -89,10 +32,67 @@ class MovementRecommendationService {
             gym: RecommendationLevel.no,
             mobility: RecommendationLevel.no,
             zwift: RecommendationLevel.no,
-            notes:
-                'Most constrained day. Success is measured by standing and '
-                'walking accumulation.',
+            notes: '',
           );
+  }
+
+  static DayTypeTargets _applyGymModifier(
+    DayTypeTargets targets,
+    DayContext context,
+  ) {
+    if (!context.gymMorning) return targets;
+
+    final walkingMinutes = context.workLocation == WorkLocation.home
+        ? context.eveningAvailable
+              ? const MinutesRange(45, 60)
+              : const MinutesRange(30, 60)
+        : context.eveningAvailable
+        ? const MinutesRange(30, 45)
+        : const MinutesRange(20, 40);
+    return targets.copyWith(
+      walkingMinutes: walkingMinutes,
+      gym: RecommendationLevel.yes,
+      mobility: RecommendationLevel.yes,
+    );
+  }
+
+  static DayTypeTargets _applyEveningModifier(
+    DayTypeTargets targets,
+    DayContext context,
+  ) {
+    if (!context.eveningAvailable) return targets;
+
+    return targets.copyWith(
+      walkingMinutes:
+          context.workLocation == WorkLocation.office && !context.gymMorning
+          ? const MinutesRange(30, 60)
+          : null,
+      mobility: context.gymMorning ? null : RecommendationLevel.optional,
+      zwift: context.gymMorning
+          ? RecommendationLevel.optional
+          : RecommendationLevel.recommended,
+    );
+  }
+
+  static String _notesFor(DayContext context) {
+    if (context.gymMorning) {
+      if (context.workLocation == WorkLocation.home) {
+        return context.eveningAvailable
+            ? 'Gym provides the main training stimulus. Focus the rest of the day on movement accumulation.'
+            : 'Typical family-heavy day. Walking pad should be prioritised.';
+      }
+      return context.eveningAvailable
+          ? 'Walking comes from walking breaks, walking meetings and a lunch walk.'
+          : 'Lower target due to office + commute + family demands.';
+    }
+    if (context.workLocation == WorkLocation.home) {
+      return context.eveningAvailable
+          ? 'One of the best days for aerobic volume.'
+          : 'Walking pad should replace evening exercise.';
+    }
+    return context.eveningAvailable
+        ? 'Ideal Zwift day.'
+        : 'Most constrained day. Success is measured by standing and walking accumulation.';
   }
 
   /// Compares this week's totals against [targets] for every pillar.

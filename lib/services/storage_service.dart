@@ -40,7 +40,6 @@ class StorageService {
   static const String _categoriesKey = 'categories';
   static const String _starterPromptKey = 'starter_step_prompt';
   static const String _taskSubtaskPromptKey = 'task_subtask_prompt';
-  static const String _priorityCardCountKey = 'priority_card_count';
   static const String _outlookLookAheadDaysKey = 'outlook_look_ahead_days';
   static const String _importedOutlookEventsKey = 'imported_outlook_events';
   static const String _importedOutlookLastImportedAtUtcKey =
@@ -76,6 +75,39 @@ class StorageService {
   static const String _dailyBackupType = 'daily';
   static const int _maxRecentBackupSnapshots = 12;
   static const int _maxDailyBackupSnapshots = 30;
+  static const int _maxUndoSnapshots = 20;
+  static final List<Map<String, dynamic>> _undoSnapshots = [];
+  static Future<void>? _undoCaptureInFlight;
+
+  static bool get canUndo => _undoSnapshots.isNotEmpty;
+
+  static Future<void> _captureUndoSnapshot() {
+    final previous = _undoCaptureInFlight;
+    if (previous != null) return previous;
+
+    final capture = () async {
+      final prefs = await SharedPreferences.getInstance();
+      final snapshot = await _buildStateMapFromPrefs(prefs);
+      _undoSnapshots.add(snapshot);
+      if (_undoSnapshots.length > _maxUndoSnapshots) {
+        _undoSnapshots.removeAt(0);
+      }
+    }();
+    _undoCaptureInFlight = capture.whenComplete(() {
+      _undoCaptureInFlight = null;
+    });
+    return _undoCaptureInFlight!;
+  }
+
+  static Future<bool> undoLastChange() async {
+    if (_undoSnapshots.isEmpty) return false;
+    final snapshot = _undoSnapshots.removeLast();
+    final prefs = await SharedPreferences.getInstance();
+    await _applyStateMapToPrefs(prefs, snapshot);
+    await _touchStateMetadata(prefs);
+    unawaited(_pushCurrentStateToCloudIfAvailable());
+    return true;
+  }
 
   static bool get isOutlookConfigured => OneDriveSyncService.isConfigured;
 
@@ -483,6 +515,7 @@ class StorageService {
   static Future<void> saveImportedOutlookEvents(
     List<OutlookCalendarEvent> events,
   ) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     debugPrint('Saving ${events.length} imported calendar events');
 
@@ -510,6 +543,7 @@ class StorageService {
           'end': event.end?.toUtc().toIso8601String(),
           'isAllDay': event.isAllDay,
           'calendarSource': event.calendarSource,
+          'labels': event.labels,
         };
       }).toList(),
     );
@@ -557,6 +591,7 @@ class StorageService {
   }
 
   static Future<void> saveActivityLogs(List<ActivityLogEntry> logs) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
       _activityLogsKey,
@@ -574,6 +609,7 @@ class StorageService {
   }
 
   static Future<void> saveRemovedCalendarEventIds(Set<String> ids) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(
       _removedCalendarEventIdsKey,
@@ -662,6 +698,10 @@ class StorageService {
               : DateTime.parse(eventMap['end'].toString()).toLocal(),
           isAllDay: eventMap['isAllDay'] == true,
           calendarSource: (eventMap['calendarSource'] ?? 'home').toString(),
+          labels: (eventMap['labels'] as List<dynamic>? ?? const [])
+              .map((label) => label.toString().trim())
+              .where((label) => label.isNotEmpty)
+              .toList(),
         );
       }).toList();
     } catch (_) {
@@ -753,7 +793,10 @@ class StorageService {
   }
 
   static Future<List<Task>> loadTasks() async {
-    await _syncDownThenUp();
+    await _syncDownThenUp().timeout(
+      const Duration(seconds: 2),
+      onTimeout: () => false,
+    );
 
     final prefs = await SharedPreferences.getInstance();
 
@@ -771,6 +814,7 @@ class StorageService {
   }
 
   static Future<void> saveTasks(List<Task> tasks) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
 
     await prefs.setString(
@@ -793,6 +837,7 @@ class StorageService {
   }
 
   static Future<void> saveInboxEntries(List<String> entries) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_inboxEntriesKey, jsonEncode(entries));
     await _touchStateMetadata(prefs);
@@ -846,6 +891,7 @@ class StorageService {
   static Future<void> saveDailyCheckinsByDate(
     Map<String, Map<String, dynamic>> checkinsByDate,
   ) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     final encoded = jsonEncode(checkinsByDate);
     await prefs.setString(_dailyCheckinsByDateKey, encoded);
@@ -871,6 +917,7 @@ class StorageService {
   }
 
   static Future<void> saveNotes(String notes) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_notesKey, notes);
     await _touchStateMetadata(prefs);
@@ -907,6 +954,7 @@ class StorageService {
   }
 
   static Future<void> saveNoteEntries(List<NoteEntry> entries) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
       _noteEntriesKey,
@@ -930,6 +978,7 @@ class StorageService {
   }
 
   static Future<void> saveCategories(List<String> categories) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_categoriesKey, jsonEncode(categories));
     await _touchStateMetadata(prefs);
@@ -942,6 +991,7 @@ class StorageService {
   }
 
   static Future<void> saveStarterStepPrompt(String prompt) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_starterPromptKey, prompt);
     await _touchStateMetadata(prefs);
@@ -954,28 +1004,9 @@ class StorageService {
   }
 
   static Future<void> saveTaskSubtaskPrompt(String prompt) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_taskSubtaskPromptKey, prompt);
-    await _touchStateMetadata(prefs);
-    unawaited(_pushCurrentStateToCloudIfAvailable());
-  }
-
-  static Future<int?> loadPriorityCardCount() async {
-    final prefs = await SharedPreferences.getInstance();
-    final value = prefs.getInt(_priorityCardCountKey);
-    if (value == null) {
-      return null;
-    }
-    if (value < 1 || value > 3) {
-      return null;
-    }
-    return value;
-  }
-
-  static Future<void> savePriorityCardCount(int count) async {
-    final clamped = count.clamp(1, 3).toInt();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_priorityCardCountKey, clamped);
     await _touchStateMetadata(prefs);
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }
@@ -986,14 +1017,15 @@ class StorageService {
     if (value == null) {
       return null;
     }
-    if (value < 1 || value > 7) {
+    if (value < 1 || value > 14) {
       return null;
     }
     return value;
   }
 
   static Future<void> saveOutlookLookAheadDays(int days) async {
-    final clamped = days.clamp(1, 7).toInt();
+    await _captureUndoSnapshot();
+    final clamped = days.clamp(1, 14).toInt();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_outlookLookAheadDaysKey, clamped);
     await _touchStateMetadata(prefs);
@@ -1024,6 +1056,7 @@ class StorageService {
       return;
     }
     final prefs = await SharedPreferences.getInstance();
+    await _captureUndoSnapshot();
     await prefs.setInt(_plannerWorkdayStartMinutesKey, startMinutes);
     await prefs.setInt(_plannerWorkdayEndMinutesKey, endMinutes);
     await _touchStateMetadata(prefs);
@@ -1038,6 +1071,7 @@ class StorageService {
   }
 
   static Future<void> savePlannerTimeGrid(TimeGrid grid) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_plannerTimeGridKey, grid.name);
     await _touchStateMetadata(prefs);
@@ -1053,6 +1087,7 @@ class StorageService {
   }
 
   static Future<void> savePrioritizeWorkOnWeekdays(bool enabled) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_prioritizeWorkOnWeekdaysKey, enabled);
     await _touchStateMetadata(prefs);
@@ -1068,6 +1103,7 @@ class StorageService {
   }
 
   static Future<void> saveGymAvailable(bool enabled) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_gymAvailableKey, enabled);
     await _touchStateMetadata(prefs);
@@ -1083,6 +1119,7 @@ class StorageService {
   }
 
   static Future<void> saveWfhAvailable(bool enabled) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_wfhAvailableKey, enabled);
     await _touchStateMetadata(prefs);
@@ -1098,6 +1135,7 @@ class StorageService {
   }
 
   static Future<void> saveEveningAvailable(bool enabled) async {
+    await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_eveningAvailableKey, enabled);
     await _touchStateMetadata(prefs);
@@ -1109,6 +1147,7 @@ class StorageService {
   }
 
   static Future<void> saveContextTodayOptions(List<String> options) async {
+    await _captureUndoSnapshot();
     await _saveStringList(_contextTodayOptionsKey, options);
   }
 
@@ -1117,6 +1156,7 @@ class StorageService {
   }
 
   static Future<void> saveOtherMedicationOptions(List<String> options) async {
+    await _captureUndoSnapshot();
     await _saveStringList(_otherMedicationOptionsKey, options);
   }
 
@@ -1127,6 +1167,7 @@ class StorageService {
   static Future<void> saveDopamineCrashSymptomOptions(
     List<String> options,
   ) async {
+    await _captureUndoSnapshot();
     await _saveStringList(_dopamineCrashSymptomOptionsKey, options);
   }
 
@@ -1138,6 +1179,7 @@ class StorageService {
   static Future<void> saveDopamineCrashAdditionalSymptomOptions(
     List<String> options,
   ) async {
+    await _captureUndoSnapshot();
     await _saveStringList(_dopamineCrashAdditionalSymptomOptionsKey, options);
   }
 
@@ -1570,7 +1612,6 @@ class StorageService {
     final categoriesRaw = prefs.getString(_categoriesKey);
     final starterPrompt = prefs.getString(_starterPromptKey) ?? '';
     final taskSubtaskPrompt = prefs.getString(_taskSubtaskPromptKey) ?? '';
-    final priorityCardCount = prefs.getInt(_priorityCardCountKey) ?? 3;
     final outlookLookAheadDays = prefs.getInt(_outlookLookAheadDaysKey) ?? 1;
     final plannerWorkdayStartMinutes =
         prefs.getInt(_plannerWorkdayStartMinutesKey) ?? 9 * 60;
@@ -1634,7 +1675,6 @@ class StorageService {
       'categories': categoriesJson,
       'starter_step_prompt': starterPrompt,
       'task_subtask_prompt': taskSubtaskPrompt,
-      'priority_card_count': priorityCardCount,
       'outlook_look_ahead_days': outlookLookAheadDays,
       'planner_workday_start_minutes': plannerWorkdayStartMinutes,
       'planner_workday_end_minutes': plannerWorkdayEndMinutes,
@@ -1678,11 +1718,9 @@ class StorageService {
     final categories = state['categories'] as List<dynamic>? ?? <dynamic>[];
     final starterPrompt = (state['starter_step_prompt'] ?? '').toString();
     final taskSubtaskPrompt = (state['task_subtask_prompt'] ?? '').toString();
-    final priorityCardCountRaw = (state['priority_card_count'] ?? 3) as num;
-    final priorityCardCount = priorityCardCountRaw.toInt().clamp(1, 3);
     final outlookLookAheadDaysRaw =
         (state['outlook_look_ahead_days'] ?? 1) as num;
-    final outlookLookAheadDays = outlookLookAheadDaysRaw.toInt().clamp(1, 7);
+    final outlookLookAheadDays = outlookLookAheadDaysRaw.toInt().clamp(1, 14);
     final plannerWorkdayStartMinutes =
         ((state['planner_workday_start_minutes'] ?? 9 * 60) as num)
             .toInt()
@@ -1730,7 +1768,6 @@ class StorageService {
     await prefs.setString(_categoriesKey, jsonEncode(categories));
     await prefs.setString(_starterPromptKey, starterPrompt);
     await prefs.setString(_taskSubtaskPromptKey, taskSubtaskPrompt);
-    await prefs.setInt(_priorityCardCountKey, priorityCardCount);
     await prefs.setInt(_outlookLookAheadDaysKey, outlookLookAheadDays);
     if (plannerWorkdayEndMinutes > plannerWorkdayStartMinutes) {
       await prefs.setInt(
