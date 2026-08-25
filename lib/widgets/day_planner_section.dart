@@ -88,6 +88,8 @@ class DayPlannerSection extends StatelessWidget {
     this.onShowHomeCalendarInPlannerChanged,
     this.onShowHomeTasksInPlannerChanged,
     this.onPlannerResultBuilt,
+    this.onReplanFromNow,
+    this.showHeaderTitle = true,
   });
 
   final Future<List<OutlookCalendarEvent>>? upcomingOutlookEventsFuture;
@@ -163,6 +165,8 @@ class DayPlannerSection extends StatelessWidget {
   final ValueChanged<bool>? onShowHomeTasksInPlannerChanged;
   final void Function(DateTime day, List<DayPlannerEntry> entries)?
   onPlannerResultBuilt;
+  final VoidCallback? onReplanFromNow;
+  final bool showHeaderTitle;
 
   Widget _buildPlannerToggleChip({
     required String label,
@@ -1203,7 +1207,8 @@ class DayPlannerSection extends StatelessWidget {
                     ),
                   ),
                   if (showInlineDetails)
-                    Flexible(
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 90),
                       child: Padding(
                         padding: const EdgeInsets.only(left: 4, right: 2),
                         child: Text(
@@ -1581,7 +1586,7 @@ class DayPlannerSection extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   SizedBox(
-                    height: 86,
+                    height: 56,
                     child: ListView.separated(
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.only(bottom: 6),
@@ -1592,7 +1597,7 @@ class DayPlannerSection extends StatelessWidget {
                         child: _buildCompactTimelineEventCard(
                           context,
                           allDayEntries[index],
-                          height: 76,
+                          height: 46,
                         ),
                       ),
                     ),
@@ -2025,60 +2030,73 @@ class DayPlannerSection extends StatelessWidget {
           ),
           child: LayoutBuilder(
             builder: (context, sectionConstraints) {
-              final availableHeight = sectionConstraints.maxHeight;
+              final headerAndFilters = [
+                // No fixed height/clip here — the summary text length
+                // varies, so let the header size to its actual content.
+                ..._buildPlannerHeaderContent(
+                  context: context,
+                  plannerResult: plannerResult,
+                  effectivePlannerDayOffset: effectivePlannerDayOffset,
+                  maxPlannerOffset: maxPlannerOffset,
+                  selectedPlannerDate: selectedPlannerDate,
+                  dayContext: dayContext,
+                  executionSummary: executionSummary,
+                  filteredTasks: filteredTasks,
+                  visiblePlannerEntries: visiblePlannerEntries,
+                  onPlannerDayOffsetChanged: onPlannerDayOffsetChanged,
+                ),
+                const SizedBox(height: 10),
+                _buildContextSection(
+                  context,
+                  dayContext,
+                  width: double.infinity,
+                ),
+                const SizedBox(height: 8),
+                _buildTimelineFilters(context),
+                const SizedBox(height: 12),
+              ];
+
+              final timelineContent = visiblePlannerEntries.isEmpty
+                  ? Center(
+                      child: Text(
+                        'Nothing to show with current filters.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade700,
+                        ),
+                      ),
+                    )
+                  : LayoutBuilder(
+                      builder: (context, timelineConstraints) {
+                        return _buildPlannerTimeline(
+                          day: selectedPlannerDate,
+                          entries: visiblePlannerEntries,
+                          height: timelineConstraints.maxHeight,
+                        );
+                      },
+                    );
+
+              if (isNarrow) {
+                // The header/context/filters height isn't known up front on
+                // mobile, so give the timeline a fixed height and let the
+                // whole thing scroll instead of squeezing (and clipping)
+                // the timeline into whatever space happens to be left.
+                return SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      ...headerAndFilters,
+                      SizedBox(height: 460, child: timelineContent),
+                    ],
+                  ),
+                );
+              }
+
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  SizedBox(
-                    height: availableHeight > 140 ? 104 : null,
-                    child: SingleChildScrollView(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: _buildPlannerHeaderContent(
-                          context: context,
-                          plannerResult: plannerResult,
-                          effectivePlannerDayOffset: effectivePlannerDayOffset,
-                          maxPlannerOffset: maxPlannerOffset,
-                          selectedPlannerDate: selectedPlannerDate,
-                          dayContext: dayContext,
-                          executionSummary: executionSummary,
-                          filteredTasks: filteredTasks,
-                          visiblePlannerEntries: visiblePlannerEntries,
-                          onPlannerDayOffsetChanged: onPlannerDayOffsetChanged,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  _buildContextSection(
-                    context,
-                    dayContext,
-                    width: double.infinity,
-                  ),
-                  const SizedBox(height: 8),
-                  _buildTimelineFilters(),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: visiblePlannerEntries.isEmpty
-                        ? Center(
-                            child: Text(
-                              'Nothing to show with current filters.',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey.shade700,
-                              ),
-                            ),
-                          )
-                        : LayoutBuilder(
-                            builder: (context, timelineConstraints) {
-                              return _buildPlannerTimeline(
-                                day: selectedPlannerDate,
-                                entries: visiblePlannerEntries,
-                                height: timelineConstraints.maxHeight,
-                              );
-                            },
-                          ),
-                  ),
+                  ...headerAndFilters,
+                  Expanded(child: timelineContent),
                 ],
               );
             },
@@ -2102,80 +2120,80 @@ class DayPlannerSection extends StatelessWidget {
     );
   }
 
-  Widget _buildTimelineFilters() {
-    return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
+  Widget _buildTimelineFilters(BuildContext context) {
+    final chips = [
+      _buildPlannerToggleChip(
+        label: 'Work calendar',
+        selected: showWorkCalendarInPlanner,
+        chipColor: const Color(0xFFD95F02),
+        onChanged: onShowWorkCalendarInPlannerChanged ?? (_) {},
+        width: 128,
+      ),
+      _buildPlannerToggleChip(
+        label: 'Work tasks',
+        selected: showWorkTasksInPlanner,
+        chipColor: const Color(0xFFF28E2B),
+        onChanged: onShowWorkTasksInPlannerChanged ?? (_) {},
+        width: 128,
+      ),
+      _buildPlannerToggleChip(
+        label: 'Home calendar',
+        selected: showHomeCalendarInPlanner,
+        chipColor: const Color(0xFF124B8A),
+        onChanged: onShowHomeCalendarInPlannerChanged ?? (_) {},
+        width: 128,
+      ),
+      _buildPlannerToggleChip(
+        label: 'Home tasks',
+        selected: showHomeTasksInPlanner,
+        chipColor: const Color(0xFF0D3B6E),
+        onChanged: onShowHomeTasksInPlannerChanged ?? (_) {},
+        width: 128,
+      ),
+      _buildPlannerToggleChip(
+        label: 'Movement',
+        selected: showMovementInPlanner,
+        chipColor: const Color(0xFF2E8B57),
+        onChanged: onShowMovementInPlannerChanged,
+        width: 128,
+      ),
+      _buildPlannerToggleChip(
+        label: 'Personal',
+        selected: showPersonalInPlanner,
+        chipColor: const Color(0xFFB23A48),
+        onChanged: onShowPersonalInPlannerChanged,
+        width: 128,
+      ),
+      _buildPlannerToggleChip(
+        label: 'Break',
+        selected: showBreakInPlanner,
+        chipColor: const Color(0xFF455A64),
+        onChanged: onShowBreakInPlannerChanged,
+        width: 128,
+      ),
+    ];
+
+    // Chips wrap to fit the available width instead of scrolling
+    // horizontally, and the whole filter list collapses by default.
+    return Material(
+      type: MaterialType.transparency,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          initiallyExpanded: false,
+          dense: true,
+          visualDensity: VisualDensity.compact,
+          minTileHeight: 32,
+          tilePadding: EdgeInsets.zero,
+          childrenPadding: const EdgeInsets.only(bottom: 8),
+          expandedAlignment: Alignment.centerLeft,
+          expandedCrossAxisAlignment: CrossAxisAlignment.start,
+          title: const Text(
             'Timeline filters',
             style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700),
           ),
-          const SizedBox(height: 4),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                _buildPlannerToggleChip(
-                  label: 'Work calendar',
-                  selected: showWorkCalendarInPlanner,
-                  chipColor: const Color(0xFFD95F02),
-                  onChanged: onShowWorkCalendarInPlannerChanged ?? (_) {},
-                  width: 128,
-                ),
-                const SizedBox(width: 2),
-                _buildPlannerToggleChip(
-                  label: 'Work tasks',
-                  selected: showWorkTasksInPlanner,
-                  chipColor: const Color(0xFFF28E2B),
-                  onChanged: onShowWorkTasksInPlannerChanged ?? (_) {},
-                  width: 128,
-                ),
-                const SizedBox(width: 2),
-                _buildPlannerToggleChip(
-                  label: 'Home calendar',
-                  selected: showHomeCalendarInPlanner,
-                  chipColor: const Color(0xFF124B8A),
-                  onChanged: onShowHomeCalendarInPlannerChanged ?? (_) {},
-                  width: 128,
-                ),
-                const SizedBox(width: 2),
-                _buildPlannerToggleChip(
-                  label: 'Home tasks',
-                  selected: showHomeTasksInPlanner,
-                  chipColor: const Color(0xFF0D3B6E),
-                  onChanged: onShowHomeTasksInPlannerChanged ?? (_) {},
-                  width: 128,
-                ),
-                const SizedBox(width: 2),
-                _buildPlannerToggleChip(
-                  label: 'Movement',
-                  selected: showMovementInPlanner,
-                  chipColor: const Color(0xFF2E8B57),
-                  onChanged: onShowMovementInPlannerChanged,
-                  width: 128,
-                ),
-                const SizedBox(width: 2),
-                _buildPlannerToggleChip(
-                  label: 'Personal',
-                  selected: showPersonalInPlanner,
-                  chipColor: const Color(0xFFB23A48),
-                  onChanged: onShowPersonalInPlannerChanged,
-                  width: 128,
-                ),
-                const SizedBox(width: 2),
-                _buildPlannerToggleChip(
-                  label: 'Break',
-                  selected: showBreakInPlanner,
-                  chipColor: const Color(0xFF455A64),
-                  onChanged: onShowBreakInPlannerChanged,
-                  width: 128,
-                ),
-              ],
-            ),
-          ),
-        ],
+          children: [Wrap(spacing: 4, runSpacing: 4, children: chips)],
+        ),
       ),
     );
   }
@@ -2224,117 +2242,124 @@ class DayPlannerSection extends StatelessWidget {
     DayContext dayContext, {
     double? width,
   }) {
+    final dayContextColumn = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Day context',
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            color: Colors.black,
+          ),
+        ),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            _buildPlannerToggleChip(
+              label: dayContext.gymMorning ? 'Gym morning' : 'No Gym',
+              selected: dayContext.gymMorning,
+              chipColor: Colors.deepOrange,
+              onChanged: onGymAvailableChanged,
+            ),
+            _buildPlannerToggleChip(
+              label: dayContext.workLocation == WorkLocation.home
+                  ? 'WFH'
+                  : 'Office',
+              selected: dayContext.workLocation == WorkLocation.home,
+              chipColor: Colors.blue,
+              onChanged: onWfhAvailableChanged,
+            ),
+            _buildPlannerToggleChip(
+              label: dayContext.eveningAvailable
+                  ? 'Evening Available'
+                  : 'Evening Unavailable',
+              selected: dayContext.eveningAvailable,
+              chipColor: Colors.teal,
+              onChanged: onEveningAvailableChanged,
+            ),
+          ],
+        ),
+      ],
+    );
+    final workWindowColumn = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Work window',
+          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700),
+        ),
+        Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 6,
+          runSpacing: 4,
+          children: [
+            OutlinedButton(
+              onPressed: () => _pickWorkdayTime(context, isStart: true),
+              child: Text(_formatMinutes(workdayStartMinutes)),
+            ),
+            const Text('to', style: TextStyle(fontSize: 10)),
+            OutlinedButton(
+              onPressed: () => _pickWorkdayTime(context, isStart: false),
+              child: Text(_formatMinutes(workdayEndMinutes)),
+            ),
+          ],
+        ),
+      ],
+    );
+
+    final contextContent = isNarrow
+        ? Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              dayContextColumn,
+              const SizedBox(height: 10),
+              workWindowColumn,
+            ],
+          )
+        : SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                dayContextColumn,
+                const SizedBox(width: 10),
+                SizedBox(
+                  height: 38,
+                  child: VerticalDivider(
+                    width: 1,
+                    thickness: 1,
+                    color: Colors.blueGrey.shade200,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                workWindowColumn,
+              ],
+            ),
+          );
+
     return SizedBox(
       width: width,
       child: Card(
         margin: EdgeInsets.zero,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Row(
-                children: [
-                  Icon(Icons.tune, size: 18),
-                  SizedBox(width: 6),
-                  Text(
-                    'Planner context',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Day context',
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.black,
-                          ),
-                        ),
-                        Row(
-                          children: [
-                            _buildPlannerToggleChip(
-                              label: dayContext.gymMorning
-                                  ? 'Gym morning'
-                                  : 'No Gym',
-                              selected: dayContext.gymMorning,
-                              chipColor: Colors.deepOrange,
-                              onChanged: onGymAvailableChanged,
-                            ),
-                            const SizedBox(width: 6),
-                            _buildPlannerToggleChip(
-                              label:
-                                  dayContext.workLocation == WorkLocation.home
-                                  ? 'WFH'
-                                  : 'Office',
-                              selected:
-                                  dayContext.workLocation == WorkLocation.home,
-                              chipColor: Colors.blue,
-                              onChanged: onWfhAvailableChanged,
-                            ),
-                            const SizedBox(width: 6),
-                            _buildPlannerToggleChip(
-                              label: dayContext.eveningAvailable
-                                  ? 'Evening Available'
-                                  : 'Evening Unavailable',
-                              selected: dayContext.eveningAvailable,
-                              chipColor: Colors.teal,
-                              onChanged: onEveningAvailableChanged,
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(width: 10),
-                    SizedBox(
-                      height: 38,
-                      child: VerticalDivider(
-                        width: 1,
-                        thickness: 1,
-                        color: Colors.blueGrey.shade200,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Work window',
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        Row(
-                          children: [
-                            OutlinedButton(
-                              onPressed: () =>
-                                  _pickWorkdayTime(context, isStart: true),
-                              child: Text(_formatMinutes(workdayStartMinutes)),
-                            ),
-                            const Text('to', style: TextStyle(fontSize: 10)),
-                            OutlinedButton(
-                              onPressed: () =>
-                                  _pickWorkdayTime(context, isStart: false),
-                              child: Text(_formatMinutes(workdayEndMinutes)),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
+        child: Theme(
+          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+          child: ExpansionTile(
+            initiallyExpanded: false,
+            dense: true,
+            visualDensity: VisualDensity.compact,
+            minTileHeight: 32,
+            tilePadding: const EdgeInsets.symmetric(horizontal: 10),
+            childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+            expandedAlignment: Alignment.centerLeft,
+            expandedCrossAxisAlignment: CrossAxisAlignment.start,
+            leading: const Icon(Icons.tune, size: 16),
+            title: const Text(
+              'Planner context',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+            ),
+            children: [contextContent],
           ),
         ),
       ),
@@ -2390,16 +2415,6 @@ class DayPlannerSection extends StatelessWidget {
           ],
           nextActionWidget,
           const SizedBox(height: 14),
-          _buildSectionLabel('Timeline'),
-          SizedBox(
-            height: 420,
-            child: _buildPlannerTimeline(
-              day: selectedPlannerDate,
-              entries: visiblePlannerEntries,
-              height: 420,
-            ),
-          ),
-          const SizedBox(height: 14),
           _buildSectionLabel('Today'),
           Text(
             plannerResult.summary,
@@ -2446,20 +2461,37 @@ class DayPlannerSection extends StatelessWidget {
     required ValueChanged<int> onPlannerDayOffsetChanged,
   }) {
     return [
-      Row(
-        children: [
-          const Icon(Icons.view_timeline_outlined, size: 18),
-          const SizedBox(width: 6),
-          const Text(
-            'Daily Timeline',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-          ),
-        ],
-      ),
-      const SizedBox(height: 12),
+      if (showHeaderTitle) ...[
+        Row(
+          children: [
+            const Icon(Icons.view_timeline_outlined, size: 18),
+            const SizedBox(width: 6),
+            const Text(
+              'Daily Timeline',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+      ],
       LayoutBuilder(
         builder: (context, constraints) {
-          final dateWidth = constraints.maxWidth * 0.25;
+          const dateStyle = TextStyle(
+            fontSize: 14,
+            color: Colors.black,
+            fontWeight: FontWeight.w800,
+          );
+          // Size the date box exactly to its text instead of a fixed
+          // percentage, so the Today/replan/add buttons keep their space.
+          final datePainter = TextPainter(
+            text: TextSpan(
+              text: formatPlannerDate(context, selectedPlannerDate),
+              style: dateStyle,
+            ),
+            maxLines: 1,
+            textDirection: TextDirection.ltr,
+          )..layout();
+          final dateWidth = datePainter.width + 8;
           return Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
             decoration: BoxDecoration(
@@ -2472,10 +2504,11 @@ class DayPlannerSection extends StatelessWidget {
                 IconButton(
                   tooltip: 'Previous day',
                   visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.chevron_left, size: 24),
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.chevron_left, size: 20),
                   constraints: const BoxConstraints(
-                    minWidth: 32,
-                    minHeight: 32,
+                    minWidth: 26,
+                    minHeight: 26,
                   ),
                   onPressed: effectivePlannerDayOffset > 0
                       ? () => onPlannerDayOffsetChanged(
@@ -2488,21 +2521,20 @@ class DayPlannerSection extends StatelessWidget {
                   child: Text(
                     formatPlannerDate(context, selectedPlannerDate),
                     textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      color: Colors.black,
-                      fontWeight: FontWeight.w800,
-                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: dateStyle,
                   ),
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: 2),
                 IconButton(
                   tooltip: 'Next day',
                   visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.chevron_right, size: 24),
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.chevron_right, size: 20),
                   constraints: const BoxConstraints(
-                    minWidth: 32,
-                    minHeight: 32,
+                    minWidth: 26,
+                    minHeight: 26,
                   ),
                   onPressed: effectivePlannerDayOffset < maxPlannerOffset
                       ? () => onPlannerDayOffsetChanged(
@@ -2510,7 +2542,7 @@ class DayPlannerSection extends StatelessWidget {
                         )
                       : null,
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: 4),
                 OutlinedButton(
                   onPressed: effectivePlannerDayOffset > 0
                       ? () => onPlannerDayOffsetChanged(0)
@@ -2518,16 +2550,34 @@ class DayPlannerSection extends StatelessWidget {
                   style: OutlinedButton.styleFrom(
                     visualDensity: VisualDensity.compact,
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
+                      horizontal: 8,
+                      vertical: 4,
                     ),
                   ),
                   child: const Text('Today'),
                 ),
                 const Spacer(),
+                if (onReplanFromNow != null)
+                  IconButton(
+                    tooltip: 'Replan day from now',
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    icon: const Icon(Icons.update, size: 20),
+                    constraints: const BoxConstraints(
+                      minWidth: 26,
+                      minHeight: 26,
+                    ),
+                    onPressed: onReplanFromNow,
+                  ),
                 IconButton(
                   tooltip: 'Add personal block',
-                  icon: const Icon(Icons.add_box_outlined),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.add_box_outlined, size: 20),
+                  constraints: const BoxConstraints(
+                    minWidth: 26,
+                    minHeight: 26,
+                  ),
                   onPressed: () =>
                       _showAddPersonalBlockDialog(context, selectedPlannerDate),
                 ),

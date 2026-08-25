@@ -24,50 +24,59 @@ class HomeHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget buildActions(BoxConstraints constraints) {
-      return SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(minWidth: constraints.maxWidth),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              syncBadge,
-              const SizedBox(width: 8),
-              IconButton(
-                icon: const Icon(Icons.undo),
-                tooltip: 'Undo last action',
-                visualDensity: VisualDensity.compact,
-                onPressed: isBusy ? null : onUndo,
+    Widget buildActions() {
+      return LayoutBuilder(
+        builder: (context, actionsConstraints) {
+          // Measure the actual space allocated to the actions row itself
+          // (not the whole header) so right-aligned buttons aren't pushed
+          // out of view when this sits beside the tabs in a wide Row.
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                minWidth: actionsConstraints.maxWidth,
               ),
-              OutlinedButton.icon(
-                icon: const Icon(Icons.calendar_month, size: 18),
-                label: const Text('Sync Outlook'),
-                style: OutlinedButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                ),
-                onPressed: isBusy ? null : onOutlookTap,
-              ),
-              if (showImportCalendar)
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.upload_file_outlined, size: 18),
-                  label: const Text('Upload ICS'),
-                  style: OutlinedButton.styleFrom(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  syncBadge,
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.undo),
+                    tooltip: 'Undo last action',
                     visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    onPressed: isBusy ? null : onUndo,
                   ),
-                  onPressed: isBusy ? null : onImportCalendar,
-                ),
-              IconButton(
-                icon: const Icon(Icons.settings),
-                tooltip: 'Settings',
-                visualDensity: VisualDensity.compact,
-                onPressed: onSettingsTap,
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.calendar_month, size: 18),
+                    label: const Text('Sync Outlook'),
+                    style: OutlinedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                    onPressed: isBusy ? null : onOutlookTap,
+                  ),
+                  if (showImportCalendar)
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.upload_file_outlined, size: 18),
+                      label: const Text('Upload ICS'),
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      ),
+                      onPressed: isBusy ? null : onImportCalendar,
+                    ),
+                  IconButton(
+                    icon: const Icon(Icons.settings),
+                    tooltip: 'Settings',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: onSettingsTap,
+                  ),
+                ],
               ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       );
     }
 
@@ -76,18 +85,14 @@ class HomeHeader extends StatelessWidget {
         if (constraints.maxWidth < 900) {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              tabs,
-              const SizedBox(height: 6),
-              buildActions(constraints),
-            ],
+            children: [tabs, const SizedBox(height: 6), buildActions()],
           );
         }
         return Row(
           children: [
             Expanded(child: tabs),
             const SizedBox(width: 8),
-            Expanded(child: buildActions(constraints)),
+            Expanded(child: buildActions()),
           ],
         );
       },

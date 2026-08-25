@@ -17,8 +17,37 @@ class OutlookFormattingService {
     return MaterialLocalizations.of(context).formatShortDate(value);
   }
 
+  static const List<String> _weekdayAbbreviations = [
+    'Mon',
+    'Tue',
+    'Wed',
+    'Thu',
+    'Fri',
+    'Sat',
+    'Sun',
+  ];
+
+  static const List<String> _monthAbbreviations = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+
   static String formatPlannerDate(BuildContext context, DateTime value) {
-    return MaterialLocalizations.of(context).formatFullDate(value);
+    final weekday = _weekdayAbbreviations[value.weekday - 1];
+    final day = value.day.toString().padLeft(2, '0');
+    final month = _monthAbbreviations[value.month - 1];
+    final year = (value.year % 100).toString().padLeft(2, '0');
+    return '$weekday, $day-$month-$year';
   }
 
   static String formatOutlookEventTimeRange(OutlookCalendarEvent event) {

@@ -233,6 +233,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   int outlookLookAheadDays = 1;
   int plannerDayOffset = 0;
   DateTime? plannerPlanningStart;
+  bool mobileDashboardPreviewExpanded = false;
+  bool mobileTimelineExpanded = true;
   int plannerWorkdayStartMinutes = 9 * 60;
   int plannerWorkdayEndMinutes = 17 * 60;
   TimeGrid plannerTimeGrid = TimeGrid.thirtyMinutes;
@@ -273,7 +275,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   @override
   void initState() {
     super.initState();
-    plannerPlanningStart = DateTime.now();
     upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
     unawaited(_refreshFirebaseSyncStatus());
     unawaited(_maybeCompleteOutlookAuthFromCurrentUrl());
@@ -1906,18 +1907,18 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           await StorageService.saveRemovedCalendarEventIds(removedCalendarIds);
         }
       }
-
-      if (date.year == DateTime.now().year &&
-          date.month == DateTime.now().month &&
-          date.day == DateTime.now().day) {
-        setState(() => plannerPlanningStart = DateTime.now());
-      }
       try {
         await OneDriveSyncService.deleteExportedCalendarEvent(entry, day: date);
       } catch (error) {
         debugPrint('Planner Outlook deletion skipped: $error');
       }
     });
+  }
+
+  // Manually re-anchors today's plan to start from the current time, instead
+  // of automatically replanning on every launch/delete.
+  void replanFromNow() {
+    setState(() => plannerPlanningStart = DateTime.now());
   }
 
   Map<String, ExecutionState> plannerExecutionStatesForDate(DateTime date) {
@@ -4003,6 +4004,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             onPlannerResultBuilt: isStartupLoading
                 ? null
                 : _syncPlannerResultToPersonalCalendar,
+            onReplanFromNow: plannerDayOffset == 0 ? replanFromNow : null,
             onOpenPlanner: () {
               setState(() {
                 selectedMainSectionIndex = 0;
@@ -4549,7 +4551,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     );
   }
 
-  Widget _buildPlannerExperience({required bool dashboardMode}) {
+  Widget _buildPlannerExperience({
+    required bool dashboardMode,
+    bool showHeaderTitle = true,
+  }) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final isNarrow = constraints.maxWidth < 720;
@@ -4561,10 +4566,12 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         final plannerContext = plannerContextForDate(plannerDate);
         final planner = DayPlannerSection(
           dashboardMode: dashboardMode,
+          showHeaderTitle: showHeaderTitle,
           quickCaptureSection: buildQuickCaptureSection(),
           onPlannerResultBuilt: isStartupLoading
               ? null
               : _syncPlannerResultToPersonalCalendar,
+          onReplanFromNow: plannerDayOffset == 0 ? replanFromNow : null,
           onOpenPlanner: () => setState(() => selectedMainSectionIndex = 0),
           upcomingOutlookEventsFuture: upcomingOutlookEventsFuture,
           loadUpcomingOutlookEvents: _loadUpcomingOutlookEvents,
@@ -4704,22 +4711,90 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     );
   }
 
+  Widget _buildCollapsibleHomeSection({
+    required String title,
+    required IconData icon,
+    required bool expanded,
+    required VoidCallback onToggle,
+    required double expandedHeight,
+    required Widget child,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white.withAlpha(170),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.blueGrey.withAlpha(70), width: 1.2),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            onTap: onToggle,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  Icon(icon, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 22,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (expanded) SizedBox(height: expandedHeight, child: child),
+        ],
+      ),
+    );
+  }
+
   Widget _buildCombinedHomePlanner() {
     return LayoutBuilder(
       builder: (context, constraints) {
         final isWide = constraints.maxWidth >= 900;
         if (!isWide) {
+          // Both sections scroll internally at a generous fixed height when
+          // expanded, and collapse down to just their header when not.
           return SingleChildScrollView(
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                SizedBox(
-                  height: constraints.maxHeight,
+                _buildCollapsibleHomeSection(
+                  title: 'Dashboard',
+                  icon: Icons.dashboard_outlined,
+                  expanded: mobileDashboardPreviewExpanded,
+                  onToggle: () => setState(
+                    () => mobileDashboardPreviewExpanded =
+                        !mobileDashboardPreviewExpanded,
+                  ),
+                  expandedHeight: 300,
                   child: _buildPlannerExperience(dashboardMode: true),
                 ),
                 const SizedBox(height: 12),
-                SizedBox(
-                  height: constraints.maxHeight,
-                  child: _buildPlannerExperience(dashboardMode: false),
+                _buildCollapsibleHomeSection(
+                  title: 'Daily Timeline',
+                  icon: Icons.view_timeline_outlined,
+                  expanded: mobileTimelineExpanded,
+                  onToggle: () => setState(
+                    () => mobileTimelineExpanded = !mobileTimelineExpanded,
+                  ),
+                  expandedHeight: 650,
+                  child: _buildPlannerExperience(
+                    dashboardMode: false,
+                    showHeaderTitle: false,
+                  ),
                 ),
               ],
             ),
