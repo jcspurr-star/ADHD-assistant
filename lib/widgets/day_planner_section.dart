@@ -1162,80 +1162,87 @@ class DayPlannerSection extends StatelessWidget {
               width: isCalendar ? 2.5 : 1,
             ),
           ),
-          child: Row(
-            children: [
-              Container(
-                width: 5,
-                height: entry.isZeroDuration ? 16 : 18,
-                decoration: BoxDecoration(
-                  color: color,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-              const SizedBox(width: 7),
-              Text(
-                timeText,
-                maxLines: 1,
-                style: TextStyle(
-                  fontSize: 9,
-                  color: Colors.grey.shade700,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  entry.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    decoration: isCompleted || isDismissed
-                        ? TextDecoration.lineThrough
-                        : null,
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.only(left: 4, right: 2),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 86),
-                  child: Text(
-                    categoryLabel,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 9,
-                      fontWeight: FontWeight.w700,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final showInlineDetails = constraints.maxWidth >= 220;
+              return Row(
+                children: [
+                  Container(
+                    width: 5,
+                    height: entry.isZeroDuration ? 16 : 18,
+                    decoration: BoxDecoration(
                       color: color,
+                      borderRadius: BorderRadius.circular(8),
                     ),
                   ),
-                ),
-              ),
-              if (isExcludedFromPlanning)
-                const Tooltip(
-                  message: 'Excluded from planning',
-                  child: Icon(
-                    Icons.visibility_off_outlined,
-                    size: 15,
-                    color: Colors.blueGrey,
+                  if (showInlineDetails) ...[
+                    const SizedBox(width: 7),
+                    Text(
+                      timeText,
+                      maxLines: 1,
+                      style: TextStyle(
+                        fontSize: 9,
+                        color: Colors.grey.shade700,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  Expanded(
+                    child: Text(
+                      entry.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        decoration: isCompleted || isDismissed
+                            ? TextDecoration.lineThrough
+                            : null,
+                      ),
+                    ),
                   ),
-                ),
-              Builder(
-                builder: (buttonContext) => IconButton(
-                  tooltip: 'Activity actions',
-                  visualDensity: VisualDensity.compact,
-                  padding: EdgeInsets.zero,
-                  constraints: BoxConstraints.tightFor(
-                    width: entry.isZeroDuration ? 22 : 24,
-                    height: entry.isZeroDuration ? 22 : 24,
+                  if (showInlineDetails)
+                    Flexible(
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 4, right: 2),
+                        child: Text(
+                          categoryLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                            color: color,
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (isExcludedFromPlanning)
+                    const Tooltip(
+                      message: 'Excluded from planning',
+                      child: Icon(
+                        Icons.visibility_off_outlined,
+                        size: 15,
+                        color: Colors.blueGrey,
+                      ),
+                    ),
+                  Builder(
+                    builder: (buttonContext) => IconButton(
+                      tooltip: 'Activity actions',
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints: BoxConstraints.tightFor(
+                        width: entry.isZeroDuration ? 22 : 24,
+                        height: entry.isZeroDuration ? 22 : 24,
+                      ),
+                      icon: const Icon(Icons.more_horiz, size: 18),
+                      onPressed: () => showActions(buttonContext),
+                    ),
                   ),
-                  icon: const Icon(Icons.more_horiz, size: 18),
-                  onPressed: () => showActions(buttonContext),
-                ),
-              ),
-            ],
+                ],
+              );
+            },
           ),
         ),
       ),
@@ -2382,6 +2389,16 @@ class DayPlannerSection extends StatelessWidget {
             const SizedBox(height: 14),
           ],
           nextActionWidget,
+          const SizedBox(height: 14),
+          _buildSectionLabel('Timeline'),
+          SizedBox(
+            height: 420,
+            child: _buildPlannerTimeline(
+              day: selectedPlannerDate,
+              entries: visiblePlannerEntries,
+              height: 420,
+            ),
+          ),
           const SizedBox(height: 14),
           _buildSectionLabel('Today'),
           Text(

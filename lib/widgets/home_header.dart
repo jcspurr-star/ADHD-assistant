@@ -6,6 +6,7 @@ class HomeHeader extends StatelessWidget {
     required this.tabs,
     required this.syncBadge,
     required this.isBusy,
+    required this.showImportCalendar,
     required this.onUndo,
     required this.onOutlookTap,
     required this.onImportCalendar,
@@ -15,6 +16,7 @@ class HomeHeader extends StatelessWidget {
   final Widget tabs;
   final Widget syncBadge;
   final bool isBusy;
+  final bool showImportCalendar;
   final VoidCallback onUndo;
   final VoidCallback onOutlookTap;
   final VoidCallback onImportCalendar;
@@ -47,15 +49,16 @@ class HomeHeader extends StatelessWidget {
                 ),
                 onPressed: isBusy ? null : onOutlookTap,
               ),
-              OutlinedButton.icon(
-                icon: const Icon(Icons.upload_file_outlined, size: 18),
-                label: const Text('Upload ICS'),
-                style: OutlinedButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
+              if (showImportCalendar)
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.upload_file_outlined, size: 18),
+                  label: const Text('Upload ICS'),
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  onPressed: isBusy ? null : onImportCalendar,
                 ),
-                onPressed: isBusy ? null : onImportCalendar,
-              ),
               IconButton(
                 icon: const Icon(Icons.settings),
                 tooltip: 'Settings',

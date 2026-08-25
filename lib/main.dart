@@ -4771,6 +4771,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                 children: [
                   HomeHeader(
                     isBusy: isAppBusy,
+                    showImportCalendar:
+                        kIsWeb ||
+                        (defaultTargetPlatform != TargetPlatform.android &&
+                            defaultTargetPlatform != TargetPlatform.iOS),
                     tabs: MainSectionTabs(
                       selectedIndex: selectedMainSectionIndex,
                       onSelectIndex: (index) {
