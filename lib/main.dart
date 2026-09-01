@@ -2574,8 +2574,22 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   }
 
   bool plannerHasFrozenPlan(DateTime date) {
-    final raw = dailyCheckinsByDate[getDateKey(date)]?['plannerFrozenAt'];
-    return raw is String && raw.isNotEmpty;
+    final checkin = dailyCheckinsByDate[getDateKey(date)];
+    final frozenAt = checkin?['plannerFrozenAt'];
+    if (frozenAt is! String || frozenAt.isEmpty) {
+      return false;
+    }
+    final entries = parseStringList(checkin?['plannerFrozenEntries']);
+    try {
+      for (final entry in entries) {
+        DayPlannerEntry.fromJson(
+          Map<String, dynamic>.from(jsonDecode(entry) as Map),
+        );
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   List<DayPlannerEntry> plannerFrozenEntriesForDate(DateTime date) {

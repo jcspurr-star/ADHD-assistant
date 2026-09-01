@@ -37,6 +37,7 @@ class DayPlannerEntry {
     'relatedTaskIds': relatedTaskIds,
     'isAllDay': isAllDay,
     'isConcurrent': isConcurrent,
+    'isLocked': isLocked,
     'category': category.name,
     'isZeroDuration': isZeroDuration,
     'labels': labels,
@@ -67,6 +68,7 @@ class DayPlannerEntry {
       relatedTaskIds: relatedTaskIds,
       isAllDay: json['isAllDay'] == true,
       isConcurrent: json['isConcurrent'] == true,
+      isLocked: json['isLocked'] == true,
       category: PlannerEventCategory.values.firstWhere(
         (value) => value.name == json['category'],
         orElse: () => PlannerEventCategory.planned,

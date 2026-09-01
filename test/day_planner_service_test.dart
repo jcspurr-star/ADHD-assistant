@@ -18,6 +18,60 @@ const _officeDayContext = DayContext(
 );
 
 void main() {
+  test('frozen planner entries round trip their lock state', () {
+    final original = DayPlannerEntry(
+      id: 'locked-focus',
+      title: 'Focus Time',
+      type: 'focus',
+      start: DateTime(2024, 1, 2, 9),
+      end: DateTime(2024, 1, 2, 10),
+      isLocked: true,
+    );
+
+    final restored = DayPlannerEntry.fromJson(original.toJson());
+
+    expect(restored.id, original.id);
+    expect(restored.start, original.start);
+    expect(restored.end, original.end);
+    expect(restored.isLocked, isTrue);
+  });
+
+  test('entry overrides retain time, lock, and activity together', () {
+    final task = Task(
+      id: 'replacement-task',
+      task: 'Send project update',
+      priority: 'high',
+    );
+    final entry = DayPlannerEntry(
+      id: 'personal-slot',
+      title: 'Personal block',
+      type: 'personal',
+      start: DateTime(2024, 1, 2, 9),
+      end: DateTime(2024, 1, 2, 10),
+    );
+
+    final updated = DayPlannerService.applyEntryOverrides(
+      [entry],
+      const {
+        'personal-slot': PlannerEntryOverride(
+          startMinutes: 10 * 60,
+          endMinutes: 10 * 60 + 30,
+          locked: true,
+          taskId: 'replacement-task',
+        ),
+      },
+      DateTime(2024, 1, 2, 9),
+      DateTime(2024, 1, 2, 17),
+      resolveTask: (id) => id == task.id ? task : null,
+    ).single;
+
+    expect(updated.start, DateTime(2024, 1, 2, 10));
+    expect(updated.end, DateTime(2024, 1, 2, 10, 30));
+    expect(updated.isLocked, isTrue);
+    expect(updated.type, 'task');
+    expect(updated.relatedTaskIds, ['replacement-task']);
+  });
+
   test('deleted lunch breaks are not recreated during replanning', () {
     final result = DayPlannerService.buildPlan(
       tasks: const <Task>[],
@@ -433,46 +487,49 @@ void main() {
     },
   );
 
-  test('absolute-priority tasks claim their full effort before other tasks', () {
-    final result = DayPlannerService.buildPlan(
-      tasks: [
-        Task(
-          id: 'normal-task',
-          task: 'Normal task',
-          priority: 'high',
-          doDate: '2024-01-02',
-          nextSessionEffortMinutes: 30,
-        ),
-        Task(
-          id: 'absolute-task',
-          task: 'Absolute task',
-          priority: 'low',
-          dueDate: '2024-01-05',
-          effortMinutes: 120,
-          nextSessionEffortMinutes: 30,
-          absolutePriority: true,
-        ),
-      ],
-      calendarEvents: const <OutlookCalendarEvent>[],
-      day: DateTime(2024, 1, 2),
-    );
+  test(
+    'absolute-priority tasks claim their full effort before other tasks',
+    () {
+      final result = DayPlannerService.buildPlan(
+        tasks: [
+          Task(
+            id: 'normal-task',
+            task: 'Normal task',
+            priority: 'high',
+            doDate: '2024-01-02',
+            nextSessionEffortMinutes: 30,
+          ),
+          Task(
+            id: 'absolute-task',
+            task: 'Absolute task',
+            priority: 'low',
+            dueDate: '2024-01-05',
+            effortMinutes: 120,
+            nextSessionEffortMinutes: 30,
+            absolutePriority: true,
+          ),
+        ],
+        calendarEvents: const <OutlookCalendarEvent>[],
+        day: DateTime(2024, 1, 2),
+      );
 
-    final absoluteSessions = result.entries
-        .where((entry) => entry.task?.id == 'absolute-task')
-        .toList();
-    expect(absoluteSessions, hasLength(2));
-    expect(
-      absoluteSessions.fold<int>(
-        0,
-        (total, entry) => total + entry.end.difference(entry.start).inMinutes,
-      ),
-      120,
-    );
-    expect(
-      result.entries.firstWhere((entry) => entry.type == 'task').task?.id,
-      'absolute-task',
-    );
-  });
+      final absoluteSessions = result.entries
+          .where((entry) => entry.task?.id == 'absolute-task')
+          .toList();
+      expect(absoluteSessions, hasLength(2));
+      expect(
+        absoluteSessions.fold<int>(
+          0,
+          (total, entry) => total + entry.end.difference(entry.start).inMinutes,
+        ),
+        120,
+      );
+      expect(
+        result.entries.firstWhere((entry) => entry.type == 'task').task?.id,
+        'absolute-task',
+      );
+    },
+  );
 
   test(
     'buildPlan omits a task flagged excludeWhenOverdue once its due date has passed',
