@@ -82,7 +82,7 @@ void main() {
     );
   });
 
-  test('work diary export selects only imported work calendar events', () {
+  test('exportable events include both work and home imported events', () {
     final events = [
       OutlookCalendarEvent(
         id: 'work-1',
@@ -100,13 +100,21 @@ void main() {
         isAllDay: false,
         calendarSource: 'home',
       ),
+      OutlookCalendarEvent(
+        id: 'no-start',
+        subject: 'Missing start',
+        start: null,
+        end: null,
+        isAllDay: false,
+        calendarSource: 'home',
+      ),
     ];
 
     expect(
       OneDriveSyncService.workCalendarEventsToExport(
         events,
       ).map((event) => event.id),
-      ['work-1'],
+      ['work-1', 'home-1'],
     );
   });
 

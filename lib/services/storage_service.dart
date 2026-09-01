@@ -33,10 +33,11 @@ class StorageService {
   static const String _activityLogsKey = 'activity_logs';
   static const String _removedCalendarEventIdsKey =
       'removed_calendar_event_ids';
+  static const String _removedCalendarEventKeysKey =
+      'removed_calendar_event_keys';
   static const String _dailyCheckinsByDateKey = 'daily_checkins_by_date';
   static const String _legacySymptomRatingsByDateKey =
       'symptom_ratings_by_date';
-  static const String _symptomRatingsByDateKey = 'symptom_ratings_by_date';
   static const String _categoriesKey = 'categories';
   static const String _starterPromptKey = 'starter_step_prompt';
   static const String _taskSubtaskPromptKey = 'task_subtask_prompt';
@@ -66,6 +67,8 @@ class StorageService {
       'dopamine_crash_symptom_options';
   static const String _dopamineCrashAdditionalSymptomOptionsKey =
       'dopamine_crash_additional_symptom_options';
+  static const String _wfhActivityOptionsKey = 'wfh_activity_options';
+  static const String _officeActivityOptionsKey = 'office_activity_options';
   static const String _updatedAtKey = 'app_state_updated_at_utc';
   static const String _sourceDeviceKey = 'app_state_source_device';
   static const String _localBackupKey = 'app_state_local_backup';
@@ -544,6 +547,7 @@ class StorageService {
           'isAllDay': event.isAllDay,
           'calendarSource': event.calendarSource,
           'labels': event.labels,
+          'isPrivate': event.isPrivate,
         };
       }).toList(),
     );
@@ -619,9 +623,35 @@ class StorageService {
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }
 
+  // Companion to `removedCalendarEventIds`, keyed by `calendarEventIdentityKey`
+  // (title/time based) instead of a source-specific `id`. Needed because
+  // `dedupeCalendarEvents` can pick a DIFFERENT winning source/id for the
+  // same real-world event after a re-import (e.g. an ICS re-import now
+  // outscoring a previously-preferred live copy), which would otherwise
+  // silently un-delete a previously-removed event since its `id` no longer
+  // matches what the user actually removed.
+  static Future<Set<String>> loadRemovedCalendarEventKeys() async {
+    final prefs = await SharedPreferences.getInstance();
+    return (prefs.getStringList(_removedCalendarEventKeysKey) ??
+            const <String>[])
+        .toSet();
+  }
+
+  static Future<void> saveRemovedCalendarEventKeys(Set<String> keys) async {
+    await _captureUndoSnapshot();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _removedCalendarEventKeysKey,
+      keys.toList()..sort(),
+    );
+    await _touchStateMetadata(prefs);
+    unawaited(_pushCurrentStateToCloudIfAvailable());
+  }
+
   static Future<void> clearRemovedCalendarEventIds() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_removedCalendarEventIdsKey);
+    await prefs.remove(_removedCalendarEventKeysKey);
     final raw = prefs.getString(_dailyCheckinsByDateKey);
     if (raw != null && raw.trim().isNotEmpty) {
       try {
@@ -636,7 +666,6 @@ class StorageService {
         }
         final encoded = jsonEncode(decoded);
         await prefs.setString(_dailyCheckinsByDateKey, encoded);
-        await prefs.setString(_symptomRatingsByDateKey, encoded);
       } catch (_) {
         // Leave existing state untouched if an old record cannot be decoded.
       }
@@ -702,6 +731,7 @@ class StorageService {
               .map((label) => label.toString().trim())
               .where((label) => label.isNotEmpty)
               .toList(),
+          isPrivate: eventMap['isPrivate'] == true,
         );
       }).toList();
     } catch (_) {
@@ -717,22 +747,45 @@ class StorageService {
     final now = DateTime.now();
     final rangeStart = DateTime(now.year, now.month, now.day);
     final rangeEnd = rangeStart.add(lookAhead).add(const Duration(days: 1));
+
+    final inRangeEvents = events.where((event) {
+      if (event.start == null) {
+        return false;
+      }
+      final eventStart = event.start!.toLocal();
+      final effectiveEventEnd = (event.end ?? event.start)!.toLocal();
+      final isInRequestedRange =
+          !effectiveEventEnd.isBefore(rangeStart) &&
+          eventStart.isBefore(rangeEnd);
+      // Keep persisted/imported past events available for planner history,
+      // but stale imported events beyond the requested horizon must still be
+      // dropped — otherwise a superseded ICS import keeps leaking into
+      // future days forever, regardless of the currently configured
+      // look-ahead window.
+      final isPastEvent = effectiveEventEnd.isBefore(rangeStart);
+      return isInRequestedRange || isPastEvent;
+    });
+
+    return dedupeCalendarEvents(inRangeEvents);
+  }
+
+  // Collapses events that represent the SAME real-world appointment but
+  // arrived via two different sources with two different ids (e.g. a live
+  // Outlook fetch AND an ICS import both containing the same meeting) —
+  // matched by subject/start/end rather than id, since the ids never agree
+  // across sources. Used both for the in-app planner/upcoming-events display
+  // AND the manual Outlook export path, so exporting doesn't create
+  // duplicate calendar entries for events that already came from a
+  // different source.
+  static List<OutlookCalendarEvent> dedupeCalendarEvents(
+    Iterable<OutlookCalendarEvent> events,
+  ) {
     final uniqueEvents = <String, OutlookCalendarEvent>{};
 
     for (final event in events) {
       if (event.start == null) {
         continue;
       }
-
-      final eventStart = event.start!.toLocal();
-      final eventEnd = event.end?.toLocal();
-      final effectiveEventEnd = eventEnd ?? eventStart;
-      // Keep persisted/imported past events available for planner history.
-      // Live calendar APIs still control their own returned range.
-      final isInRequestedRange =
-          !effectiveEventEnd.isBefore(rangeStart) &&
-          eventStart.isBefore(rangeEnd);
-      if (!isInRequestedRange && event.id.trim().isEmpty) continue;
 
       final key = _calendarEventMergeKey(event);
       final existing = uniqueEvents[key];
@@ -783,13 +836,44 @@ class StorageService {
   }
 
   static String _calendarEventMergeKey(OutlookCalendarEvent event) {
-    final subject = event.subject.trim().toLowerCase();
+    return calendarEventIdentityKey(
+      isAllDay: event.isAllDay,
+      title: event.subject,
+      start: event.start,
+      end: event.end ?? event.start,
+    );
+  }
+
+  // Public identity key for a calendar-ish event/entry (same real-world
+  // appointment => same key), independent of whichever source's `id` won
+  // out of `dedupeCalendarEvents`. Used to make "remove this calendar
+  // event" resilient to a re-import changing which source/id represents the
+  // same real event — matching purely on `event.id` breaks the moment the
+  // winning source flips.
+  static String calendarEventIdentityKey({
+    required bool isAllDay,
+    required String title,
+    required DateTime? start,
+    required DateTime? end,
+  }) {
+    final subject = title.trim().toLowerCase();
     final normalizedSubject = subject.isEmpty || subject == '(no title)'
         ? '(no title)'
         : subject;
-    final startUtc = event.start?.toUtc();
-    final endUtc = (event.end ?? event.start)?.toUtc();
-    return '${event.isAllDay}|$normalizedSubject|${startUtc?.toIso8601String()}|${endUtc?.toIso8601String()}';
+    final startUtc = _roundedToMinute(start?.toUtc());
+    final endUtc = _roundedToMinute((end ?? start)?.toUtc());
+    return '$isAllDay|$normalizedSubject|${startUtc?.toIso8601String()}|${endUtc?.toIso8601String()}';
+  }
+
+  static DateTime? _roundedToMinute(DateTime? value) {
+    if (value == null) return null;
+    return DateTime(
+      value.year,
+      value.month,
+      value.day,
+      value.hour,
+      value.minute,
+    );
   }
 
   static Future<List<Task>> loadTasks() async {
@@ -822,7 +906,6 @@ class StorageService {
       jsonEncode(tasks.map((t) => t.toJson()).toList()),
     );
     await _touchStateMetadata(prefs);
-    await _createLocalBackupSnapshot(prefs);
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }
 
@@ -841,7 +924,6 @@ class StorageService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_inboxEntriesKey, jsonEncode(entries));
     await _touchStateMetadata(prefs);
-    await _createLocalBackupSnapshot(prefs);
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }
 
@@ -895,9 +977,14 @@ class StorageService {
     final prefs = await SharedPreferences.getInstance();
     final encoded = jsonEncode(checkinsByDate);
     await prefs.setString(_dailyCheckinsByDateKey, encoded);
-    await prefs.setString(_legacySymptomRatingsByDateKey, encoded);
+    // Deliberately NOT also writing `_legacySymptomRatingsByDateKey` anymore —
+    // it's only ever read as a migration fallback (see `loadDailyCheckinsByDate`
+    // above) for installs that predate `_dailyCheckinsByDateKey`. Writing this
+    // (often large, ever-growing) blob to BOTH keys on every single save
+    // doubled local storage usage for no benefit once the modern key exists,
+    // which contributed to hitting the browser's localStorage quota after
+    // importing a large ICS calendar.
     await _touchStateMetadata(prefs);
-    await _createLocalBackupSnapshot(prefs);
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }
 
@@ -921,7 +1008,6 @@ class StorageService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_notesKey, notes);
     await _touchStateMetadata(prefs);
-    await _createLocalBackupSnapshot(prefs);
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }
 
@@ -1183,6 +1269,24 @@ class StorageService {
     await _saveStringList(_dopamineCrashAdditionalSymptomOptionsKey, options);
   }
 
+  static Future<List<String>?> loadWfhActivityOptions() async {
+    return _loadStringList(_wfhActivityOptionsKey);
+  }
+
+  static Future<void> saveWfhActivityOptions(List<String> options) async {
+    await _captureUndoSnapshot();
+    await _saveStringList(_wfhActivityOptionsKey, options);
+  }
+
+  static Future<List<String>?> loadOfficeActivityOptions() async {
+    return _loadStringList(_officeActivityOptionsKey);
+  }
+
+  static Future<void> saveOfficeActivityOptions(List<String> options) async {
+    await _captureUndoSnapshot();
+    await _saveStringList(_officeActivityOptionsKey, options);
+  }
+
   static Future<void> _touchStateMetadata(SharedPreferences prefs) async {
     await prefs.setString(
       _updatedAtKey,
@@ -1308,6 +1412,28 @@ class StorageService {
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }
 
+  // File-based backup: exports/imports the FULL app state as a plain JSON
+  // string, independent of the browser's localStorage — the user keeps the
+  // file themselves (download/save it somewhere durable), so it survives
+  // localStorage quota limits, a cleared browser profile, or accidentally
+  // pointing another instance of the app at the same origin.
+  static Future<String> exportStateAsJson() async {
+    final prefs = await SharedPreferences.getInstance();
+    final state = await _buildStateMapFromPrefs(prefs);
+    return jsonEncode(state);
+  }
+
+  static Future<void> importStateFromJson(String jsonContent) async {
+    final decoded = jsonDecode(jsonContent);
+    if (decoded is! Map) {
+      throw const FormatException('Backup file is not a valid backup.');
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await _applyStateMapToPrefs(prefs, Map<String, dynamic>.from(decoded));
+    await _touchStateMetadata(prefs);
+    unawaited(_pushCurrentStateToCloudIfAvailable());
+  }
+
   static Future<void> mergeMissingBackupEntries({
     required List<Map<String, dynamic>> selectedTasks,
     required List<Map<String, dynamic>> selectedNoteEntries,
@@ -1339,7 +1465,6 @@ class StorageService {
     await prefs.setString(_noteEntriesKey, jsonEncode(mergedNoteEntries));
     await prefs.setString(_inboxEntriesKey, jsonEncode(mergedInboxEntries));
     await _touchStateMetadata(prefs);
-    await _createLocalBackupSnapshot(prefs);
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }
 
@@ -1348,7 +1473,13 @@ class StorageService {
   ) async {
     final state = await _buildStateMapFromPrefs(prefs);
     final timestamp = DateTime.now().toUtc().toIso8601String();
-    final existingHistory = await loadBackupHistory();
+    // Use the LOCAL history only (not `loadBackupHistory()`, which also
+    // fetches the remote copy) so every save doesn't block on a network
+    // round trip — remote history is merged in whenever it's actually read
+    // (e.g. `loadBackupHistory`/restoring), not on every write.
+    final existingHistory = _decodeBackupHistory(
+      prefs.getString(_localBackupHistoryKey),
+    );
     final newEntries = <Map<String, dynamic>>[
       _buildBackupEntry(
         timestamp: timestamp,
@@ -1378,10 +1509,44 @@ class StorageService {
       ...existingHistory,
     ]);
 
-    await prefs.setString(_localBackupKey, jsonEncode(state));
-    await prefs.setString(_localBackupHistoryKey, jsonEncode(history));
-    await prefs.setString(_latestBackupAtKey, timestamp);
-    await FirebaseSyncService.uploadBackupHistory(history);
+    // Backup snapshots are best-effort: on web, SharedPreferences is backed
+    // by localStorage, which has a small per-origin quota (a few MB). A large
+    // app state (e.g. after importing a big ICS calendar) can make the
+    // snapshot history exceed that quota. If that happens, progressively
+    // shrink the history instead of letting the QuotaExceededError bubble up
+    // and block the actual save that triggered this snapshot.
+    var historyToPersist = history;
+    var stored = false;
+    while (!stored) {
+      try {
+        await prefs.setString(_localBackupKey, jsonEncode(state));
+        await prefs.setString(
+          _localBackupHistoryKey,
+          jsonEncode(historyToPersist),
+        );
+        await prefs.setString(_latestBackupAtKey, timestamp);
+        stored = true;
+      } catch (_) {
+        if (historyToPersist.isEmpty) {
+          // Even a single entry (or none) won't fit; give up quietly.
+          break;
+        }
+        // Drop the oldest entry and retry with a smaller payload.
+        historyToPersist = historyToPersist.sublist(
+          0,
+          historyToPersist.length - 1,
+        );
+      }
+    }
+
+    if (stored) {
+      // Push the FULL (pre-shrink) history to the cloud, not the possibly
+      // truncated `historyToPersist` — Firestore isn't bound by the same
+      // tight per-origin localStorage quota, so shrinking to fit the browser
+      // must never also clobber the (more complete) remote copy with fewer
+      // snapshots than it already had.
+      unawaited(FirebaseSyncService.uploadBackupHistory(history));
+    }
   }
 
   static List<Map<String, dynamic>> _decodeBackupHistory(String? raw) {
@@ -1498,6 +1663,24 @@ class StorageService {
     });
   }
 
+  static Map<String, dynamic>? _richestBackupState(
+    List<Map<String, dynamic>> history,
+  ) {
+    Map<String, dynamic>? bestState;
+    for (final entry in history) {
+      final state = entry['state'];
+      if (state is! Map) {
+        continue;
+      }
+      final candidate = Map<String, dynamic>.from(state);
+      if (bestState == null ||
+          _stateRichness(candidate) > _stateRichness(bestState)) {
+        bestState = candidate;
+      }
+    }
+    return bestState;
+  }
+
   static List<Task> _defaultTasks() {
     return [];
   }
@@ -1540,8 +1723,10 @@ class StorageService {
       );
       if (_isEffectivelyBlankState(localState) &&
           _backupHistoryHasRicherState(localHistory, localState)) {
-        if (remoteState != null) {
-          await _applyStateMapToPrefs(prefs, remoteState);
+        final backupState = _richestBackupState(localHistory);
+        if (backupState != null) {
+          await _applyStateMapToPrefs(prefs, backupState);
+          return await FirebaseSyncService.uploadState(backupState);
         }
         return true;
       }
@@ -1565,7 +1750,11 @@ class StorageService {
       }
 
       return await FirebaseSyncService.uploadState(localState);
-    } catch (_) {
+    } catch (error, stackTrace) {
+      // Swallowed so a flaky network never blocks a local read, but logged
+      // so a silent stale-cloud-state desync is diagnosable if reported.
+      debugPrint('StorageService._syncDownThenUp failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
       return false;
     }
   }
@@ -1591,8 +1780,13 @@ class StorageService {
         return;
       }
       await FirebaseSyncService.uploadState(state);
-    } catch (_) {
-      // Keep local storage reliable even when cloud sync fails.
+    } catch (error, stackTrace) {
+      // Keep local storage reliable even when cloud sync fails, but log it —
+      // a silently-failing upload is what lets the cloud backup go stale.
+      debugPrint(
+        'StorageService._pushCurrentStateToCloudIfAvailable failed: $error',
+      );
+      debugPrintStack(stackTrace: stackTrace);
     }
   }
 
@@ -1639,6 +1833,8 @@ class StorageService {
     final dopamineCrashAdditionalSymptomOptionsRaw = prefs.getString(
       _dopamineCrashAdditionalSymptomOptionsKey,
     );
+    final wfhActivityOptionsRaw = prefs.getString(_wfhActivityOptionsKey);
+    final officeActivityOptionsRaw = prefs.getString(_officeActivityOptionsKey);
     final updatedAt = prefs.getString(_updatedAtKey) ?? '';
     final sourceDevice = prefs.getString(_sourceDeviceKey) ?? 'adhd_assistant';
 
@@ -1693,6 +1889,8 @@ class StorageService {
       'dopamine_crash_additional_symptom_options': _decodeStringList(
         dopamineCrashAdditionalSymptomOptionsRaw,
       ),
+      'wfh_activity_options': _decodeStringList(wfhActivityOptionsRaw),
+      'office_activity_options': _decodeStringList(officeActivityOptionsRaw),
       'updated_at_utc': updatedAt,
       'source_device': sourceDevice,
     };
@@ -1761,10 +1959,6 @@ class StorageService {
       _dailyCheckinsByDateKey,
       jsonEncode(dailyCheckinsByDate),
     );
-    await prefs.setString(
-      _symptomRatingsByDateKey,
-      jsonEncode(dailyCheckinsByDate),
-    );
     await prefs.setString(_categoriesKey, jsonEncode(categories));
     await prefs.setString(_starterPromptKey, starterPrompt);
     await prefs.setString(_taskSubtaskPromptKey, taskSubtaskPrompt);
@@ -1831,6 +2025,14 @@ class StorageService {
           state['dopamine_crash_additional_symptom_options'],
         ),
       ),
+    );
+    await prefs.setString(
+      _wfhActivityOptionsKey,
+      jsonEncode(_normalizeStringList(state['wfh_activity_options'])),
+    );
+    await prefs.setString(
+      _officeActivityOptionsKey,
+      jsonEncode(_normalizeStringList(state['office_activity_options'])),
     );
     await prefs.setString(_updatedAtKey, updatedAt);
     await prefs.setString(_sourceDeviceKey, sourceDevice);

@@ -15,6 +15,11 @@ const String oneDriveRedirectUri = 'https://your-app.web.app/outlook-callback';
 const String workCalendarAutoImportPath =
     r'C:\Users\jspurr\OneDrive - Ordnance Survey\MyCalendar.ics';
 
+// Name of the Outlook calendar (must already exist) that the app exports
+// imported events (Outlook sync + ics upload) and generated planner events
+// into.
+const String outlookExportCalendarName = 'YOUR_OUTLOOK_EXPORT_CALENDAR_NAME';
+
 const String firebaseProjectId = 'YOUR_FIREBASE_PROJECT_ID';
 const String firebaseApiKey = 'YOUR_FIREBASE_API_KEY';
 const String firebaseAppId = 'YOUR_FIREBASE_APP_ID';

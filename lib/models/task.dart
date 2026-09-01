@@ -51,8 +51,14 @@ class Task {
   String description;
   String notes;
   List<String> tags;
-  bool archived;
   String? completedAtUtc;
+  bool absolutePriority;
+  // When true, once the due date passes without completion the task stops
+  // appearing in the planner at all (instead of the usual backlog carry-over).
+  bool excludeWhenOverdue;
+  // When true, the task is blocked on someone/something else and is excluded
+  // from planning entirely until the flag is cleared.
+  bool waitingOnOthers;
 
   Task({
     String? id,
@@ -75,8 +81,10 @@ class Task {
     this.description = '',
     this.notes = '',
     List<String>? tags,
-    this.archived = false,
     this.completedAtUtc,
+    this.absolutePriority = false,
+    this.excludeWhenOverdue = false,
+    this.waitingOnOthers = false,
   }) : id = id ?? 'task-${DateTime.now().microsecondsSinceEpoch}',
        aiSubtasks = aiSubtasks ?? [],
        subtasks = subtasks ?? [],
@@ -116,8 +124,10 @@ class Task {
               ?.map((tag) => tag.toString())
               .toList() ??
           [],
-      archived: json["archived"] ?? false,
       completedAtUtc: json["completedAtUtc"],
+          absolutePriority: json["absolutePriority"] ?? false,
+      excludeWhenOverdue: json["excludeWhenOverdue"] ?? false,
+      waitingOnOthers: json["waitingOnOthers"] ?? false,
     );
   }
 
@@ -143,8 +153,10 @@ class Task {
       "description": description,
       "notes": notes,
       "tags": tags,
-      "archived": archived,
       "completedAtUtc": completedAtUtc,
+      "absolutePriority": absolutePriority,
+      "excludeWhenOverdue": excludeWhenOverdue,
+      "waitingOnOthers": waitingOnOthers,
     };
   }
 }

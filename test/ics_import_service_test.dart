@@ -70,6 +70,39 @@ END:VCALENDAR''';
       expect(events.single.labels, ['Important', 'Project']);
     });
 
+    test('marks events with CLASS:PRIVATE/CONFIDENTIAL as private', () {
+      const icsContent = '''BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:evt-6
+DTSTART:20260812T140000Z
+DTEND:20260812T150000Z
+SUMMARY:Doctor appointment
+CLASS:PRIVATE
+END:VEVENT
+BEGIN:VEVENT
+UID:evt-7
+DTSTART:20260812T160000Z
+DTEND:20260812T170000Z
+SUMMARY:Confidential review
+CLASS:CONFIDENTIAL
+END:VEVENT
+BEGIN:VEVENT
+UID:evt-8
+DTSTART:20260812T180000Z
+DTEND:20260812T190000Z
+SUMMARY:Team sync
+CLASS:PUBLIC
+END:VEVENT
+END:VCALENDAR''';
+
+      final events = IcsImportService.parseEvents(icsContent);
+
+      expect(events[0].isPrivate, isTrue);
+      expect(events[1].isPrivate, isTrue);
+      expect(events[2].isPrivate, isFalse);
+    });
+
     test('unfolds folded SUMMARY lines', () {
       const icsContent = '''BEGIN:VCALENDAR
 VERSION:2.0

@@ -24,6 +24,60 @@ class DayPlannerEntry {
     this.labels = const <String>[],
   });
 
+  /// Serializes this entry for persistence as part of a frozen planner
+  /// snapshot. The linked [task] is NOT stored — it's re-resolved by id from
+  /// the live task list when rehydrating via [fromJson].
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'title': title,
+    'type': type,
+    'start': start.toIso8601String(),
+    'end': end.toIso8601String(),
+    'subtitle': subtitle,
+    'relatedTaskIds': relatedTaskIds,
+    'isAllDay': isAllDay,
+    'isConcurrent': isConcurrent,
+    'category': category.name,
+    'isZeroDuration': isZeroDuration,
+    'labels': labels,
+  };
+
+  factory DayPlannerEntry.fromJson(
+    Map<String, dynamic> json, {
+    Task? Function(String id)? resolveTask,
+  }) {
+    final relatedTaskIds =
+        (json['relatedTaskIds'] as List?)?.map((e) => e.toString()).toList() ??
+        const <String>[];
+    final type = json['type']?.toString() ?? '';
+    final task =
+        resolveTask != null &&
+            relatedTaskIds.isNotEmpty &&
+            (type == 'task' || type == 'admin')
+        ? resolveTask(relatedTaskIds.first)
+        : null;
+    return DayPlannerEntry(
+      id: json['id']?.toString() ?? '',
+      title: json['title']?.toString() ?? '',
+      type: type,
+      start: DateTime.parse(json['start'] as String),
+      end: DateTime.parse(json['end'] as String),
+      subtitle: json['subtitle']?.toString(),
+      task: task,
+      relatedTaskIds: relatedTaskIds,
+      isAllDay: json['isAllDay'] == true,
+      isConcurrent: json['isConcurrent'] == true,
+      category: PlannerEventCategory.values.firstWhere(
+        (value) => value.name == json['category'],
+        orElse: () => PlannerEventCategory.planned,
+      ),
+      isZeroDuration: json['isZeroDuration'] == true,
+      labels:
+          (json['labels'] as List?)?.map((e) => e.toString()).toList() ??
+          const <String>[],
+    );
+  }
+
   final String id;
   final String title;
   final String type;
@@ -42,6 +96,12 @@ class DayPlannerEntry {
   final List<String> labels;
 
   DayPlannerEntry copyWith({
+    String? title,
+    String? subtitle,
+    String? type,
+    Task? task,
+    bool clearTask = false,
+    List<String>? relatedTaskIds,
     DateTime? start,
     DateTime? end,
     bool? isLocked,
@@ -52,13 +112,13 @@ class DayPlannerEntry {
   }) {
     return DayPlannerEntry(
       id: id,
-      title: title,
-      type: type,
+      title: title ?? this.title,
+      type: type ?? this.type,
       start: start ?? this.start,
       end: end ?? this.end,
-      subtitle: subtitle,
-      task: task,
-      relatedTaskIds: relatedTaskIds,
+      subtitle: subtitle ?? this.subtitle,
+      task: clearTask ? null : (task ?? this.task),
+      relatedTaskIds: relatedTaskIds ?? this.relatedTaskIds,
       isAllDay: isAllDay,
       isConcurrent: isConcurrent,
       isLocked: isLocked ?? this.isLocked,
@@ -70,12 +130,15 @@ class DayPlannerEntry {
   }
 }
 
-/// A user-provided manual time override for a planner entry, keyed by entry id.
+/// A user-provided manual override for a planner entry, keyed by entry id:
+/// its time/lock state, and/or which activity (task or custom name) it is.
 class PlannerEntryOverride {
   const PlannerEntryOverride({
     this.startMinutes,
     this.endMinutes,
     this.locked = false,
+    this.taskId,
+    this.customTitle,
   });
 
   /// Minutes since midnight for the overridden start time, or null to keep the planned start.
@@ -84,6 +147,13 @@ class PlannerEntryOverride {
   /// Minutes since midnight for the overridden end time, or null to keep the planned end.
   final int? endMinutes;
   final bool locked;
+
+  /// Reassigns this slot to a specific task from the task list, if set.
+  final String? taskId;
+
+  /// Reassigns this slot to a free-typed/preset activity name, if set (and
+  /// [taskId] isn't). Mutually exclusive with [taskId].
+  final String? customTitle;
 }
 
 class PersonalPlannerBlock {
@@ -202,8 +272,25 @@ class DayPlannerService {
     if (task.done == true) {
       return false;
     }
+    if (task.waitingOnOthers) {
+      return false;
+    }
 
     final targetDay = DateTime(day.year, day.month, day.day);
+    if (_isBlockedAsOverdue(task, targetDay)) {
+      return false;
+    }
+
+    final dueDate = _parseTaskDate(task.dueDate);
+    if (task.absolutePriority && dueDate != null) {
+      final normalizedDueDate = DateTime(
+        dueDate.year,
+        dueDate.month,
+        dueDate.day,
+      );
+      return !normalizedDueDate.isBefore(targetDay);
+    }
+
     final doDate = _parseTaskDate(task.doDate);
     if (doDate != null) {
       final normalizedDoDate = DateTime(doDate.year, doDate.month, doDate.day);
@@ -224,6 +311,25 @@ class DayPlannerService {
       }
     }
 
+    if (dueDate == null) return false;
+    final normalizedDueDate = DateTime(
+      dueDate.year,
+      dueDate.month,
+      dueDate.day,
+    );
+    // Due-date-only fallback (no explicit do-date): only due exactly on this
+    // day counts. A due date before this day is overdue, not "for" this
+    // day — it no longer forces itself into every subsequent day's plan; it
+    // may still get pulled forward opportunistically via
+    // `_prioritizeFutureTasks` if there's spare capacity.
+    return normalizedDueDate.isAtSameMomentAs(targetDay);
+  }
+
+  // Tasks with `excludeWhenOverdue` set stop appearing in the planner
+  // entirely once their due date passes without completion — unlike regular
+  // tasks, they don't fall back to opportunistic backlog carry-over either.
+  static bool _isBlockedAsOverdue(Task task, DateTime targetDay) {
+    if (!task.excludeWhenOverdue) return false;
     final dueDate = _parseTaskDate(task.dueDate);
     if (dueDate == null) return false;
     final normalizedDueDate = DateTime(
@@ -231,7 +337,7 @@ class DayPlannerService {
       dueDate.month,
       dueDate.day,
     );
-    return !normalizedDueDate.isAfter(targetDay);
+    return normalizedDueDate.isBefore(targetDay);
   }
 
   static DateTime? _firstPlannedIncompleteSubtaskDate(Task task) {
@@ -264,6 +370,7 @@ class DayPlannerService {
     int workdayStartMinutes = 9 * 60,
     int workdayEndMinutes = 17 * 60,
     Set<String> preferredConcurrentEntryIds = const <String>{},
+    Set<String> excludedConcurrentEntryIds = const <String>{},
     Set<String> nonBlockingCalendarEventIds = const <String>{},
     Set<String> includedCalendarEventIds = const <String>{},
     Map<String, PlannerEntryOverride> entryOverrides =
@@ -274,9 +381,17 @@ class DayPlannerService {
     Map<String, ExecutionState> executionStates =
         const <String, ExecutionState>{},
     TimeGrid timeGrid = TimeGrid.fifteenMinutes,
+    bool isHoliday = false,
+    // See `_placeMovementEvents` — null falls back to the original built-in
+    // WFH/office movement names, an explicit empty list disables movement
+    // for the day entirely.
+    List<String>? enabledActivityNames,
   }) {
     final isWeekend =
         day.weekday == DateTime.saturday || day.weekday == DateTime.sunday;
+    // A manually-marked holiday weekday is scheduled exactly like a weekend:
+    // calendar events only, no tasks/movement/breaks.
+    final isNonWorkingDay = isWeekend || isHoliday;
     final normalizedStart = workdayStartMinutes.clamp(0, 23 * 60 + 59);
     final normalizedEnd = workdayEndMinutes.clamp(1, 24 * 60);
     final configuredDayStart = _dateAtMinutes(day, normalizedStart);
@@ -414,14 +529,14 @@ class DayPlannerService {
       if (cursor.isAfter(dayEnd)) cursor = dayEnd;
     }
 
-    if (!isWeekend) {
+    if (!isNonWorkingDay) {
       final lunchEntry = excludedPlannerEntryIds.contains('break-lunch')
           ? null
           : _placeLunch(entries, dayStart, dayEnd);
       if (lunchEntry != null) entries.add(lunchEntry);
     }
 
-    if (isWeekend) {
+    if (isNonWorkingDay) {
       for (var index = 0; index < entries.length; index++) {
         final entry = entries[index];
         entries[index] = entry.copyWith(
@@ -429,11 +544,12 @@ class DayPlannerService {
         );
       }
       entries.sort((a, b) => a.start.compareTo(b.start));
+      final label = isHoliday && !isWeekend ? 'Holiday' : 'Weekend';
       return DayPlannerResult(
         entries: entries,
         summary: entries.isEmpty
-            ? 'Weekend: no activities planned.'
-            : 'Weekend: calendar items only.',
+            ? '$label: no activities planned.'
+            : '$label: calendar items only.',
         rolloverTasks: const <Task>[],
       );
     }
@@ -445,7 +561,12 @@ class DayPlannerService {
     final actionableTasks = prioritizedTasks.map((item) => item.task).toList();
 
     if (isOfficeDay) {
-      entries.addAll(_buildCommuteEntries(day, dayStart, dayEnd));
+      // Commute placement always anchors to the CONFIGURED work-day start,
+      // not the replan-reanchored `dayStart` (which shifts to "now" when
+      // replanning from now) — otherwise replanning mid-morning placed a
+      // spurious "commute before" block in the hour right before "now"
+      // instead of before the actual start of the work window.
+      entries.addAll(_buildCommuteEntries(day, configuredDayStart, dayEnd));
     } else if (dayContext?.workLocation == WorkLocation.home) {
       final switchOffEntry = _buildSwitchOffEntry(day, dayEnd);
       if (switchOffEntry != null) entries.add(switchOffEntry);
@@ -631,7 +752,9 @@ class DayPlannerService {
         dayStart: dayStart,
         dayEnd: dayEnd,
         preferredConcurrentEntryIds: preferredConcurrentEntryIds,
+        excludedConcurrentEntryIds: excludedConcurrentEntryIds,
         timeGrid: timeGrid,
+        enabledActivityNames: enabledActivityNames,
       );
       movementEntries.addAll(placedMovementEntries);
       entries.addAll(placedMovementEntries);
@@ -682,7 +805,18 @@ class DayPlannerService {
       ..addAll(_buildOpenBlocks(mergedWithShortGaps, dayStart, dayEnd));
     final overridden = entryOverrides.isEmpty
         ? merged
-        : _applyEntryOverrides(merged, entryOverrides, dayStart, dayEnd);
+        : applyEntryOverrides(
+            merged,
+            entryOverrides,
+            dayStart,
+            dayEnd,
+            resolveTask: (id) {
+              for (final candidate in tasks) {
+                if (candidate.id == id) return candidate;
+              }
+              return null;
+            },
+          );
     final normalizedEntries = _removeFocusOverlaps(
       _validatePlan(_removeTaskOverlaps(overridden), dayStart, dayEnd),
     );
@@ -760,6 +894,9 @@ class DayPlannerService {
       return _PrioritizedTask(task: task, score: _taskScore(task, targetDay));
     }).toList();
     scored.sort((a, b) {
+      final absolutePriorityCompare = (b.task.absolutePriority ? 1 : 0)
+          .compareTo(a.task.absolutePriority ? 1 : 0);
+      if (absolutePriorityCompare != 0) return absolutePriorityCompare;
       final scoreCompare = b.score.compareTo(a.score);
       if (scoreCompare != 0) return scoreCompare;
       final aDate = _planningDateForTask(a.task);
@@ -780,7 +917,13 @@ class DayPlannerService {
   ) {
     final targetDay = DateTime(day.year, day.month, day.day);
     final scored = tasks
-        .where((task) => task.done != true && !_isTaskEligibleForDay(task, day))
+        .where(
+          (task) =>
+              task.done != true &&
+              !task.waitingOnOthers &&
+              !_isTaskEligibleForDay(task, day) &&
+              !_isBlockedAsOverdue(task, targetDay),
+        )
         .map((task) {
           return _PrioritizedTask(
             task: task,
@@ -789,6 +932,9 @@ class DayPlannerService {
         })
         .toList();
     scored.sort((a, b) {
+      final absolutePriorityCompare = (b.task.absolutePriority ? 1 : 0)
+          .compareTo(a.task.absolutePriority ? 1 : 0);
+      if (absolutePriorityCompare != 0) return absolutePriorityCompare;
       final aDate = _planningDateForTask(a.task);
       final bDate = _planningDateForTask(b.task);
       if (aDate == null && bDate != null) return 1;
@@ -802,6 +948,7 @@ class DayPlannerService {
   }
 
   static double _taskScore(Task task, DateTime targetDay) {
+    if (task.absolutePriority) return double.infinity;
     final dueDate = _dateOnly(_parseTaskDate(task.dueDate));
     final planningDate = _dateOnly(
       _parseTaskDate(task.doDate) ?? _parseTaskDate(task.dueDate),
@@ -897,7 +1044,7 @@ class DayPlannerService {
 
   static List<DayPlannerEntry> _buildCommuteEntries(
     DateTime day,
-    DateTime dayStart,
+    DateTime workDayStart,
     DateTime dayEnd,
   ) {
     final dayBeginning = DateTime(day.year, day.month, day.day);
@@ -910,7 +1057,7 @@ class DayPlannerService {
       nextSessionEffortMinutes: 60,
     );
     final entries = <DayPlannerEntry>[];
-    final beforeStart = dayStart.subtract(const Duration(hours: 1));
+    final beforeStart = workDayStart.subtract(const Duration(hours: 1));
     if (beforeStart.isAfter(dayBeginning)) {
       entries.add(
         DayPlannerEntry(
@@ -918,7 +1065,7 @@ class DayPlannerService {
           title: 'Commute',
           type: 'task',
           start: beforeStart,
-          end: dayStart,
+          end: workDayStart,
           subtitle: 'Before work window',
           task: commuteTask('before'),
           category: PlannerEventCategory.planned,
@@ -1259,9 +1406,19 @@ class DayPlannerService {
     required DateTime dayStart,
     required DateTime dayEnd,
     required Set<String> preferredConcurrentEntryIds,
+    required Set<String> excludedConcurrentEntryIds,
     required TimeGrid timeGrid,
+    // User-configured, per-day-enabled movement activity names (Settings ->
+    // Movement activities + the planner's "Choose available activities"
+    // toggle). Null means "not specified" (e.g. older callers/tests) — falls
+    // back to the original built-in names/behavior below. An explicit EMPTY
+    // list means the user deselected every activity for today.
+    List<String>? enabledActivityNames,
   }) {
     if (dayContext == null) {
+      return const <DayPlannerEntry>[];
+    }
+    if (enabledActivityNames != null && enabledActivityNames.isEmpty) {
       return const <DayPlannerEntry>[];
     }
 
@@ -1278,18 +1435,39 @@ class DayPlannerService {
         .round()
         .clamp(10, 45);
     final entries = <DayPlannerEntry>[];
-    final blockDurations = mode == 'home'
-        ? [
-            (standingBlockMinutes, 'Stand at your desk', 'Standing desk'),
-            (walkingBlockMinutes, 'Walk while you work', 'Walking pad'),
-            (standingBlockMinutes, 'Stand at your desk', 'Standing desk'),
-            (walkingBlockMinutes, 'Walk while you work', 'Walking pad'),
-          ]
-        : [
-            (walkingBlockMinutes, 'Walk break', 'Office movement'),
-            (walkingBlockMinutes, 'Walk break', 'Office movement'),
-            (walkingBlockMinutes, 'Walk break', 'Office movement'),
-          ];
+    // Duration for a named activity: named-activity durations use the same
+    // standing/walking split as before, matched by the name containing
+    // "stand"/"walk" (case-insensitive) — falls back to the average of the
+    // two for an unrecognized custom name. Office blocks always stay 15 min.
+    int durationMinutesFor(String name) {
+      if (mode == 'office') return 15;
+      final lower = name.toLowerCase();
+      if (lower.contains('walk')) return walkingBlockMinutes;
+      if (lower.contains('stand')) return standingBlockMinutes;
+      return ((standingBlockMinutes + walkingBlockMinutes) / 2).round();
+    }
+
+    List<(int, String, String)> blockDurations;
+    if (enabledActivityNames != null && enabledActivityNames.isNotEmpty) {
+      final slotCount = mode == 'home' ? 4 : 3;
+      blockDurations = List<(int, String, String)>.generate(slotCount, (i) {
+        final name = enabledActivityNames[i % enabledActivityNames.length];
+        return (durationMinutesFor(name), name, name);
+      });
+    } else {
+      blockDurations = mode == 'home'
+          ? [
+              (standingBlockMinutes, 'Stand at your desk', 'Standing desk'),
+              (walkingBlockMinutes, 'Walk while you work', 'Walking pad'),
+              (standingBlockMinutes, 'Stand at your desk', 'Standing desk'),
+              (walkingBlockMinutes, 'Walk while you work', 'Walking pad'),
+            ]
+          : [
+              (walkingBlockMinutes, 'Walk while you work', 'Office movement'),
+              (walkingBlockMinutes, 'Walk while you work', 'Office movement'),
+              (walkingBlockMinutes, 'Walk while you work', 'Office movement'),
+            ];
+    }
 
     final occupied = occupiedEntries.where(_occupiesPlanningTime).toList()
       ..sort((a, b) {
@@ -1323,6 +1501,7 @@ class DayPlannerService {
               duration,
               mode,
               preferredConcurrentEntryIds,
+              excludedConcurrentEntryIds,
               dayStart,
               dayEnd,
               target: movementTarget,
@@ -1341,7 +1520,7 @@ class DayPlannerService {
           entries.add(
             DayPlannerEntry(
               id: 'movement-$mode-${entries.length}',
-              title: mode == 'office' ? 'Walk while you work' : block.$2,
+              title: block.$2,
               type: 'movement',
               start: concurrentStart,
               end: concurrentEnd,
@@ -1713,6 +1892,31 @@ class DayPlannerService {
     );
   }
 
+  // Guards against the same logical entry appearing twice in one plan — e.g.
+  // a calendar event surfaced by both a live sync and a stale import with a
+  // slightly different underlying id, or a frozen-plan replan merge briefly
+  // carrying the same entry in both its "past" and "future" halves. Collapses
+  // entries that share the same type/title/start/end (i.e. are clearly the
+  // same real-world event/block), regardless of id — task ids can legitimately
+  // collide (auto-generated from a timestamp) without the entries themselves
+  // being duplicates of each other, so id alone isn't used as the key here.
+  static List<DayPlannerEntry> _removeDuplicateEntries(
+    List<DayPlannerEntry> entries,
+  ) {
+    final seenSignatures = <String>{};
+    final deduped = <DayPlannerEntry>[];
+    for (final entry in entries) {
+      final signature =
+          '${entry.type}|${entry.title.trim().toLowerCase()}|'
+          '${entry.start.toIso8601String()}|${entry.end.toIso8601String()}';
+      if (!seenSignatures.add(signature)) {
+        continue;
+      }
+      deduped.add(entry);
+    }
+    return deduped;
+  }
+
   static List<DayPlannerEntry> _removeTaskOverlaps(
     List<DayPlannerEntry> entries,
   ) {
@@ -1754,6 +1958,8 @@ class DayPlannerService {
       if (entry.isAllDay) return true;
       return entry.end.isAfter(entry.start);
     }).toList();
+
+    normalized = _removeDuplicateEntries(normalized);
 
     normalized = normalized
         .where((entry) {
@@ -2211,12 +2417,18 @@ class DayPlannerService {
     return result;
   }
 
-  static List<DayPlannerEntry> _applyEntryOverrides(
+  /// Applies user-provided manual time/lock overrides on top of already-
+  /// scheduled entries. Public so a frozen (persisted) plan snapshot can have
+  /// overrides re-applied without re-running the scheduler.
+  /// scheduled entries. Public so a frozen (persisted) plan snapshot can have
+  /// overrides re-applied without re-running the scheduler.
+  static List<DayPlannerEntry> applyEntryOverrides(
     List<DayPlannerEntry> entries,
     Map<String, PlannerEntryOverride> overrides,
     DateTime dayStart,
-    DateTime dayEnd,
-  ) {
+    DateTime dayEnd, {
+    Task? Function(String id)? resolveTask,
+  }) {
     return entries.map((entry) {
       final override = overrides[entry.id];
       if (override == null) {
@@ -2242,11 +2454,36 @@ class DayPlannerService {
           newEnd = dayEnd;
         }
       }
-      return entry.copyWith(
+      var updated = entry.copyWith(
         start: newStart,
         end: newEnd,
         isLocked: override.locked,
       );
+      final taskId = override.taskId;
+      final customTitle = override.customTitle;
+      if (taskId != null) {
+        final resolvedTask = resolveTask?.call(taskId);
+        if (resolvedTask != null) {
+          updated = updated.copyWith(
+            title: resolvedTask.task,
+            subtitle: _taskSubtitle(resolvedTask),
+            type: 'task',
+            task: resolvedTask,
+            relatedTaskIds: [resolvedTask.id],
+          );
+        }
+      } else if (customTitle != null && customTitle.trim().isNotEmpty) {
+        final trimmedTitle = customTitle.trim();
+        final isFocusTime = trimmedTitle.toLowerCase() == 'focus time';
+        updated = updated.copyWith(
+          title: isFocusTime ? 'Focus Time' : trimmedTitle,
+          subtitle: isFocusTime ? 'Filled planning gap' : 'Personal block',
+          type: isFocusTime ? 'focus' : 'personal',
+          clearTask: true,
+          relatedTaskIds: const <String>[],
+        );
+      }
+      return updated;
     }).toList();
   }
 
@@ -2267,6 +2504,7 @@ class DayPlannerService {
     Duration duration,
     String mode,
     Set<String> preferredConcurrentEntryIds,
+    Set<String> excludedConcurrentEntryIds,
     DateTime dayStart,
     DateTime dayEnd, {
     required DateTime target,
@@ -2277,6 +2515,9 @@ class DayPlannerService {
       if (entry.isAllDay ||
           entry.isConcurrent ||
           entry.category == PlannerEventCategory.informational) {
+        continue;
+      }
+      if (excludedConcurrentEntryIds.contains(entry.id)) {
         continue;
       }
       if (!entry.start.isBefore(dayEnd) || !entry.end.isAfter(dayStart)) {
@@ -2449,6 +2690,12 @@ class DayPlannerService {
   }
 
   static Duration _estimateTaskDuration(Task task) {
+    if (task.absolutePriority &&
+        task.effortMinutes != null &&
+        task.effortMinutes! > 0) {
+      return Duration(minutes: task.effortMinutes!);
+    }
+
     if (task.nextSessionEffortMinutes != null &&
         task.nextSessionEffortMinutes! > 0) {
       return Duration(minutes: task.nextSessionEffortMinutes!);

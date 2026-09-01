@@ -20,6 +20,10 @@ class TasksViewSection extends StatelessWidget {
     required this.taskSortLabel,
     required this.groupTasksByPriority,
     required this.onGroupByPriorityChanged,
+    required this.cardViewEnabled,
+    required this.onCardViewChanged,
+    required this.archiveViewEnabled,
+    required this.onArchiveViewChanged,
     required this.onSelectTaskSortMode,
     required this.getTopTasks,
     required this.buildPriorityCard,
@@ -46,6 +50,10 @@ class TasksViewSection extends StatelessWidget {
   final String taskSortLabel;
   final bool groupTasksByPriority;
   final ValueChanged<bool> onGroupByPriorityChanged;
+  final bool cardViewEnabled;
+  final ValueChanged<bool> onCardViewChanged;
+  final bool archiveViewEnabled;
+  final ValueChanged<bool> onArchiveViewChanged;
   final ValueChanged<String> onSelectTaskSortMode;
 
   final List<Task> Function(int count) getTopTasks;
@@ -96,6 +104,10 @@ class TasksViewSection extends StatelessWidget {
               taskSortLabel: taskSortLabel,
               groupByPriority: groupTasksByPriority,
               onGroupByPriorityChanged: onGroupByPriorityChanged,
+              cardViewEnabled: cardViewEnabled,
+              onCardViewChanged: onCardViewChanged,
+              archiveViewEnabled: archiveViewEnabled,
+              onArchiveViewChanged: onArchiveViewChanged,
               onSelectTaskSortMode: onSelectTaskSortMode,
             ),
           ),

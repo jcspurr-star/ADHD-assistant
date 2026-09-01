@@ -2,6 +2,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:adhd_assistant/models/note_entry.dart';
 import 'package:adhd_assistant/models/task.dart';
+import 'package:adhd_assistant/services/day_planner_service.dart';
+import 'package:adhd_assistant/services/one_drive_sync_service.dart';
+import 'package:adhd_assistant/services/planner_execution_service.dart';
 import 'package:adhd_assistant/services/storage_service.dart';
 
 void main() {
@@ -19,6 +22,51 @@ void main() {
     expect(restored.single.task, 'First');
   });
 
+  test(
+    'drops stale imported events beyond the requested look-ahead horizon',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+
+      await StorageService.saveImportedOutlookEvents([
+        OutlookCalendarEvent(
+          id: 'past-event',
+          subject: 'Past meeting',
+          start: today.subtract(const Duration(days: 5)),
+          end: today.subtract(const Duration(days: 5, hours: -1)),
+          isAllDay: false,
+        ),
+        OutlookCalendarEvent(
+          id: 'in-range-event',
+          subject: 'Tomorrow meeting',
+          start: today.add(const Duration(days: 1, hours: 9)),
+          end: today.add(const Duration(days: 1, hours: 10)),
+          isAllDay: false,
+        ),
+        OutlookCalendarEvent(
+          id: 'stale-future-event',
+          subject: 'Stale future meeting from an old import',
+          start: today.add(const Duration(days: 20, hours: 9)),
+          end: today.add(const Duration(days: 20, hours: 10)),
+          isAllDay: false,
+        ),
+      ]);
+
+      final events = await StorageService.getUpcomingOutlookEvents(
+        lookAhead: const Duration(days: 2),
+        maxItems: 10,
+      );
+
+      expect(events.map((event) => event.id), contains('past-event'));
+      expect(events.map((event) => event.id), contains('in-range-event'));
+      expect(
+        events.map((event) => event.id),
+        isNot(contains('stale-future-event')),
+      );
+    },
+  );
+
   test('StorageService saves and loads Task objects', () async {
     SharedPreferences.setMockInitialValues({});
 
@@ -30,6 +78,7 @@ void main() {
         doDate: '2024-01-02',
         effortMinutes: 240,
         nextSessionEffortMinutes: 45,
+        absolutePriority: true,
         subtasks: [Subtask(text: 'Step 1', doDate: '2024-01-02')],
       ),
       Task(task: 'Beta', done: true, expanded: true, priority: 'high'),
@@ -44,6 +93,7 @@ void main() {
     expect(loaded[0].doDate, equals('2024-01-02'));
     expect(loaded[0].effortMinutes, equals(240));
     expect(loaded[0].nextSessionEffortMinutes, equals(45));
+    expect(loaded[0].absolutePriority, isTrue);
     expect(loaded[0].subtasks.first.doDate, equals('2024-01-02'));
     expect(loaded[1].priority, equals('high'));
     expect(loaded[1].done, isTrue);
@@ -91,6 +141,150 @@ void main() {
 
     final loadedEntries = await StorageService.loadInboxEntries();
     expect(loadedEntries, equals(entries));
+  });
+
+  test(
+    'allocates enough Outlook calendar items for the full planner horizon',
+    () {
+      expect(
+        OneDriveSyncService.recommendedCalendarFetchLimitForLookAheadDays(14),
+        equals(200),
+      );
+      expect(
+        OneDriveSyncService.recommendedCalendarFetchLimitForLookAheadDays(1),
+        equals(20),
+      );
+    },
+  );
+
+  test('applies the Outlook-compatible export settings to planner entries', () {
+    final workCalendar = DayPlannerEntry(
+      id: 'calendar-1',
+      title: 'Team sync',
+      type: 'calendar',
+      start: DateTime(2026, 8, 27, 9, 0),
+      end: DateTime(2026, 8, 27, 10, 0),
+      subtitle: 'Work calendar',
+      category: PlannerEventCategory.fixed,
+    );
+    final homeTask = DayPlannerEntry(
+      id: 'task-1',
+      title: 'Laundry',
+      type: 'task',
+      start: DateTime(2026, 8, 27, 11, 0),
+      end: DateTime(2026, 8, 27, 12, 0),
+      task: Task(task: 'Laundry'),
+      category: PlannerEventCategory.planned,
+    );
+    final breakEntry = DayPlannerEntry(
+      id: 'break-1',
+      title: 'Break',
+      type: 'break',
+      start: DateTime(2026, 8, 27, 15, 0),
+      end: DateTime(2026, 8, 27, 15, 30),
+      category: PlannerEventCategory.informational,
+    );
+
+    final workCalendarPayload =
+        OneDriveSyncService.outlookExportSettingsForPlannerEntry(workCalendar);
+    expect(workCalendarPayload['categories'], equals(['Work']));
+    expect(workCalendarPayload['showAs'], equals('busy'));
+    expect(workCalendarPayload['isReminderOn'], isTrue);
+    expect(workCalendarPayload['reminderMinutesBeforeStart'], equals(0));
+
+    final homeTaskPayload =
+        OneDriveSyncService.outlookExportSettingsForPlannerEntry(homeTask);
+    expect(homeTaskPayload['categories'], equals(['Home']));
+    expect(homeTaskPayload['showAs'], equals('free'));
+    expect(homeTaskPayload['isReminderOn'], isFalse);
+    expect(homeTaskPayload, isNot(contains('reminderMinutesBeforeStart')));
+
+    final breakPayload =
+        OneDriveSyncService.outlookExportSettingsForPlannerEntry(breakEntry);
+    expect(breakPayload['categories'], equals(['Break']));
+    expect(breakPayload['showAs'], equals('free'));
+    expect(breakPayload['isReminderOn'], isTrue);
+    expect(breakPayload['reminderMinutesBeforeStart'], equals(0));
+  });
+
+  test('exports concurrent movement activities with the Movement category', () {
+    final standingDesk = DayPlannerEntry(
+      id: 'movement-standing-1',
+      title: 'Stand at your desk',
+      type: 'movement',
+      start: DateTime(2026, 8, 27, 9),
+      end: DateTime(2026, 8, 27, 10),
+      isConcurrent: true,
+    );
+    final walkingPad = DayPlannerEntry(
+      id: 'movement-walking-1',
+      title: 'Walk while you work',
+      type: 'movement',
+      start: DateTime(2026, 8, 27, 10),
+      end: DateTime(2026, 8, 27, 11),
+      isConcurrent: true,
+    );
+
+    for (final entry in [standingDesk, walkingPad]) {
+      final payload = OneDriveSyncService.outlookExportSettingsForPlannerEntry(
+        entry,
+      );
+      expect(payload['categories'], equals(['Movement']));
+      expect(payload['showAs'], equals('free'));
+      expect(payload['isReminderOn'], isTrue);
+      expect(payload['reminderMinutesBeforeStart'], equals(0));
+    }
+  });
+
+  test('applies Outlook export settings from an imported calendar source', () {
+    final workCalendar = OutlookCalendarEvent(
+      id: 'work-calendar-1',
+      subject: 'Work meeting',
+      start: DateTime(2026, 8, 27, 9),
+      end: DateTime(2026, 8, 27, 10),
+      isAllDay: false,
+      calendarSource: 'work',
+    );
+    final homeCalendar = OutlookCalendarEvent(
+      id: 'home-calendar-1',
+      subject: 'Dentist',
+      start: DateTime(2026, 8, 27, 11),
+      end: DateTime(2026, 8, 27, 12),
+      isAllDay: false,
+    );
+
+    final workPayload =
+        OneDriveSyncService.outlookExportSettingsForCalendarEvent(workCalendar);
+    expect(workPayload['categories'], equals(['Work']));
+    expect(workPayload['showAs'], equals('busy'));
+    expect(workPayload['isReminderOn'], isTrue);
+    expect(workPayload['reminderMinutesBeforeStart'], equals(0));
+
+    final homePayload =
+        OneDriveSyncService.outlookExportSettingsForCalendarEvent(homeCalendar);
+    expect(homePayload['categories'], equals(['Home']));
+    expect(homePayload['showAs'], equals('free'));
+    expect(homePayload['isReminderOn'], isFalse);
+    expect(homePayload, isNot(contains('reminderMinutesBeforeStart')));
+  });
+
+  test('exports all-day calendar events as free with no reminder', () {
+    final allDayWorkEvent = OutlookCalendarEvent(
+      id: 'work-all-day-1',
+      subject: 'Annual leave',
+      start: DateTime(2026, 8, 27),
+      end: DateTime(2026, 8, 28),
+      isAllDay: true,
+      calendarSource: 'work',
+    );
+
+    final payload = OneDriveSyncService.outlookExportSettingsForCalendarEvent(
+      allDayWorkEvent,
+    );
+    expect(payload['categories'], equals(['Work']));
+    expect(payload['showAs'], equals('free'));
+    expect(payload['isReminderOn'], isFalse);
+    expect(payload, isNot(contains('reminderMinutesBeforeStart')));
   });
 
   test('creates a backup snapshot when note entries are saved', () async {

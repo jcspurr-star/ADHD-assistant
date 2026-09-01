@@ -36,6 +36,15 @@ migrate_working_dir/
 /.firebase/
 /recovery_snapshot_summary.txt
 
+# Ad-hoc local debug/test output dumped at the repo root
+/analyze_output.txt
+/build_output.txt
+/test_output.txt
+/test_result.txt
+/test_results.txt
+/test_resized.png
+/calendar_import_*.ics
+
 # Symbolication related
 app.*.symbols
 

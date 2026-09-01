@@ -8,6 +8,10 @@ class FirebaseSyncService {
   static bool _initialized = false;
   static String? _lastError;
 
+  // Bounds every Firestore/auth request so a slow or unreachable network
+  // can't hang a save/load for a long time (previously unbounded).
+  static const Duration _requestTimeout = Duration(seconds: 6);
+
   static String? _idToken;
   static String? _refreshToken;
   static DateTime? _idTokenExpiryUtc;
@@ -67,10 +71,9 @@ class FirebaseSyncService {
     }
 
     try {
-      final response = await http.get(
-        _documentUri(),
-        headers: _authHeaders(token),
-      );
+      final response = await http
+          .get(_documentUri(), headers: _authHeaders(token))
+          .timeout(_requestTimeout);
 
       if (response.statusCode == 200 || response.statusCode == 404) {
         _lastError = null;
@@ -99,10 +102,9 @@ class FirebaseSyncService {
     }
 
     try {
-      final response = await http.get(
-        _documentUri(),
-        headers: _authHeaders(token),
-      );
+      final response = await http
+          .get(_documentUri(), headers: _authHeaders(token))
+          .timeout(_requestTimeout);
 
       if (response.statusCode == 404) {
         _lastError = null;
@@ -164,18 +166,20 @@ class FirebaseSyncService {
     }
 
     try {
-      final response = await http.patch(
-        _documentUri(),
-        headers: _authHeaders(token),
-        body: jsonEncode({
-          'fields': {
-            'payload_json': {'stringValue': jsonEncode(state)},
-            'updated_at_utc': {
-              'stringValue': DateTime.now().toUtc().toIso8601String(),
-            },
-          },
-        }),
-      );
+      final response = await http
+          .patch(
+            _documentUri(),
+            headers: _authHeaders(token),
+            body: jsonEncode({
+              'fields': {
+                'payload_json': {'stringValue': jsonEncode(state)},
+                'updated_at_utc': {
+                  'stringValue': DateTime.now().toUtc().toIso8601String(),
+                },
+              },
+            }),
+          )
+          .timeout(_requestTimeout);
 
       if (response.statusCode == 200) {
         _lastError = null;
@@ -206,18 +210,20 @@ class FirebaseSyncService {
     }
 
     try {
-      final response = await http.patch(
-        _backupDocumentUri(),
-        headers: _authHeaders(token),
-        body: jsonEncode({
-          'fields': {
-            'payload_json': {'stringValue': jsonEncode(history)},
-            'updated_at_utc': {
-              'stringValue': DateTime.now().toUtc().toIso8601String(),
-            },
-          },
-        }),
-      );
+      final response = await http
+          .patch(
+            _backupDocumentUri(),
+            headers: _authHeaders(token),
+            body: jsonEncode({
+              'fields': {
+                'payload_json': {'stringValue': jsonEncode(history)},
+                'updated_at_utc': {
+                  'stringValue': DateTime.now().toUtc().toIso8601String(),
+                },
+              },
+            }),
+          )
+          .timeout(_requestTimeout);
 
       if (response.statusCode == 200) {
         _lastError = null;
@@ -246,10 +252,9 @@ class FirebaseSyncService {
     }
 
     try {
-      final response = await http.get(
-        _backupDocumentUri(),
-        headers: _authHeaders(token),
-      );
+      final response = await http
+          .get(_backupDocumentUri(), headers: _authHeaders(token))
+          .timeout(_requestTimeout);
 
       if (response.statusCode == 404) {
         _lastError = null;
@@ -331,13 +336,15 @@ class FirebaseSyncService {
     }
 
     try {
-      final response = await http.post(
-        Uri.https('identitytoolkit.googleapis.com', '/v1/accounts:signUp', {
-          'key': firebaseApiKey,
-        }),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'returnSecureToken': true}),
-      );
+      final response = await http
+          .post(
+            Uri.https('identitytoolkit.googleapis.com', '/v1/accounts:signUp', {
+              'key': firebaseApiKey,
+            }),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'returnSecureToken': true}),
+          )
+          .timeout(_requestTimeout);
 
       if (response.statusCode != 200) {
         _lastError =
@@ -376,13 +383,18 @@ class FirebaseSyncService {
     }
 
     try {
-      final response = await http.post(
-        Uri.https('securetoken.googleapis.com', '/v1/token', {
-          'key': firebaseApiKey,
-        }),
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: {'grant_type': 'refresh_token', 'refresh_token': refreshToken},
-      );
+      final response = await http
+          .post(
+            Uri.https('securetoken.googleapis.com', '/v1/token', {
+              'key': firebaseApiKey,
+            }),
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: {
+              'grant_type': 'refresh_token',
+              'refresh_token': refreshToken,
+            },
+          )
+          .timeout(_requestTimeout);
 
       if (response.statusCode != 200) {
         _lastError =

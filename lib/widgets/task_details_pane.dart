@@ -6,11 +6,13 @@ class TaskDetailsPane extends StatelessWidget {
     required this.hasSelection,
     this.title,
     this.child,
+    this.placeholderText = 'Select a task to show details',
   });
 
   final bool hasSelection;
   final String? title;
   final Widget? child;
+  final String placeholderText;
 
   @override
   Widget build(BuildContext context) {
@@ -23,7 +25,7 @@ class TaskDetailsPane extends StatelessWidget {
       child: !hasSelection
           ? Center(
               child: Text(
-                'Select a task to show details',
+                placeholderText,
                 style: TextStyle(
                   color: Colors.blueGrey.shade500,
                   fontWeight: FontWeight.w600,

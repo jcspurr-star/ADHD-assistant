@@ -20,6 +20,9 @@ class TaskTile extends StatelessWidget {
   final ValueChanged<String?> onCategoryChanged;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final VoidCallback onToggleAbsolutePriority;
+  final VoidCallback onToggleExcludeWhenOverdue;
+  final VoidCallback onToggleWaitingOnOthers;
   final String dueDateText;
   final String planDateText;
   final int? nextSessionEffortMinutes;
@@ -70,6 +73,9 @@ class TaskTile extends StatelessWidget {
     required this.onCategoryChanged,
     required this.onEdit,
     required this.onDelete,
+    required this.onToggleAbsolutePriority,
+    required this.onToggleExcludeWhenOverdue,
+    required this.onToggleWaitingOnOthers,
     required this.progress,
     required this.dueDateText,
     required this.planDateText,
@@ -580,6 +586,44 @@ class TaskTile extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        IconButton(
+          icon: Icon(
+            task.absolutePriority ? Icons.priority_high : Icons.low_priority,
+            size: iconSize,
+            color: task.absolutePriority ? Colors.deepPurple.shade600 : null,
+          ),
+          tooltip: task.absolutePriority
+              ? 'Absolute priority: scheduled first until due date (tap to clear)'
+              : 'Make absolute priority: schedule total effort first until due date',
+          visualDensity: VisualDensity.compact,
+          onPressed: onToggleAbsolutePriority,
+        ),
+        IconButton(
+          icon: Icon(
+            task.excludeWhenOverdue
+                ? Icons.event_busy
+                : Icons.event_busy_outlined,
+            size: iconSize,
+            color: task.excludeWhenOverdue ? Colors.red.shade600 : null,
+          ),
+          tooltip: task.excludeWhenOverdue
+              ? "Won't carry over once overdue (tap to allow)"
+              : 'Allow carry-over when overdue (tap to block)',
+          visualDensity: VisualDensity.compact,
+          onPressed: onToggleExcludeWhenOverdue,
+        ),
+        IconButton(
+          icon: Icon(
+            task.waitingOnOthers ? Icons.hourglass_full : Icons.hourglass_empty,
+            size: iconSize,
+            color: task.waitingOnOthers ? Colors.blue.shade600 : null,
+          ),
+          tooltip: task.waitingOnOthers
+              ? 'Waiting on others (tap to make eligible for planning)'
+              : 'Mark as waiting on others (excludes from planning)',
+          visualDensity: VisualDensity.compact,
+          onPressed: onToggleWaitingOnOthers,
+        ),
         IconButton(
           icon: Icon(Icons.edit, size: iconSize),
           tooltip: 'Edit task',

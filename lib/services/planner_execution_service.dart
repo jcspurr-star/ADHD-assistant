@@ -1,8 +1,6 @@
 import 'dart:convert';
 
-enum ExecutionState { pending, completed, skipped, deferred, dismissed }
-
-enum PlannerItemState { planned, completed, skipped, deferred, dismissed }
+enum ExecutionState { pending, completed, dismissed }
 
 enum PlannerEventCategory { informational, reminder, fixed, planned }
 
@@ -45,37 +43,15 @@ class PlannerExecutionSummary {
   const PlannerExecutionSummary({
     required this.plannedCount,
     required this.completedCount,
-    required this.skippedCount,
     required this.remainingCount,
   });
 
   final int plannedCount;
   final int completedCount;
-  final int skippedCount;
   final int remainingCount;
 }
 
 class PlannerExecutionService {
-  static PlannerItemState itemStateFromExecution(ExecutionState state) {
-    return switch (state) {
-      ExecutionState.pending => PlannerItemState.planned,
-      ExecutionState.completed => PlannerItemState.completed,
-      ExecutionState.skipped => PlannerItemState.skipped,
-      ExecutionState.deferred => PlannerItemState.deferred,
-      ExecutionState.dismissed => PlannerItemState.dismissed,
-    };
-  }
-
-  static ExecutionState executionFromItemState(PlannerItemState state) {
-    return switch (state) {
-      PlannerItemState.planned ||
-      PlannerItemState.deferred => ExecutionState.pending,
-      PlannerItemState.completed => ExecutionState.completed,
-      PlannerItemState.skipped ||
-      PlannerItemState.dismissed => ExecutionState.skipped,
-    };
-  }
-
   static DateTime snapToGrid(DateTime value, TimeGrid grid) {
     final interval = grid == TimeGrid.fifteenMinutes ? 15 : 30;
     final minutes = value.hour * 60 + value.minute;
@@ -126,7 +102,6 @@ class PlannerExecutionService {
     Map<String, ExecutionState> states,
   ) {
     var completed = 0;
-    var skipped = 0;
     var dismissed = 0;
     var planned = 0;
     for (final entryId in entryIds) {
@@ -134,12 +109,8 @@ class PlannerExecutionService {
       switch (states[entryId] ?? ExecutionState.pending) {
         case ExecutionState.completed:
           completed++;
-        case ExecutionState.skipped:
-          skipped++;
         case ExecutionState.dismissed:
           dismissed++;
-          break;
-        case ExecutionState.deferred:
         case ExecutionState.pending:
           break;
       }
@@ -147,8 +118,7 @@ class PlannerExecutionService {
     return PlannerExecutionSummary(
       plannedCount: planned,
       completedCount: completed,
-      skippedCount: skipped,
-      remainingCount: planned - completed - skipped - dismissed,
+      remainingCount: planned - completed - dismissed,
     );
   }
 }

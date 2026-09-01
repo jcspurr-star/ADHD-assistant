@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/task.dart';
 import '../services/recommendation_service.dart';
 import 'task_details_pane.dart';
+import 'task_summary_card.dart';
 import 'task_tile.dart';
 
 class TaskListContent extends StatelessWidget {
@@ -12,6 +13,8 @@ class TaskListContent extends StatelessWidget {
     required this.visibleTaskIndices,
     required this.selectedTaskCategory,
     required this.groupTasksByPriority,
+    required this.cardViewEnabled,
+    required this.archiveViewEnabled,
     required this.manualSortMode,
     required this.selectedTaskPaneIndex,
     required this.taskListScrollController,
@@ -31,6 +34,9 @@ class TaskListContent extends StatelessWidget {
     required this.onCategoryChanged,
     required this.onEditTask,
     required this.onDeleteTask,
+    required this.onToggleAbsolutePriority,
+    required this.onToggleExcludeWhenOverdue,
+    required this.onToggleWaitingOnOthers,
     required this.onReorderVisibleTasks,
   });
 
@@ -38,6 +44,8 @@ class TaskListContent extends StatelessWidget {
   final List<int> visibleTaskIndices;
   final String selectedTaskCategory;
   final bool groupTasksByPriority;
+  final bool cardViewEnabled;
+  final bool archiveViewEnabled;
   final bool manualSortMode;
   final int? selectedTaskPaneIndex;
   final ScrollController taskListScrollController;
@@ -58,6 +66,9 @@ class TaskListContent extends StatelessWidget {
   final void Function(int taskIndex, String value) onCategoryChanged;
   final void Function(int taskIndex) onEditTask;
   final void Function(int taskIndex) onDeleteTask;
+  final void Function(int taskIndex) onToggleAbsolutePriority;
+  final void Function(int taskIndex) onToggleExcludeWhenOverdue;
+  final void Function(int taskIndex) onToggleWaitingOnOthers;
   final Future<void> Function(
     int oldIndex,
     int newIndex,
@@ -70,7 +81,9 @@ class TaskListContent extends StatelessWidget {
     if (visibleTaskIndices.isEmpty) {
       return Center(
         child: Text(
-          selectedTaskCategory == 'All tasks'
+          archiveViewEnabled
+              ? 'No completed tasks yet.'
+              : selectedTaskCategory == 'All tasks'
               ? 'No tasks yet.'
               : 'No tasks in this category.',
           style: TextStyle(color: Colors.grey.shade600),
@@ -79,6 +92,11 @@ class TaskListContent extends StatelessWidget {
     }
 
     final useTwoPaneLayout = MediaQuery.of(context).size.width >= 1100;
+
+    if (cardViewEnabled) {
+      return _buildCardView(useTwoPaneLayout);
+    }
+
     int? effectiveSelectedTaskIndex = selectedTaskPaneIndex;
     if (useTwoPaneLayout &&
         (effectiveSelectedTaskIndex == null ||
@@ -190,6 +208,15 @@ class TaskListContent extends StatelessWidget {
                         onDelete: () {
                           onDeleteTask(taskIndex);
                         },
+                        onToggleAbsolutePriority: () {
+                          onToggleAbsolutePriority(taskIndex);
+                        },
+                        onToggleExcludeWhenOverdue: () {
+                          onToggleExcludeWhenOverdue(taskIndex);
+                        },
+                        onToggleWaitingOnOthers: () {
+                          onToggleWaitingOnOthers(taskIndex);
+                        },
                         allowReorderDrag:
                             !groupTasksByPriority && manualSortMode,
                       ),
@@ -300,6 +327,194 @@ class TaskListContent extends StatelessWidget {
             child: effectiveSelectedTaskIndex == null
                 ? null
                 : buildTaskPanels(effectiveSelectedTaskIndex),
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<int> _groupedOrder(List<int> indices) {
+    final grouped = <String, List<int>>{
+      'high': [],
+      'medium': [],
+      'low': [],
+      'other': [],
+    };
+    for (final index in indices) {
+      final priority = tasks[index].priority;
+      if (grouped.containsKey(priority)) {
+        grouped[priority]!.add(index);
+      } else {
+        grouped['other']!.add(index);
+      }
+    }
+    return [
+      ...grouped['high']!,
+      ...grouped['medium']!,
+      ...grouped['low']!,
+      ...grouped['other']!,
+    ];
+  }
+
+  // Card view: a wrapping grid of small square summary cards. Tapping a card
+  // "opens" it — duplicating it at the top as a normal row tile (with its
+  // subtask panel shown the same way row view does) — without removing the
+  // card from the grid. Tapping that row tile again closes it.
+  Widget _buildCardView(bool useTwoPaneLayout) {
+    final orderedIndices = groupTasksByPriority
+        ? _groupedOrder(visibleTaskIndices)
+        : visibleTaskIndices;
+    final openedIndex =
+        selectedTaskPaneIndex != null &&
+            visibleTaskIndices.contains(selectedTaskPaneIndex)
+        ? selectedTaskPaneIndex
+        : null;
+
+    Widget buildOpenedTile(int taskIndex) {
+      final task = tasks[taskIndex];
+      final baseAccentColor = getPriorityColor(task.priority);
+      final cardColor = task.done ? Colors.grey.shade100 : Colors.white;
+      final dueDateLabel = formatDueDate(task.dueDate);
+      final planDateLabel = formatDueDate(task.doDate);
+      return Container(
+        key: ValueKey('opened_${taskIndex}_${task.task}'),
+        margin: const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+          color: cardColor,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.blue.shade400, width: 1.6),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Stack(
+          children: [
+            Positioned(
+              left: 0,
+              top: 0,
+              bottom: 0,
+              child: Container(width: 6, color: baseAccentColor),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(left: 6),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TaskTile(
+                      task: task,
+                      dueDateText: dueDateLabel,
+                      planDateText: planDateLabel,
+                      nextSessionEffortMinutes: task.nextSessionEffortMinutes,
+                      totalEffortMinutes: task.effortMinutes,
+                      progress: RecommendationService.getTaskProgress(task),
+                      categories: categories,
+                      category: task.category,
+                      priority: task.priority,
+                      isGenerating: false,
+                      onToggle: (value) {
+                        onToggleTask(taskIndex, value);
+                      },
+                      reorderableIndex: 0,
+                      // Tapping the duplicated row tile closes it again — the
+                      // matching card in the grid below stays put.
+                      onOpen: () => onSelectTaskPaneIndex(null),
+                      onPriorityChanged: (value) {
+                        if (value == null) return;
+                        onPriorityChanged(taskIndex, value);
+                      },
+                      onDueDate: () {
+                        onSetDueDate(taskIndex);
+                      },
+                      onPlanDate: () {
+                        onSetPlanDate(taskIndex);
+                      },
+                      onTotalEffortChanged: (minutes) {
+                        onSetTaskEffort(taskIndex, minutes);
+                      },
+                      onNextSessionEffortChanged: (minutes) {
+                        onSetNextSessionEffort(taskIndex, minutes);
+                      },
+                      onCategoryChanged: (value) {
+                        if (value == null) return;
+                        onCategoryChanged(taskIndex, value);
+                      },
+                      onEdit: () {
+                        onEditTask(taskIndex);
+                      },
+                      onDelete: () {
+                        onDeleteTask(taskIndex);
+                      },
+                      onToggleAbsolutePriority: () {
+                        onToggleAbsolutePriority(taskIndex);
+                      },
+                      onToggleExcludeWhenOverdue: () {
+                        onToggleExcludeWhenOverdue(taskIndex);
+                      },
+                      onToggleWaitingOnOthers: () {
+                        onToggleWaitingOnOthers(taskIndex);
+                      },
+                      allowReorderDrag: false,
+                    ),
+                    if (!useTwoPaneLayout) ...[
+                      const SizedBox(height: 8),
+                      buildTaskPanels(taskIndex),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final cardsGrid = Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      children: orderedIndices.map((taskIndex) {
+        final task = tasks[taskIndex];
+        return TaskSummaryCard(
+          key: ValueKey('card_${taskIndex}_${task.task}'),
+          task: task,
+          priorityColor: getPriorityColor(task.priority),
+          priorityLabel: getPriorityLabel(task.priority),
+          dueDateText: formatDueDate(task.dueDate),
+          isSelected: taskIndex == openedIndex,
+          // Tapping the already-opened card closes it too, same as tapping
+          // the duplicated row tile.
+          onTap: () => onSelectTaskPaneIndex(
+            taskIndex == openedIndex ? null : taskIndex,
+          ),
+        );
+      }).toList(),
+    );
+
+    final cardsColumn = SingleChildScrollView(
+      controller: taskListScrollController,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (openedIndex != null) buildOpenedTile(openedIndex),
+          cardsGrid,
+        ],
+      ),
+    );
+
+    if (!useTwoPaneLayout) {
+      return cardsColumn;
+    }
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(flex: 5, child: cardsColumn),
+        const SizedBox(width: 12),
+        Expanded(
+          flex: 6,
+          child: TaskDetailsPane(
+            hasSelection: openedIndex != null,
+            title: openedIndex == null ? null : tasks[openedIndex].task,
+            child: openedIndex == null ? null : buildTaskPanels(openedIndex),
           ),
         ),
       ],

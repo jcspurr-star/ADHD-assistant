@@ -18,7 +18,7 @@ class MainSectionTabs extends StatelessWidget {
       'Task list',
       'Insights',
       'Notes',
-      'Tasks V2',
+      'Work Snapshot',
     ];
 
     return LayoutBuilder(

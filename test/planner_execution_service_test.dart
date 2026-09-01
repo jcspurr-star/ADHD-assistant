@@ -3,19 +3,18 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test(
-    'execution summary counts completed, skipped, and remaining entries',
+    'execution summary counts completed, dismissed, and remaining entries',
     () {
       final summary = PlannerExecutionService.summarize(
         const ['task-1', 'movement-1', 'break-1', 'buffer-1'],
         const {
           'task-1': ExecutionState.completed,
-          'movement-1': ExecutionState.skipped,
+          'movement-1': ExecutionState.dismissed,
         },
       );
 
       expect(summary.plannedCount, 4);
       expect(summary.completedCount, 1);
-      expect(summary.skippedCount, 1);
       expect(summary.remainingCount, 2);
     },
   );
@@ -37,12 +36,12 @@ void main() {
   test('encoded execution states can be restored', () {
     final encoded = PlannerExecutionService.toEncoded(const {
       'task-1': ExecutionState.completed,
-      'break-1': ExecutionState.skipped,
+      'break-1': ExecutionState.dismissed,
     });
     final restored = PlannerExecutionService.statesFromEncoded(encoded);
 
     expect(restored['task-1'], ExecutionState.completed);
-    expect(restored['break-1'], ExecutionState.skipped);
+    expect(restored['break-1'], ExecutionState.dismissed);
   });
 
   test(
@@ -50,10 +49,7 @@ void main() {
     () {
       final summary = PlannerExecutionService.summarize(
         const ['task-1', 'task-2', 'task-3'],
-        const {
-          'task-1': ExecutionState.dismissed,
-          'task-2': ExecutionState.deferred,
-        },
+        const {'task-1': ExecutionState.dismissed},
       );
       final snapped = PlannerExecutionService.snapToGrid(
         DateTime(2026, 8, 21, 10, 7),

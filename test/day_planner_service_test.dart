@@ -418,6 +418,140 @@ void main() {
   );
 
   test(
+    'buildPlan treats a task overdue before the selected day as backlog, not due today',
+    () {
+      final result = DayPlannerService.buildPlan(
+        tasks: [
+          Task(task: 'Overdue task', priority: 'high', dueDate: '2024-01-01'),
+        ],
+        calendarEvents: const <OutlookCalendarEvent>[],
+        day: DateTime(2024, 1, 2),
+      );
+
+      final task = result.entries.firstWhere((entry) => entry.type == 'task');
+      expect(task.subtitle, contains('Pulled forward from backlog'));
+    },
+  );
+
+  test('absolute-priority tasks claim their full effort before other tasks', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: [
+        Task(
+          id: 'normal-task',
+          task: 'Normal task',
+          priority: 'high',
+          doDate: '2024-01-02',
+          nextSessionEffortMinutes: 30,
+        ),
+        Task(
+          id: 'absolute-task',
+          task: 'Absolute task',
+          priority: 'low',
+          dueDate: '2024-01-05',
+          effortMinutes: 120,
+          nextSessionEffortMinutes: 30,
+          absolutePriority: true,
+        ),
+      ],
+      calendarEvents: const <OutlookCalendarEvent>[],
+      day: DateTime(2024, 1, 2),
+    );
+
+    final absoluteSessions = result.entries
+        .where((entry) => entry.task?.id == 'absolute-task')
+        .toList();
+    expect(absoluteSessions, hasLength(2));
+    expect(
+      absoluteSessions.fold<int>(
+        0,
+        (total, entry) => total + entry.end.difference(entry.start).inMinutes,
+      ),
+      120,
+    );
+    expect(
+      result.entries.firstWhere((entry) => entry.type == 'task').task?.id,
+      'absolute-task',
+    );
+  });
+
+  test(
+    'buildPlan omits a task flagged excludeWhenOverdue once its due date has passed',
+    () {
+      final result = DayPlannerService.buildPlan(
+        tasks: [
+          Task(
+            task: 'Meeting prep',
+            priority: 'high',
+            dueDate: '2024-01-01',
+            excludeWhenOverdue: true,
+          ),
+        ],
+        calendarEvents: const <OutlookCalendarEvent>[],
+        day: DateTime(2024, 1, 2),
+      );
+
+      expect(result.entries.any((entry) => entry.type == 'task'), isFalse);
+    },
+  );
+
+  test(
+    'buildPlan still schedules an excludeWhenOverdue task on its actual due day',
+    () {
+      final result = DayPlannerService.buildPlan(
+        tasks: [
+          Task(
+            task: 'Meeting prep',
+            priority: 'high',
+            dueDate: '2024-01-02',
+            excludeWhenOverdue: true,
+          ),
+        ],
+        calendarEvents: const <OutlookCalendarEvent>[],
+        day: DateTime(2024, 1, 2),
+      );
+
+      expect(result.entries.any((entry) => entry.type == 'task'), isTrue);
+    },
+  );
+
+  test(
+    'buildPlan omits a task flagged waitingOnOthers even when due today',
+    () {
+      final result = DayPlannerService.buildPlan(
+        tasks: [
+          Task(
+            task: 'Blocked on vendor',
+            priority: 'high',
+            dueDate: '2024-01-02',
+            waitingOnOthers: true,
+          ),
+        ],
+        calendarEvents: const <OutlookCalendarEvent>[],
+        day: DateTime(2024, 1, 2),
+      );
+
+      expect(result.entries.any((entry) => entry.type == 'task'), isFalse);
+    },
+  );
+
+  test('buildPlan never pulls a waitingOnOthers task forward as backlog', () {
+    final result = DayPlannerService.buildPlan(
+      tasks: [
+        Task(
+          task: 'Blocked on vendor',
+          priority: 'high',
+          dueDate: '2024-06-01',
+          waitingOnOthers: true,
+        ),
+      ],
+      calendarEvents: const <OutlookCalendarEvent>[],
+      day: DateTime(2024, 1, 2),
+    );
+
+    expect(result.entries.any((entry) => entry.type == 'task'), isFalse);
+  });
+
+  test(
     'buildPlan pulls forward a task whose do date is after the selected day',
     () {
       final result = DayPlannerService.buildPlan(
@@ -1913,4 +2047,67 @@ void main() {
       isTrue,
     );
   });
+
+  test(
+    'buildPlan uses custom enabledActivityNames for WFH movement titles',
+    () {
+      final day = DateTime(2024, 1, 2);
+      final result = DayPlannerService.buildPlan(
+        tasks: const <Task>[],
+        calendarEvents: const <OutlookCalendarEvent>[],
+        day: day,
+        dayContext: _homeDayContext,
+        enabledActivityNames: const ['Treadmill walk', 'Desk stretch'],
+      );
+
+      final movementTitles = result.entries
+          .where((entry) => entry.type == 'movement')
+          .map((entry) => entry.title)
+          .toSet();
+
+      expect(movementTitles, containsAll(['Treadmill walk', 'Desk stretch']));
+    },
+  );
+
+  test(
+    'buildPlan uses custom enabledActivityNames for Office movement titles',
+    () {
+      final day = DateTime(2024, 1, 2);
+      final result = DayPlannerService.buildPlan(
+        tasks: const <Task>[],
+        calendarEvents: const <OutlookCalendarEvent>[],
+        day: day,
+        dayContext: _officeDayContext,
+        enabledActivityNames: const ['Stair climb', 'Office stretch'],
+      );
+
+      final movementTitles = result.entries
+          .where((entry) => entry.type == 'movement')
+          .map((entry) => entry.title)
+          .toSet();
+
+      expect(movementTitles, containsAll(['Stair climb', 'Office stretch']));
+    },
+  );
+
+  test(
+    'buildPlan disables movement entries when enabledActivityNames is empty',
+    () {
+      final day = DateTime(2024, 1, 2);
+      final result = DayPlannerService.buildPlan(
+        tasks: const <Task>[],
+        calendarEvents: const <OutlookCalendarEvent>[],
+        day: day,
+        dayContext: _homeDayContext,
+        enabledActivityNames: const <String>[],
+      );
+
+      final scheduledMovementEntries = result.entries.where(
+        (entry) =>
+            entry.id.startsWith('movement-home') ||
+            entry.id.startsWith('movement-office'),
+      );
+      expect(scheduledMovementEntries, isEmpty);
+    },
+  );
 }

@@ -6,24 +6,42 @@ class HomeHeader extends StatelessWidget {
     required this.tabs,
     required this.syncBadge,
     required this.isBusy,
-    required this.showImportCalendar,
     required this.onUndo,
-    required this.onOutlookTap,
-    required this.onImportCalendar,
     required this.onSettingsTap,
   });
 
   final Widget tabs;
   final Widget syncBadge;
   final bool isBusy;
-  final bool showImportCalendar;
   final VoidCallback onUndo;
-  final VoidCallback onOutlookTap;
-  final VoidCallback onImportCalendar;
   final VoidCallback onSettingsTap;
 
   @override
   Widget build(BuildContext context) {
+    Widget buildUndoWithDivider() {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.undo),
+            tooltip: 'Undo last action',
+            visualDensity: VisualDensity.compact,
+            style: IconButton.styleFrom(
+              side: BorderSide(color: Colors.grey.shade300),
+              shape: const CircleBorder(),
+            ),
+            onPressed: isBusy ? null : onUndo,
+          ),
+          Container(
+            width: 2,
+            height: 32,
+            margin: const EdgeInsets.symmetric(horizontal: 8),
+            color: Colors.grey.shade500,
+          ),
+        ],
+      );
+    }
+
     Widget buildActions() {
       return LayoutBuilder(
         builder: (context, actionsConstraints) {
@@ -41,31 +59,6 @@ class HomeHeader extends StatelessWidget {
                 children: [
                   syncBadge,
                   const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.undo),
-                    tooltip: 'Undo last action',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: isBusy ? null : onUndo,
-                  ),
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.calendar_month, size: 18),
-                    label: const Text('Sync Outlook'),
-                    style: OutlinedButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                    ),
-                    onPressed: isBusy ? null : onOutlookTap,
-                  ),
-                  if (showImportCalendar)
-                    OutlinedButton.icon(
-                      icon: const Icon(Icons.upload_file_outlined, size: 18),
-                      label: const Text('Upload ICS'),
-                      style: OutlinedButton.styleFrom(
-                        visualDensity: VisualDensity.compact,
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                      ),
-                      onPressed: isBusy ? null : onImportCalendar,
-                    ),
                   IconButton(
                     icon: const Icon(Icons.settings),
                     tooltip: 'Settings',
@@ -85,11 +78,21 @@ class HomeHeader extends StatelessWidget {
         if (constraints.maxWidth < 900) {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [tabs, const SizedBox(height: 6), buildActions()],
+            children: [
+              Row(
+                children: [
+                  buildUndoWithDivider(),
+                  Expanded(child: tabs),
+                ],
+              ),
+              const SizedBox(height: 6),
+              buildActions(),
+            ],
           );
         }
         return Row(
           children: [
+            buildUndoWithDivider(),
             Expanded(child: tabs),
             const SizedBox(width: 8),
             Expanded(child: buildActions()),

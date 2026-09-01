@@ -9,6 +9,8 @@ class SettingsPageResult {
   final List<String> otherMedicationOptions;
   final List<String> dopamineCrashSymptomOptions;
   final List<String> dopamineCrashAdditionalSymptomOptions;
+  final List<String> wfhActivityOptions;
+  final List<String> officeActivityOptions;
   final int outlookLookAheadDays;
 
   const SettingsPageResult({
@@ -19,6 +21,8 @@ class SettingsPageResult {
     required this.otherMedicationOptions,
     required this.dopamineCrashSymptomOptions,
     required this.dopamineCrashAdditionalSymptomOptions,
+    required this.wfhActivityOptions,
+    required this.officeActivityOptions,
     required this.outlookLookAheadDays,
   });
 }
@@ -31,10 +35,14 @@ class SettingsPage extends StatefulWidget {
   final List<String> otherMedicationOptions;
   final List<String> dopamineCrashSymptomOptions;
   final List<String> dopamineCrashAdditionalSymptomOptions;
+  final List<String> wfhActivityOptions;
+  final List<String> officeActivityOptions;
   final int outlookLookAheadDays;
   final String defaultStarterStepPrompt;
   final String defaultTaskSubtaskPrompt;
   final VoidCallback? onBackupTap;
+  final VoidCallback? onExportBackupTap;
+  final VoidCallback? onImportBackupTap;
 
   const SettingsPage({
     super.key,
@@ -45,10 +53,14 @@ class SettingsPage extends StatefulWidget {
     required this.otherMedicationOptions,
     required this.dopamineCrashSymptomOptions,
     required this.dopamineCrashAdditionalSymptomOptions,
+    required this.wfhActivityOptions,
+    required this.officeActivityOptions,
     required this.outlookLookAheadDays,
     required this.defaultStarterStepPrompt,
     required this.defaultTaskSubtaskPrompt,
     this.onBackupTap,
+    this.onExportBackupTap,
+    this.onImportBackupTap,
   });
 
   @override
@@ -65,6 +77,8 @@ class _SettingsPageState extends State<SettingsPage> {
   late List<String> otherMedicationOptions;
   late List<String> dopamineCrashSymptomOptions;
   late List<String> dopamineCrashAdditionalSymptomOptions;
+  late List<String> wfhActivityOptions;
+  late List<String> officeActivityOptions;
   final TextEditingController categoryController = TextEditingController();
   final TextEditingController editCategoryController = TextEditingController();
   final TextEditingController promptController = TextEditingController();
@@ -83,11 +97,20 @@ class _SettingsPageState extends State<SettingsPage> {
       TextEditingController();
   final TextEditingController crashAdditionalEditController =
       TextEditingController();
+  final TextEditingController wfhActivityController = TextEditingController();
+  final TextEditingController wfhActivityEditController =
+      TextEditingController();
+  final TextEditingController officeActivityController =
+      TextEditingController();
+  final TextEditingController officeActivityEditController =
+      TextEditingController();
   late int outlookLookAheadDays;
   int? contextEditingIndex;
   int? otherMedicationEditingIndex;
   int? crashSymptomEditingIndex;
   int? crashAdditionalEditingIndex;
+  int? wfhActivityEditingIndex;
+  int? officeActivityEditingIndex;
   int? editingIndex;
 
   @override
@@ -102,6 +125,8 @@ class _SettingsPageState extends State<SettingsPage> {
     dopamineCrashAdditionalSymptomOptions = List<String>.from(
       widget.dopamineCrashAdditionalSymptomOptions,
     );
+    wfhActivityOptions = List<String>.from(widget.wfhActivityOptions);
+    officeActivityOptions = List<String>.from(widget.officeActivityOptions);
     promptController.text = widget.starterStepPrompt;
     taskSubtaskPromptController.text = widget.taskSubtaskPrompt;
     outlookLookAheadDays = widget.outlookLookAheadDays;
@@ -121,6 +146,10 @@ class _SettingsPageState extends State<SettingsPage> {
     crashSymptomEditController.dispose();
     crashAdditionalController.dispose();
     crashAdditionalEditController.dispose();
+    wfhActivityController.dispose();
+    wfhActivityEditController.dispose();
+    officeActivityController.dispose();
+    officeActivityEditController.dispose();
     super.dispose();
   }
 
@@ -201,6 +230,8 @@ class _SettingsPageState extends State<SettingsPage> {
       dopamineCrashSymptomOptions: dopamineCrashSymptomOptions,
       dopamineCrashAdditionalSymptomOptions:
           dopamineCrashAdditionalSymptomOptions,
+      wfhActivityOptions: wfhActivityOptions,
+      officeActivityOptions: officeActivityOptions,
       outlookLookAheadDays: outlookLookAheadDays,
     );
     Navigator.pop(context, result);
@@ -583,6 +614,118 @@ class _SettingsPageState extends State<SettingsPage> {
               if (value == null) return;
               setState(() {
                 outlookLookAheadDays = value;
+              });
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget buildMovementActivitiesSection() {
+    return buildSectionCard(
+      title: 'Movement activities',
+      description:
+          'Add the movement activities available for WFH and Office days. '
+          'Pick which ones are active for a given day from "Choose available '
+          'activities" in the planner\'s Day context.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          buildEditableOptionsSection(
+            title: 'WFH activities',
+            description:
+                'Movement activities available on work-from-home days.',
+            options: wfhActivityOptions,
+            addController: wfhActivityController,
+            editController: wfhActivityEditController,
+            editingIndex: wfhActivityEditingIndex,
+            onAdd: () {
+              setState(() {
+                addOption(wfhActivityOptions, wfhActivityController);
+              });
+            },
+            onStartEdit: (index) {
+              setState(() {
+                wfhActivityEditingIndex = index;
+                wfhActivityEditController.text = wfhActivityOptions[index];
+              });
+            },
+            onSaveEdit: () {
+              if (wfhActivityEditingIndex == null) return;
+              setState(() {
+                if (saveEditedOption(
+                  wfhActivityOptions,
+                  wfhActivityEditingIndex!,
+                  wfhActivityEditController,
+                )) {
+                  wfhActivityEditingIndex = null;
+                  wfhActivityEditController.clear();
+                }
+              });
+            },
+            onCancelEdit: () {
+              setState(() {
+                wfhActivityEditingIndex = null;
+                wfhActivityEditController.clear();
+              });
+            },
+            onRemove: (index) {
+              setState(() {
+                wfhActivityOptions.removeAt(index);
+                if (wfhActivityEditingIndex == index) {
+                  wfhActivityEditingIndex = null;
+                  wfhActivityEditController.clear();
+                }
+              });
+            },
+          ),
+          const SizedBox(height: 10),
+          buildEditableOptionsSection(
+            title: 'Office activities',
+            description: 'Movement activities available on office days.',
+            options: officeActivityOptions,
+            addController: officeActivityController,
+            editController: officeActivityEditController,
+            editingIndex: officeActivityEditingIndex,
+            onAdd: () {
+              setState(() {
+                addOption(officeActivityOptions, officeActivityController);
+              });
+            },
+            onStartEdit: (index) {
+              setState(() {
+                officeActivityEditingIndex = index;
+                officeActivityEditController.text =
+                    officeActivityOptions[index];
+              });
+            },
+            onSaveEdit: () {
+              if (officeActivityEditingIndex == null) return;
+              setState(() {
+                if (saveEditedOption(
+                  officeActivityOptions,
+                  officeActivityEditingIndex!,
+                  officeActivityEditController,
+                )) {
+                  officeActivityEditingIndex = null;
+                  officeActivityEditController.clear();
+                }
+              });
+            },
+            onCancelEdit: () {
+              setState(() {
+                officeActivityEditingIndex = null;
+                officeActivityEditController.clear();
+              });
+            },
+            onRemove: (index) {
+              setState(() {
+                officeActivityOptions.removeAt(index);
+                if (officeActivityEditingIndex == index) {
+                  officeActivityEditingIndex = null;
+                  officeActivityEditController.clear();
+                }
               });
             },
           ),
@@ -1047,19 +1190,13 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget buildRestoreBackupButton() {
-    if (widget.onBackupTap == null) {
-      return const SizedBox.shrink();
-    }
-
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: SizedBox(
-        width: 220,
-        child: ElevatedButton.icon(
+    final buttons = <Widget>[
+      if (widget.onBackupTap != null)
+        ElevatedButton.icon(
           icon: const Icon(Icons.restore_outlined, size: 22),
           label: const Text('Restore Backup'),
           style: ElevatedButton.styleFrom(
-            padding: const EdgeInsets.symmetric(vertical: 16),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
             textStyle: const TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.w700,
@@ -1067,7 +1204,32 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           onPressed: widget.onBackupTap,
         ),
-      ),
+      if (widget.onExportBackupTap != null)
+        OutlinedButton.icon(
+          icon: const Icon(Icons.download_outlined, size: 20),
+          label: const Text('Export backup file'),
+          style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          ),
+          onPressed: widget.onExportBackupTap,
+        ),
+      if (widget.onImportBackupTap != null)
+        OutlinedButton.icon(
+          icon: const Icon(Icons.upload_outlined, size: 20),
+          label: const Text('Import backup file'),
+          style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          ),
+          onPressed: widget.onImportBackupTap,
+        ),
+    ];
+    if (buttons.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Wrap(spacing: 10, runSpacing: 10, children: buttons),
     );
   }
 
@@ -1123,6 +1285,8 @@ class _SettingsPageState extends State<SettingsPage> {
                           buildCategorySection(),
                           const SizedBox(height: 16),
                           buildDisplaySection(),
+                          const SizedBox(height: 16),
+                          buildMovementActivitiesSection(),
                         ],
                       ),
                       ListView(

@@ -14,6 +14,7 @@ class IcsImportService {
     String? currentStart;
     String? currentEnd;
     bool currentIsAllDay = false;
+    bool currentIsPrivate = false;
     var currentLabels = <String>[];
 
     void flushCurrentEvent() {
@@ -38,6 +39,7 @@ class IcsImportService {
             isAllDay: currentIsAllDay,
             calendarSource: calendarSource,
             labels: currentLabels,
+            isPrivate: currentIsPrivate,
           ),
         );
       }
@@ -55,6 +57,7 @@ class IcsImportService {
         currentStart = null;
         currentEnd = null;
         currentIsAllDay = false;
+        currentIsPrivate = false;
         currentLabels = <String>[];
         continue;
       }
@@ -66,6 +69,7 @@ class IcsImportService {
         currentStart = null;
         currentEnd = null;
         currentIsAllDay = false;
+        currentIsPrivate = false;
         currentLabels = <String>[];
         continue;
       }
@@ -86,6 +90,9 @@ class IcsImportService {
         currentUid = _extractValue(line);
       } else if (propertyName == 'SUMMARY') {
         currentSummary = _decodeValue(_extractValue(line));
+      } else if (propertyName == 'CLASS') {
+        final value = _extractValue(line).trim().toUpperCase();
+        currentIsPrivate = value == 'PRIVATE' || value == 'CONFIDENTIAL';
       } else if (propertyName == 'DTSTART') {
         currentIsAllDay = propertyWithParams.toUpperCase().contains(
           'VALUE=DATE',

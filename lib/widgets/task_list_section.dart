@@ -10,6 +10,8 @@ class TaskListSection extends StatelessWidget {
     required this.visibleTaskIndices,
     required this.selectedTaskCategory,
     required this.groupTasksByPriority,
+    required this.cardViewEnabled,
+    required this.archiveViewEnabled,
     required this.selectedTaskSortModeIsManual,
     required this.selectedTaskPaneIndex,
     required this.taskListScrollController,
@@ -29,6 +31,9 @@ class TaskListSection extends StatelessWidget {
     required this.onCategoryChanged,
     required this.onEditTask,
     required this.onDeleteTask,
+    required this.onToggleAbsolutePriority,
+    required this.onToggleExcludeWhenOverdue,
+    required this.onToggleWaitingOnOthers,
     required this.onReorderVisibleTasks,
   });
 
@@ -36,6 +41,8 @@ class TaskListSection extends StatelessWidget {
   final List<int> visibleTaskIndices;
   final String selectedTaskCategory;
   final bool groupTasksByPriority;
+  final bool cardViewEnabled;
+  final bool archiveViewEnabled;
   final bool selectedTaskSortModeIsManual;
   final int? selectedTaskPaneIndex;
   final ScrollController taskListScrollController;
@@ -56,6 +63,9 @@ class TaskListSection extends StatelessWidget {
   final void Function(int taskIndex, String value) onCategoryChanged;
   final void Function(int taskIndex) onEditTask;
   final void Function(int taskIndex) onDeleteTask;
+  final void Function(int taskIndex) onToggleAbsolutePriority;
+  final void Function(int taskIndex) onToggleExcludeWhenOverdue;
+  final void Function(int taskIndex) onToggleWaitingOnOthers;
   final Future<void> Function(
     int oldIndex,
     int newIndex,
@@ -70,6 +80,8 @@ class TaskListSection extends StatelessWidget {
       visibleTaskIndices: visibleTaskIndices,
       selectedTaskCategory: selectedTaskCategory,
       groupTasksByPriority: groupTasksByPriority,
+      cardViewEnabled: cardViewEnabled,
+      archiveViewEnabled: archiveViewEnabled,
       manualSortMode: selectedTaskSortModeIsManual,
       selectedTaskPaneIndex: selectedTaskPaneIndex,
       taskListScrollController: taskListScrollController,
@@ -89,6 +101,9 @@ class TaskListSection extends StatelessWidget {
       onCategoryChanged: onCategoryChanged,
       onEditTask: onEditTask,
       onDeleteTask: onDeleteTask,
+      onToggleAbsolutePriority: onToggleAbsolutePriority,
+      onToggleExcludeWhenOverdue: onToggleExcludeWhenOverdue,
+      onToggleWaitingOnOthers: onToggleWaitingOnOthers,
       onReorderVisibleTasks: onReorderVisibleTasks,
     );
   }

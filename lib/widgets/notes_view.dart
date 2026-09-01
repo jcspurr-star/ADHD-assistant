@@ -1,16 +1,23 @@
 import 'package:flutter/material.dart';
 
 import '../models/note_entry.dart';
+import 'note_formatting_toolbar.dart';
+import 'task_details_pane.dart';
 
 class NotesView extends StatefulWidget {
   const NotesView({
     super.key,
     required this.contentWidth,
+    required this.useTwoPaneLayout,
     required this.noteEntries,
     required this.selectedNoteId,
     required this.inboxEntries,
     required this.displayNoteTitle,
     required this.notePreview,
+    required this.noteTitleController,
+    required this.noteContentController,
+    required this.noteIngredientsController,
+    required this.noteInstructionsController,
     required this.onCreateNoteWithTitle,
     required this.onCreateRecipeWithTitle,
     required this.onSelectNote,
@@ -24,11 +31,16 @@ class NotesView extends StatefulWidget {
   });
 
   final double contentWidth;
+  final bool useTwoPaneLayout;
   final List<NoteEntry> noteEntries;
   final String? selectedNoteId;
   final List<String> inboxEntries;
   final String Function(NoteEntry entry) displayNoteTitle;
   final String Function(NoteEntry entry) notePreview;
+  final TextEditingController noteTitleController;
+  final TextEditingController noteContentController;
+  final TextEditingController noteIngredientsController;
+  final TextEditingController noteInstructionsController;
   final Future<void> Function(String title) onCreateNoteWithTitle;
   final Future<void> Function(String title) onCreateRecipeWithTitle;
   final Future<void> Function(String noteId) onSelectNote;
@@ -47,6 +59,9 @@ class NotesView extends StatefulWidget {
 class _NotesViewState extends State<NotesView> {
   late final TextEditingController _newNoteTitleController;
   late final TextEditingController _newRecipeTitleController;
+  final FocusNode _noteContentFocusNode = FocusNode();
+  final FocusNode _noteIngredientsFocusNode = FocusNode();
+  final FocusNode _noteInstructionsFocusNode = FocusNode();
   bool _creatingNote = false;
   bool _creatingRecipe = false;
 
@@ -61,6 +76,9 @@ class _NotesViewState extends State<NotesView> {
   void dispose() {
     _newNoteTitleController.dispose();
     _newRecipeTitleController.dispose();
+    _noteContentFocusNode.dispose();
+    _noteIngredientsFocusNode.dispose();
+    _noteInstructionsFocusNode.dispose();
     super.dispose();
   }
 
@@ -302,25 +320,146 @@ class _NotesViewState extends State<NotesView> {
         ),
         const SizedBox(height: 10),
         Expanded(
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: SizedBox(
-              width: widget.contentWidth,
-              child: Card(
-                elevation: 0,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  side: BorderSide(color: Colors.grey.shade300),
+          // The two-pane split spans the FULL window width (50/50), unlike
+          // the rest of the page which stays capped at contentWidth.
+          child: widget.useTwoPaneLayout
+              ? Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: buildNotesListCard()),
+                    const SizedBox(width: 12),
+                    Expanded(child: buildNoteDetailsPane()),
+                  ],
+                )
+              : Align(
+                  alignment: Alignment.centerLeft,
+                  child: SizedBox(
+                    width: widget.contentWidth,
+                    child: buildNotesListCard(),
+                  ),
                 ),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: buildNotesList(),
-                ),
-              ),
-            ),
+        ),
+      ],
+    );
+  }
+
+  Widget buildNotesListCard() {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Colors.grey.shade300),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: buildNotesList(),
+      ),
+    );
+  }
+
+  NoteEntry? get _selectedNote {
+    for (final entry in widget.noteEntries) {
+      if (entry.id == widget.selectedNoteId) return entry;
+    }
+    return null;
+  }
+
+  Widget _buildFormattedSection({
+    required String label,
+    required TextEditingController controller,
+    required FocusNode focusNode,
+    required String hintText,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+        NoteFormattingToolbar(controller: controller, focusNode: focusNode),
+        const SizedBox(height: 4),
+        TextField(
+          controller: controller,
+          focusNode: focusNode,
+          minLines: 6,
+          maxLines: null,
+          textAlignVertical: TextAlignVertical.top,
+          decoration: InputDecoration(
+            hintText: hintText,
+            border: const OutlineInputBorder(),
+            alignLabelWithHint: true,
           ),
         ),
       ],
+    );
+  }
+
+  Widget buildNoteDetailsPane() {
+    final note = _selectedNote;
+    final isRecipe = note?.kind == 'recipe';
+    return TaskDetailsPane(
+      hasSelection: note != null,
+      placeholderText: 'Select a note to show its contents here',
+      child: note == null
+          ? null
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: widget.noteTitleController,
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                        ),
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          border: InputBorder.none,
+                          hintText: 'Title',
+                        ),
+                      ),
+                    ),
+                    if (!isRecipe)
+                      IconButton(
+                        icon: const Icon(Icons.playlist_add),
+                        tooltip: 'Convert note to task',
+                        onPressed: () async {
+                          await widget.onConvertNoteToTask(note.id);
+                        },
+                      ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      tooltip: isRecipe ? 'Delete recipe' : 'Delete note',
+                      onPressed: () async {
+                        await widget.onDeleteNote(note.id);
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                if (isRecipe) ...[
+                  _buildFormattedSection(
+                    label: 'Ingredients',
+                    controller: widget.noteIngredientsController,
+                    focusNode: _noteIngredientsFocusNode,
+                    hintText: 'List each ingredient...',
+                  ),
+                  const SizedBox(height: 12),
+                  _buildFormattedSection(
+                    label: 'Instructions',
+                    controller: widget.noteInstructionsController,
+                    focusNode: _noteInstructionsFocusNode,
+                    hintText: 'Write the cooking steps...',
+                  ),
+                ] else
+                  _buildFormattedSection(
+                    label: 'Note',
+                    controller: widget.noteContentController,
+                    focusNode: _noteContentFocusNode,
+                    hintText: 'Write your note...',
+                  ),
+              ],
+            ),
     );
   }
 
@@ -345,7 +484,9 @@ class _NotesViewState extends State<NotesView> {
           borderRadius: BorderRadius.circular(10),
           onTap: () async {
             await widget.onSelectNote(entry.id);
-            await widget.onEditNote(entry);
+            if (!widget.useTwoPaneLayout) {
+              await widget.onEditNote(entry);
+            }
           },
           child: Container(
             padding: const EdgeInsets.all(10),

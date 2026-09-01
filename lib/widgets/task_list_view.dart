@@ -15,6 +15,10 @@ class TaskListView extends StatelessWidget {
     required this.onSelectTaskSortMode,
     required this.groupByPriority,
     required this.onGroupByPriorityChanged,
+    required this.cardViewEnabled,
+    required this.onCardViewChanged,
+    required this.archiveViewEnabled,
+    required this.onArchiveViewChanged,
   });
 
   final bool showOverview;
@@ -29,6 +33,10 @@ class TaskListView extends StatelessWidget {
   final ValueChanged<String> onSelectTaskSortMode;
   final bool groupByPriority;
   final ValueChanged<bool> onGroupByPriorityChanged;
+  final bool cardViewEnabled;
+  final ValueChanged<bool> onCardViewChanged;
+  final bool archiveViewEnabled;
+  final ValueChanged<bool> onArchiveViewChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -72,6 +80,28 @@ class TaskListView extends StatelessWidget {
                   runSpacing: 8,
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
+                    SegmentedButton<bool>(
+                      segments: const [
+                        ButtonSegment<bool>(
+                          value: false,
+                          label: Text('Row view'),
+                          icon: Icon(Icons.view_agenda_outlined, size: 16),
+                        ),
+                        ButtonSegment<bool>(
+                          value: true,
+                          label: Text('Card view'),
+                          icon: Icon(Icons.grid_view, size: 16),
+                        ),
+                      ],
+                      selected: {cardViewEnabled},
+                      showSelectedIcon: false,
+                      style: const ButtonStyle(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onSelectionChanged: (selection) {
+                        onCardViewChanged(selection.first);
+                      },
+                    ),
                     PopupMenuButton<String>(
                       tooltip: 'Sort task list',
                       onSelected: onSelectTaskSortMode,
@@ -126,6 +156,18 @@ class TaskListView extends StatelessWidget {
                       onSelected: onGroupByPriorityChanged,
                       visualDensity: VisualDensity.compact,
                     ),
+                    FilterChip(
+                      avatar: Icon(
+                        archiveViewEnabled
+                            ? Icons.archive
+                            : Icons.archive_outlined,
+                        size: 16,
+                      ),
+                      label: const Text('Archive'),
+                      selected: archiveViewEnabled,
+                      onSelected: onArchiveViewChanged,
+                      visualDensity: VisualDensity.compact,
+                    ),
                     Text(
                       'Drag handles show in Standard order when grouping is off.',
                       style: TextStyle(
@@ -158,7 +200,7 @@ class TaskListView extends StatelessWidget {
           ),
         Expanded(
           child: Align(
-            alignment: Alignment.centerLeft,
+            alignment: Alignment.topLeft,
             child: SizedBox(width: contentWidth, child: buildTaskListContent()),
           ),
         ),

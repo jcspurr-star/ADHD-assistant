@@ -12,6 +12,10 @@ class NotesSection extends StatelessWidget {
     required this.inboxEntries,
     required this.displayNoteTitle,
     required this.notePreview,
+    required this.noteTitleController,
+    required this.noteContentController,
+    required this.noteIngredientsController,
+    required this.noteInstructionsController,
     required this.onCreateNoteWithTitle,
     required this.onCreateRecipeWithTitle,
     required this.onSelectNote,
@@ -30,6 +34,10 @@ class NotesSection extends StatelessWidget {
   final List<String> inboxEntries;
   final String Function(NoteEntry entry) displayNoteTitle;
   final String Function(NoteEntry entry) notePreview;
+  final TextEditingController noteTitleController;
+  final TextEditingController noteContentController;
+  final TextEditingController noteIngredientsController;
+  final TextEditingController noteInstructionsController;
   final Future<void> Function(String title) onCreateNoteWithTitle;
   final Future<void> Function(String title) onCreateRecipeWithTitle;
   final Future<void> Function(String noteId) onSelectNote;
@@ -48,14 +56,20 @@ class NotesSection extends StatelessWidget {
         final contentWidth = constraints.maxWidth < 720
             ? constraints.maxWidth
             : wideContentWidth.clamp(0, constraints.maxWidth).toDouble();
+        final useTwoPaneLayout = constraints.maxWidth >= 1100;
 
         return NotesView(
           contentWidth: contentWidth,
+          useTwoPaneLayout: useTwoPaneLayout,
           noteEntries: noteEntries,
           selectedNoteId: selectedNoteId,
           inboxEntries: inboxEntries,
           displayNoteTitle: displayNoteTitle,
           notePreview: notePreview,
+          noteTitleController: noteTitleController,
+          noteContentController: noteContentController,
+          noteIngredientsController: noteIngredientsController,
+          noteInstructionsController: noteInstructionsController,
           onCreateNoteWithTitle: onCreateNoteWithTitle,
           onCreateRecipeWithTitle: onCreateRecipeWithTitle,
           onSelectNote: onSelectNote,
