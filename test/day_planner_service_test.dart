@@ -72,6 +72,26 @@ void main() {
     expect(updated.relatedTaskIds, ['replacement-task']);
   });
 
+  test('Walk break activity overrides are categorized as movement', () {
+    final entry = DayPlannerEntry(
+      id: 'walk-slot',
+      title: 'Personal block',
+      type: 'personal',
+      start: DateTime(2024, 1, 2, 9),
+      end: DateTime(2024, 1, 2, 10),
+    );
+
+    final updated = DayPlannerService.applyEntryOverrides(
+      [entry],
+      const {'walk-slot': PlannerEntryOverride(customTitle: 'Walk break')},
+      DateTime(2024, 1, 2, 9),
+      DateTime(2024, 1, 2, 17),
+    ).single;
+
+    expect(updated.title, 'Walk break');
+    expect(updated.type, 'movement');
+  });
+
   test('deleted lunch breaks are not recreated during replanning', () {
     final result = DayPlannerService.buildPlan(
       tasks: const <Task>[],
@@ -118,6 +138,7 @@ void main() {
       task: 'Write plan',
       priority: 'high',
       dueDate: '2024-01-02',
+      effortMinutes: 60,
     );
     final calendarEvent = OutlookCalendarEvent(
       id: 'meeting-1',
@@ -441,9 +462,14 @@ void main() {
     );
   });
 
-  test('buildPlan pulls forward undated tasks to fill spare capacity', () {
+  test('buildPlan pulls forward backlog tasks to fill spare capacity', () {
     final day = DateTime(2024, 1, 2);
-    final undatedTask = Task(task: 'Write plan', priority: 'high');
+    final undatedTask = Task(
+      task: 'Write plan',
+      priority: 'high',
+      dueDate: '2024-06-01',
+      effortMinutes: 60,
+    );
 
     final result = DayPlannerService.buildPlan(
       tasks: [undatedTask],
@@ -460,7 +486,12 @@ void main() {
     () {
       final result = DayPlannerService.buildPlan(
         tasks: [
-          Task(task: 'Future task', priority: 'high', dueDate: '2024-01-05'),
+          Task(
+            task: 'Future task',
+            priority: 'high',
+            dueDate: '2024-01-05',
+            effortMinutes: 60,
+          ),
         ],
         calendarEvents: const <OutlookCalendarEvent>[],
         day: DateTime(2024, 1, 2),
@@ -476,7 +507,12 @@ void main() {
     () {
       final result = DayPlannerService.buildPlan(
         tasks: [
-          Task(task: 'Overdue task', priority: 'high', dueDate: '2024-01-01'),
+          Task(
+            task: 'Overdue task',
+            priority: 'high',
+            dueDate: '2024-01-01',
+            effortMinutes: 60,
+          ),
         ],
         calendarEvents: const <OutlookCalendarEvent>[],
         day: DateTime(2024, 1, 2),
@@ -561,6 +597,7 @@ void main() {
             priority: 'high',
             dueDate: '2024-01-02',
             excludeWhenOverdue: true,
+            effortMinutes: 60,
           ),
         ],
         calendarEvents: const <OutlookCalendarEvent>[],
@@ -618,6 +655,7 @@ void main() {
             priority: 'high',
             doDate: '2024-01-03',
             dueDate: '2024-01-02',
+            effortMinutes: 60,
           ),
         ],
         calendarEvents: const <OutlookCalendarEvent>[],
@@ -1338,6 +1376,40 @@ void main() {
     );
   });
 
+  test('buildPlan preserves the selected Work task on an added block', () {
+    final task = Task(
+      id: 'work-added-task',
+      task: 'Prepare report',
+      category: 'Work',
+      priority: 'high',
+      dueDate: '2024-01-02',
+      effortMinutes: 60,
+    );
+    final result = DayPlannerService.buildPlan(
+      tasks: [task],
+      calendarEvents: const <OutlookCalendarEvent>[],
+      day: DateTime(2024, 1, 2),
+      dayContext: _homeDayContext,
+      personalBlocks: const [
+        PersonalPlannerBlock(
+          id: 'added-work-task',
+          title: 'Prepare report',
+          startMinutes: 11 * 60,
+          endMinutes: 12 * 60,
+          category: 'Work task',
+          taskId: 'work-added-task',
+        ),
+      ],
+    );
+
+    final entry = result.entries.firstWhere(
+      (candidate) => candidate.id == 'added-work-task',
+    );
+    expect(entry.type, 'task');
+    expect(entry.task?.category, 'Work');
+    expect(entry.relatedTaskIds, ['work-added-task']);
+  });
+
   test('buildPlan adds movement sessions on WFH days', () {
     final day = DateTime(2024, 1, 2);
     final result = DayPlannerService.buildPlan(
@@ -1441,6 +1513,10 @@ void main() {
       );
       expect(commute.every((entry) => entry.type == 'task'), isTrue);
       expect(commute.every((entry) => entry.task?.category == 'Work'), isTrue);
+      final rehydratedCommute = DayPlannerEntry.fromJson(
+        commute.first.toJson(),
+      );
+      expect(rehydratedCommute.task?.category, 'Work');
       expect(
         commute
             .firstWhere((entry) => entry.id.startsWith('commute-before'))
@@ -1480,7 +1556,7 @@ void main() {
     );
     expect(switchOff.id, 'switch-off-2024-1-2');
     expect(switchOff.type, 'task');
-    expect(switchOff.task?.category, 'Work');
+    expect(switchOff.task?.category, 'Home');
     expect(switchOff.start, DateTime(2024, 1, 2, 17));
     expect(switchOff.end, DateTime(2024, 1, 2, 17, 15));
   });
@@ -1497,6 +1573,13 @@ void main() {
             .where((entry) => entry.type == 'movement' && !entry.isConcurrent)
             .toList()
           ..sort((a, b) => a.start.compareTo(b.start));
+
+    expect(
+      walkingBreaks.every(
+        (entry) => !entry.end.isAfter(DateTime(2024, 1, 2, 16)),
+      ),
+      isTrue,
+    );
 
     for (var index = 1; index < walkingBreaks.length; index++) {
       expect(
@@ -2042,6 +2125,8 @@ void main() {
       final task = Task(
         task: 'Prepare report',
         priority: 'medium',
+        dueDate: '2024-01-10',
+        effortMinutes: 60,
         subtasks: [Subtask(text: 'Draft outline', doDate: '2024-01-02')],
       );
 

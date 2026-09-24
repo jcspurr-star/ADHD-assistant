@@ -61,6 +61,7 @@ class StorageService {
   static const String _gymAvailableKey = 'gym_available';
   static const String _wfhAvailableKey = 'wfh_available';
   static const String _eveningAvailableKey = 'evening_available';
+  static const String _sillyModeEnabledKey = 'silly_mode_enabled';
   static const String _contextTodayOptionsKey = 'context_today_options';
   static const String _otherMedicationOptionsKey = 'other_medication_options';
   static const String _dopamineCrashSymptomOptionsKey =
@@ -1224,6 +1225,21 @@ class StorageService {
     await _captureUndoSnapshot();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_eveningAvailableKey, enabled);
+    await _touchStateMetadata(prefs);
+    unawaited(_pushCurrentStateToCloudIfAvailable());
+  }
+
+  static Future<bool?> loadSillyModeEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!prefs.containsKey(_sillyModeEnabledKey)) {
+      return null;
+    }
+    return prefs.getBool(_sillyModeEnabledKey);
+  }
+
+  static Future<void> saveSillyModeEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_sillyModeEnabledKey, enabled);
     await _touchStateMetadata(prefs);
     unawaited(_pushCurrentStateToCloudIfAvailable());
   }

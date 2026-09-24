@@ -19,6 +19,7 @@ class MainSectionTabs extends StatelessWidget {
       'Insights',
       'Notes',
       'Work Snapshot',
+      "Today's Menu",
     ];
 
     return LayoutBuilder(

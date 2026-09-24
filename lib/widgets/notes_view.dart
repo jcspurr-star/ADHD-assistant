@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/note_entry.dart';
 import 'note_formatting_toolbar.dart';
 import 'task_details_pane.dart';
+import 'voice_capture_button.dart';
 
 class NotesView extends StatefulWidget {
   const NotesView({
@@ -386,6 +387,7 @@ class _NotesViewState extends State<NotesView> {
             hintText: hintText,
             border: const OutlineInputBorder(),
             alignLabelWithHint: true,
+            suffixIcon: VoiceCaptureButton(controller: controller),
           ),
         ),
       ],

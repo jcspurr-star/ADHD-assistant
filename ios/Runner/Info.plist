@@ -8,6 +8,10 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>Adhd Assistant</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>ADHD uses the microphone to capture spoken notes and quick thoughts.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>ADHD uses speech recognition to turn spoken notes into text.</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>

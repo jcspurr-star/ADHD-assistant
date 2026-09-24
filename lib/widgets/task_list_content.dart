@@ -22,6 +22,7 @@ class TaskListContent extends StatelessWidget {
     required this.getPriorityLabel,
     required this.categories,
     required this.formatDueDate,
+    required this.formatStartDate,
     required this.buildTaskPanels,
     required this.onToggleTask,
     required this.onToggleExpanded,
@@ -29,14 +30,17 @@ class TaskListContent extends StatelessWidget {
     required this.onPriorityChanged,
     required this.onSetDueDate,
     required this.onSetPlanDate,
+    required this.onStartTaskToday,
     required this.onSetTaskEffort,
     required this.onSetNextSessionEffort,
     required this.onCategoryChanged,
     required this.onEditTask,
     required this.onDeleteTask,
+    required this.onCategorizeForMenu,
     required this.onToggleAbsolutePriority,
     required this.onToggleExcludeWhenOverdue,
     required this.onToggleWaitingOnOthers,
+    required this.onToggleSillyModeExempt,
     required this.onReorderVisibleTasks,
   });
 
@@ -53,6 +57,7 @@ class TaskListContent extends StatelessWidget {
   final String Function(String priority) getPriorityLabel;
   final List<String> categories;
   final String Function(String? raw) formatDueDate;
+  final String Function(String? raw) formatStartDate;
   final Widget Function(int taskIndex) buildTaskPanels;
   final void Function(int taskIndex, bool? value) onToggleTask;
   final void Function(int taskIndex) onToggleExpanded;
@@ -60,15 +65,18 @@ class TaskListContent extends StatelessWidget {
   final void Function(int taskIndex, String value) onPriorityChanged;
   final Future<void> Function(int taskIndex) onSetDueDate;
   final Future<void> Function(int taskIndex) onSetPlanDate;
+  final void Function(int taskIndex) onStartTaskToday;
   final Future<void> Function(int taskIndex, int? minutes) onSetTaskEffort;
   final Future<void> Function(int taskIndex, int? minutes)
   onSetNextSessionEffort;
   final void Function(int taskIndex, String value) onCategoryChanged;
   final void Function(int taskIndex) onEditTask;
   final void Function(int taskIndex) onDeleteTask;
+  final void Function(int taskIndex) onCategorizeForMenu;
   final void Function(int taskIndex) onToggleAbsolutePriority;
   final void Function(int taskIndex) onToggleExcludeWhenOverdue;
   final void Function(int taskIndex) onToggleWaitingOnOthers;
+  final void Function(int taskIndex) onToggleSillyModeExempt;
   final Future<void> Function(
     int oldIndex,
     int newIndex,
@@ -123,7 +131,7 @@ class TaskListContent extends StatelessWidget {
           ? Colors.grey.shade400
           : getPriorityColor(task.priority);
       final dueDateLabel = formatDueDate(task.dueDate);
-      final planDateLabel = formatDueDate(task.doDate);
+      final planDateLabel = formatStartDate(task.doDate);
       void openTask() {
         if (useTwoPaneLayout) {
           onSelectTaskPaneIndex(
@@ -190,6 +198,9 @@ class TaskListContent extends StatelessWidget {
                         onPlanDate: () {
                           onSetPlanDate(taskIndex);
                         },
+                        onStartToday: () {
+                          onStartTaskToday(taskIndex);
+                        },
                         onTotalEffortChanged: (minutes) {
                           onSetTaskEffort(taskIndex, minutes);
                         },
@@ -208,6 +219,9 @@ class TaskListContent extends StatelessWidget {
                         onDelete: () {
                           onDeleteTask(taskIndex);
                         },
+                        onCategorizeForMenu: () {
+                          onCategorizeForMenu(taskIndex);
+                        },
                         onToggleAbsolutePriority: () {
                           onToggleAbsolutePriority(taskIndex);
                         },
@@ -216,6 +230,9 @@ class TaskListContent extends StatelessWidget {
                         },
                         onToggleWaitingOnOthers: () {
                           onToggleWaitingOnOthers(taskIndex);
+                        },
+                        onToggleSillyModeExempt: () {
+                          onToggleSillyModeExempt(taskIndex);
                         },
                         allowReorderDrag:
                             !groupTasksByPriority && manualSortMode,
@@ -234,15 +251,42 @@ class TaskListContent extends StatelessWidget {
       );
     }
 
-    Widget buildSimpleList(List<int> indices) {
-      return ListView.builder(
-        controller: taskListScrollController,
+    Widget buildIndicesList(List<int> indices, {required bool scrollable}) {
+      final orderedIndices = groupTasksByPriority
+          ? _groupedOrder(indices)
+          : indices;
+
+      if (groupTasksByPriority || !manualSortMode) {
+        return ListView.builder(
+          controller: scrollable ? taskListScrollController : null,
+          shrinkWrap: !scrollable,
+          physics: scrollable ? null : const NeverScrollableScrollPhysics(),
+          padding: EdgeInsets.zero,
+          itemCount: orderedIndices.length,
+          itemBuilder: (context, listIndex) {
+            return buildTaskListItem(
+              context,
+              orderedIndices[listIndex],
+              reorderableIndex: listIndex,
+            );
+          },
+        );
+      }
+
+      return ReorderableListView.builder(
+        scrollController: scrollable ? taskListScrollController : null,
+        shrinkWrap: !scrollable,
+        physics: scrollable ? null : const NeverScrollableScrollPhysics(),
         padding: EdgeInsets.zero,
-        itemCount: indices.length,
+        buildDefaultDragHandles: false,
+        itemCount: orderedIndices.length,
+        onReorderItem: (oldIndex, newIndex) async {
+          await onReorderVisibleTasks(oldIndex, newIndex, orderedIndices);
+        },
         itemBuilder: (context, listIndex) {
           return buildTaskListItem(
             context,
-            indices[listIndex],
+            orderedIndices[listIndex],
             reorderableIndex: listIndex,
           );
         },
@@ -251,60 +295,46 @@ class TaskListContent extends StatelessWidget {
 
     Widget baseList;
 
-    if (groupTasksByPriority) {
-      final grouped = <String, List<int>>{
-        'high': [],
-        'medium': [],
-        'low': [],
-        'other': [],
-      };
+    if (archiveViewEnabled) {
+      baseList = buildIndicesList(visibleTaskIndices, scrollable: true);
+    } else {
+      final readyIndices = visibleTaskIndices
+          .where((index) => tasks[index].hasCompletePlanningMetadata)
+          .toList();
+      final holdingIndices = visibleTaskIndices
+          .where((index) => !tasks[index].hasCompletePlanningMetadata)
+          .toList();
 
-      for (final index in visibleTaskIndices) {
-        final priority = tasks[index].priority;
-        if (grouped.containsKey(priority)) {
-          grouped[priority]!.add(index);
-        } else {
-          grouped['other']!.add(index);
-        }
-      }
-
-      final groupedOrder = <int>[
-        ...grouped['high']!,
-        ...grouped['medium']!,
-        ...grouped['low']!,
-        ...grouped['other']!,
-      ];
-
-      baseList = ListView.builder(
+      baseList = ListView(
         controller: taskListScrollController,
         padding: EdgeInsets.zero,
-        itemCount: groupedOrder.length,
-        itemBuilder: (context, listIndex) {
-          return buildTaskListItem(
-            context,
-            groupedOrder[listIndex],
-            reorderableIndex: listIndex,
-          );
-        },
-      );
-    } else if (!manualSortMode) {
-      baseList = buildSimpleList(visibleTaskIndices);
-    } else {
-      baseList = ReorderableListView.builder(
-        scrollController: taskListScrollController,
-        padding: EdgeInsets.zero,
-        buildDefaultDragHandles: false,
-        itemCount: visibleTaskIndices.length,
-        onReorderItem: (oldIndex, newIndex) async {
-          await onReorderVisibleTasks(oldIndex, newIndex, visibleTaskIndices);
-        },
-        itemBuilder: (context, listIndex) {
-          return buildTaskListItem(
-            context,
-            visibleTaskIndices[listIndex],
-            reorderableIndex: listIndex,
-          );
-        },
+        children: [
+          _buildReadinessSectionHeader(
+            'Ready tasks',
+            readyIndices.length,
+            icon: Icons.check_circle,
+            color: Colors.green.shade700,
+          ),
+          if (readyIndices.isEmpty)
+            _buildEmptySectionHint('No tasks ready to plan yet.')
+          else
+            buildIndicesList(readyIndices, scrollable: false),
+          const SizedBox(height: 14),
+          const Divider(height: 1),
+          const SizedBox(height: 14),
+          _buildReadinessSectionHeader(
+            'Tasks holding area',
+            holdingIndices.length,
+            icon: Icons.inventory_2_outlined,
+            color: Colors.blueGrey.shade600,
+          ),
+          if (holdingIndices.isEmpty)
+            _buildEmptySectionHint(
+              'Nothing waiting \u2014 every task has priority, a date, and an effort estimate.',
+            )
+          else
+            buildIndicesList(holdingIndices, scrollable: false),
+        ],
       );
     }
 
@@ -356,6 +386,57 @@ class TaskListContent extends StatelessWidget {
     ];
   }
 
+  Widget _buildReadinessSectionHeader(
+    String title,
+    int count, {
+    required IconData icon,
+    required Color color,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 6),
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: color,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: color.withAlpha(30),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              '$count',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: color,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptySectionHint(String message) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+      child: Text(
+        message,
+        style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+      ),
+    );
+  }
+
   // Card view: a wrapping grid of small square summary cards. Tapping a card
   // "opens" it — duplicating it at the top as a normal row tile (with its
   // subtask panel shown the same way row view does) — without removing the
@@ -375,7 +456,7 @@ class TaskListContent extends StatelessWidget {
       final baseAccentColor = getPriorityColor(task.priority);
       final cardColor = task.done ? Colors.grey.shade100 : Colors.white;
       final dueDateLabel = formatDueDate(task.dueDate);
-      final planDateLabel = formatDueDate(task.doDate);
+      final planDateLabel = formatStartDate(task.doDate);
       return Container(
         key: ValueKey('opened_${taskIndex}_${task.task}'),
         margin: const EdgeInsets.only(bottom: 12),
@@ -428,6 +509,9 @@ class TaskListContent extends StatelessWidget {
                       onPlanDate: () {
                         onSetPlanDate(taskIndex);
                       },
+                      onStartToday: () {
+                        onStartTaskToday(taskIndex);
+                      },
                       onTotalEffortChanged: (minutes) {
                         onSetTaskEffort(taskIndex, minutes);
                       },
@@ -444,6 +528,9 @@ class TaskListContent extends StatelessWidget {
                       onDelete: () {
                         onDeleteTask(taskIndex);
                       },
+                      onCategorizeForMenu: () {
+                        onCategorizeForMenu(taskIndex);
+                      },
                       onToggleAbsolutePriority: () {
                         onToggleAbsolutePriority(taskIndex);
                       },
@@ -452,6 +539,9 @@ class TaskListContent extends StatelessWidget {
                       },
                       onToggleWaitingOnOthers: () {
                         onToggleWaitingOnOthers(taskIndex);
+                      },
+                      onToggleSillyModeExempt: () {
+                        onToggleSillyModeExempt(taskIndex);
                       },
                       allowReorderDrag: false,
                     ),
@@ -489,13 +579,80 @@ class TaskListContent extends StatelessWidget {
       }).toList(),
     );
 
+    Widget buildGrid(List<int> indices) {
+      return Wrap(
+        spacing: 10,
+        runSpacing: 10,
+        children: indices.map((taskIndex) {
+          final task = tasks[taskIndex];
+          return TaskSummaryCard(
+            key: ValueKey('card_${taskIndex}_${task.task}'),
+            task: task,
+            priorityColor: getPriorityColor(task.priority),
+            priorityLabel: getPriorityLabel(task.priority),
+            dueDateText: formatDueDate(task.dueDate),
+            isSelected: taskIndex == openedIndex,
+            onTap: () => onSelectTaskPaneIndex(
+              taskIndex == openedIndex ? null : taskIndex,
+            ),
+          );
+        }).toList(),
+      );
+    }
+
+    final sectionedGrids = archiveViewEnabled
+        ? cardsGrid
+        : Builder(
+            builder: (context) {
+              final readyIndices = orderedIndices
+                  .where((index) => tasks[index].hasCompletePlanningMetadata)
+                  .toList();
+              final holdingIndices = orderedIndices
+                  .where((index) => !tasks[index].hasCompletePlanningMetadata)
+                  .toList();
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildReadinessSectionHeader(
+                    'Ready tasks',
+                    readyIndices.length,
+                    icon: Icons.check_circle,
+                    color: Colors.green.shade700,
+                  ),
+                  if (readyIndices.isEmpty)
+                    _buildEmptySectionHint('No tasks ready to plan yet.')
+                  else
+                    buildGrid(readyIndices),
+                  const SizedBox(height: 14),
+                  const Divider(height: 1),
+                  const SizedBox(height: 14),
+                  _buildReadinessSectionHeader(
+                    'Tasks holding area',
+                    holdingIndices.length,
+                    icon: Icons.inventory_2_outlined,
+                    color: Colors.blueGrey.shade600,
+                  ),
+                  if (holdingIndices.isEmpty)
+                    _buildEmptySectionHint(
+                      'Nothing waiting \u2014 every task has priority, a date, and an effort estimate.',
+                    )
+                  else
+                    buildGrid(holdingIndices),
+                ],
+              );
+            },
+          );
+
     final cardsColumn = SingleChildScrollView(
       controller: taskListScrollController,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (openedIndex != null) buildOpenedTile(openedIndex),
-          cardsGrid,
+          // In the two-pane layout the opened tile moves into the details
+          // pane instead, above its subtasks, so it isn't shown twice.
+          if (openedIndex != null && !useTwoPaneLayout)
+            buildOpenedTile(openedIndex),
+          sectionedGrids,
         ],
       ),
     );
@@ -513,8 +670,15 @@ class TaskListContent extends StatelessWidget {
           flex: 6,
           child: TaskDetailsPane(
             hasSelection: openedIndex != null,
-            title: openedIndex == null ? null : tasks[openedIndex].task,
-            child: openedIndex == null ? null : buildTaskPanels(openedIndex),
+            child: openedIndex == null
+                ? null
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      buildOpenedTile(openedIndex),
+                      buildTaskPanels(openedIndex),
+                    ],
+                  ),
           ),
         ),
       ],

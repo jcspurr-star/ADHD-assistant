@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'voice_capture_button.dart';
+
 class QuickCaptureSection extends StatelessWidget {
   const QuickCaptureSection({
     super.key,
@@ -8,6 +10,7 @@ class QuickCaptureSection extends StatelessWidget {
     required this.onAddInboxEntry,
     required this.onConvertInboxEntryToNote,
     required this.onRemoveInboxEntry,
+    this.autoStartVoiceCapture = false,
   });
 
   final List<String> inboxEntries;
@@ -15,6 +18,7 @@ class QuickCaptureSection extends StatelessWidget {
   final Future<void> Function() onAddInboxEntry;
   final Future<void> Function(int index) onConvertInboxEntryToNote;
   final Future<void> Function(int index) onRemoveInboxEntry;
+  final bool autoStartVoiceCapture;
 
   @override
   Widget build(BuildContext context) {
@@ -64,6 +68,11 @@ class QuickCaptureSection extends StatelessWidget {
                     isDense: true,
                   ),
                 ),
+              ),
+              VoiceCaptureButton(
+                controller: inboxCaptureController,
+                tooltip: 'Voice capture quick thought',
+                autoStart: autoStartVoiceCapture,
               ),
               const SizedBox(width: 8),
               ElevatedButton(

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/task.dart';
+import '../services/silly_mode_service.dart';
 
 // Small square summary card used by the task list's "Card view" — shows just
 // enough to identify a task (title, priority, subtask count, due date).
@@ -27,6 +28,9 @@ class TaskSummaryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final subtaskCount = task.subtasks.length;
+    final displayTitle = SillyModeService.appliesTo(task)
+        ? SillyModeService.altTitle(task)
+        : task.task;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
@@ -75,7 +79,7 @@ class TaskSummaryCard extends StatelessWidget {
             const SizedBox(height: 6),
             Expanded(
               child: Text(
-                task.task,
+                displayTitle,
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(

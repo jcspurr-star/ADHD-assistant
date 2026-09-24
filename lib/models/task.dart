@@ -1,3 +1,5 @@
+import 'menu_planning.dart';
+
 class Subtask {
   String text;
   bool done;
@@ -59,6 +61,29 @@ class Task {
   // When true, the task is blocked on someone/something else and is excluded
   // from planning entirely until the flag is cleared.
   bool waitingOnOthers;
+  // When true, this task is excluded from "Silly mode" jokes/flavor text.
+  bool sillyModeExempt;
+
+  // Menu-Based Planning: which menu section this task belongs on.
+  MenuCategory? menuCategory;
+  // How much energy/focus this task takes, used to match it to how the user feels.
+  EnergyRequirement? energyRequired;
+  FocusRequirement? focusRequired;
+  // Marks a Dessert-style recovery/regulation activity as a valid task, not a reward.
+  bool restorative;
+
+  // "Ready" gate for planning/Today's Menu: priority, a due or start date,
+  // and an effort estimate must all be filled in.
+  bool get hasCompletePlanningMetadata {
+    final hasPriority = priority.trim().isNotEmpty;
+    final hasStartOrDueDate =
+        (dueDate?.trim().isNotEmpty ?? false) ||
+        (doDate?.trim().isNotEmpty ?? false);
+    final hasEffort =
+        (effortMinutes != null && effortMinutes! > 0) ||
+        (nextSessionEffortMinutes != null && nextSessionEffortMinutes! > 0);
+    return hasPriority && hasStartOrDueDate && hasEffort;
+  }
 
   Task({
     String? id,
@@ -85,6 +110,11 @@ class Task {
     this.absolutePriority = false,
     this.excludeWhenOverdue = false,
     this.waitingOnOthers = false,
+    this.sillyModeExempt = false,
+    this.menuCategory,
+    this.energyRequired,
+    this.focusRequired,
+    this.restorative = false,
   }) : id = id ?? 'task-${DateTime.now().microsecondsSinceEpoch}',
        aiSubtasks = aiSubtasks ?? [],
        subtasks = subtasks ?? [],
@@ -125,9 +155,20 @@ class Task {
               .toList() ??
           [],
       completedAtUtc: json["completedAtUtc"],
-          absolutePriority: json["absolutePriority"] ?? false,
+      absolutePriority: json["absolutePriority"] ?? false,
       excludeWhenOverdue: json["excludeWhenOverdue"] ?? false,
       waitingOnOthers: json["waitingOnOthers"] ?? false,
+      sillyModeExempt: json["sillyModeExempt"] ?? false,
+      menuCategory: MenuCategory.values.firstWhereOrNull(
+        (value) => value.name == json["menuCategory"],
+      ),
+      energyRequired: EnergyRequirement.values.firstWhereOrNull(
+        (value) => value.name == json["energyRequired"],
+      ),
+      focusRequired: FocusRequirement.values.firstWhereOrNull(
+        (value) => value.name == json["focusRequired"],
+      ),
+      restorative: json["restorative"] ?? false,
     );
   }
 
@@ -157,6 +198,20 @@ class Task {
       "absolutePriority": absolutePriority,
       "excludeWhenOverdue": excludeWhenOverdue,
       "waitingOnOthers": waitingOnOthers,
+      "sillyModeExempt": sillyModeExempt,
+      "menuCategory": menuCategory?.name,
+      "energyRequired": energyRequired?.name,
+      "focusRequired": focusRequired?.name,
+      "restorative": restorative,
     };
+  }
+}
+
+extension _FirstWhereOrNullExtension<T> on List<T> {
+  T? firstWhereOrNull(bool Function(T element) test) {
+    for (final element in this) {
+      if (test(element)) return element;
+    }
+    return null;
   }
 }

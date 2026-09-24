@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/task.dart';
+import '../services/silly_mode_service.dart';
 import 'subtask_tile.dart';
 
 class TaskPanelsSection extends StatelessWidget {
@@ -369,6 +370,31 @@ class TaskPanelsSection extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 10),
+              if (SillyModeService.appliesTo(task))
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.amber.shade200),
+                    ),
+                    child: Text(
+                      task.snoozedUntilUtc != null
+                          ? SillyModeService.bossBattleLine(task)
+                          : SillyModeService.flavorLine(task),
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontStyle: FontStyle.italic,
+                        color: Colors.brown.shade700,
+                      ),
+                    ),
+                  ),
+                ),
               if (selectedTab == 0)
                 subtasksBody
               else if (selectedTab == 1)

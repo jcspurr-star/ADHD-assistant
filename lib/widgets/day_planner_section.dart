@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 
 import '../models/activity_recommendation.dart';
+import '../models/menu_planning.dart';
 import '../models/task.dart';
 import '../services/day_planner_service.dart';
+import '../services/menu_recommendation_service.dart';
 import '../services/movement_recommendation_service.dart';
 import '../services/next_action_service.dart';
 import '../services/planner_execution_service.dart';
@@ -12,6 +14,11 @@ import '../services/one_drive_sync_service.dart';
 import '../services/storage_service.dart';
 import 'next_action_card.dart';
 import 'movement_recommendation_panel.dart';
+import 'weekly_timeline.dart';
+import 'add_planner_block_dialog.dart';
+import 'planner_category_colors.dart';
+import 'planner_timeline_filters.dart';
+import 'change_activity_dialog.dart';
 
 enum _PlannerFilterCategory {
   workCalendar,
@@ -36,6 +43,7 @@ class DayPlannerSection extends StatelessWidget {
     'Travel time',
     'Personal errand',
     'Rest and recovery',
+    'Walk break',
   ];
 
   const DayPlannerSection({
@@ -54,6 +62,8 @@ class DayPlannerSection extends StatelessWidget {
     this.officeActivityOptions = const <String>[],
     this.enabledActivityNames = const <String>[],
     this.onEnabledActivityNamesChanged,
+    this.currentEnergyState,
+    this.onChangeEnergyState,
     this.isHoliday = false,
     this.onHolidayChanged,
     required this.weeklyActivityTotals,
@@ -108,10 +118,17 @@ class DayPlannerSection extends StatelessWidget {
     this.showWorkTasksInPlanner = true,
     this.showHomeCalendarInPlanner = true,
     this.showHomeTasksInPlanner = true,
+    this.showWeeklyTimeline = false,
+    this.weeklyTimelineStartOffset = 0,
     this.onShowWorkCalendarInPlannerChanged,
     this.onShowWorkTasksInPlannerChanged,
     this.onShowHomeCalendarInPlannerChanged,
     this.onShowHomeTasksInPlannerChanged,
+    this.onShowWeeklyTimelineChanged,
+    this.onWeeklyTimelineStartOffsetChanged,
+    this.weeklyDayContexts = const <DateTime, DayContext>{},
+    this.weeklyHolidayDates = const <DateTime>{},
+    this.onWeeklyDayContextChanged,
     this.onPlannerResultBuilt,
     this.onReplanFromNow,
     this.onReplanAll,
@@ -144,6 +161,8 @@ class DayPlannerSection extends StatelessWidget {
   final List<String> officeActivityOptions;
   final List<String> enabledActivityNames;
   final ValueChanged<Set<String>>? onEnabledActivityNamesChanged;
+  final EnergyState? currentEnergyState;
+  final VoidCallback? onChangeEnergyState;
   final bool isHoliday;
   final ValueChanged<bool>? onHolidayChanged;
   final WeeklyActivityTotals weeklyActivityTotals;
@@ -174,6 +193,7 @@ class DayPlannerSection extends StatelessWidget {
   final ValueChanged<bool> onShowPersonalInPlannerChanged;
   final ValueChanged<bool> onGymAvailableChanged;
   final ValueChanged<bool> onWfhAvailableChanged;
+
   final ValueChanged<bool> onEveningAvailableChanged;
   final ValueChanged<ActivityRecommendation> onCompleteRecommendation;
   final VoidCallback onViewActivityHistory;
@@ -196,6 +216,8 @@ class DayPlannerSection extends StatelessWidget {
     String title,
     int startMinutes,
     int endMinutes,
+    String category,
+    String? taskId,
   )
   onAddPersonalBlock;
   final void Function(DayPlannerEntry entry, ExecutionState state)
@@ -209,10 +231,18 @@ class DayPlannerSection extends StatelessWidget {
   final bool showWorkTasksInPlanner;
   final bool showHomeCalendarInPlanner;
   final bool showHomeTasksInPlanner;
+  final bool showWeeklyTimeline;
+  final int weeklyTimelineStartOffset;
   final ValueChanged<bool>? onShowWorkCalendarInPlannerChanged;
   final ValueChanged<bool>? onShowWorkTasksInPlannerChanged;
   final ValueChanged<bool>? onShowHomeCalendarInPlannerChanged;
   final ValueChanged<bool>? onShowHomeTasksInPlannerChanged;
+  final ValueChanged<bool>? onShowWeeklyTimelineChanged;
+  final ValueChanged<int>? onWeeklyTimelineStartOffsetChanged;
+  final Map<DateTime, DayContext> weeklyDayContexts;
+  final Set<DateTime> weeklyHolidayDates;
+  final void Function(DateTime date, String setting, bool value)?
+  onWeeklyDayContextChanged;
   final void Function(DateTime day, List<DayPlannerEntry> entries)?
   onPlannerResultBuilt;
   final VoidCallback? onReplanFromNow;
@@ -232,7 +262,7 @@ class DayPlannerSection extends StatelessWidget {
   final bool ignoreFrozenPlan;
   final void Function(DateTime date, DayPlannerResult result)? onPlanBuilt;
   // Import/export menu buttons shown at the right end of the title row when
-  // provided (only rendered alongside "Daily Timeline" when showHeaderTitle).
+  // provided alongside the Timeline title.
   final VoidCallback? onImportOutlook;
   final VoidCallback? onImportIcs;
   final bool showImportIcsOption;
@@ -292,12 +322,6 @@ class DayPlannerSection extends StatelessWidget {
     return entry.type == 'focus' && entry.subtitle == 'Opening focus session';
   }
 
-  bool _isWalkingBreakEntry(DayPlannerEntry entry) {
-    return entry.type == 'movement' &&
-        !entry.isConcurrent &&
-        entry.title.toLowerCase().contains('walk');
-  }
-
   bool _isHomeCalendarIncludedInPlanning(DayPlannerEntry entry) {
     final hasPersonalLabel = entry.labels.any(
       (label) => label.trim().toLowerCase() == 'personal',
@@ -340,6 +364,28 @@ class DayPlannerSection extends StatelessWidget {
       _PlannerFilterCategory.movement => 'Movement',
       _PlannerFilterCategory.breakEntry => 'Break',
       _PlannerFilterCategory.other => entry.type,
+    };
+  }
+
+  // Fixed timeline lanes: 0 = Work calendar/Work tasks/Breaks,
+  // 1 = Movement, 2 = Home calendar/Personal. Each lane is independently
+  // subdivided into columns for concurrent entries.
+  static const timelineLaneNames = [
+    'Work & tasks',
+    'Movement',
+    'Home & personal',
+  ];
+
+  int _timelineLaneIndex(DayPlannerEntry entry) {
+    return switch (_plannerFilterCategory(entry)) {
+      _PlannerFilterCategory.workCalendar => 0,
+      _PlannerFilterCategory.workTasks => 0,
+      _PlannerFilterCategory.homeTasks => 2,
+      _PlannerFilterCategory.breakEntry => 0,
+      _PlannerFilterCategory.movement => 1,
+      _PlannerFilterCategory.homeCalendar => 2,
+      _PlannerFilterCategory.personal => 2,
+      _PlannerFilterCategory.other => 0,
     };
   }
 
@@ -553,30 +599,18 @@ class DayPlannerSection extends StatelessWidget {
         isCalendar && (entry.subtitle?.toLowerCase().contains('home') ?? false);
     final isExcludedFromPlanning =
         isHomeCalendar && !_isHomeCalendarIncludedInPlanning(entry);
-    final isWalkingBreak = _isWalkingBreakEntry(entry);
     final isCompleted = entry.executionState == ExecutionState.completed;
     final isDismissed = entry.executionState == ExecutionState.dismissed;
-    final color = entry.type == 'personal'
-        ? const Color(0xFFB23A48)
-        : entry.type == 'break'
-        ? const Color(0xFF455A64)
-        : entry.type == 'buffer'
-        ? const Color(0xFFF28E2B)
-        : entry.type == 'admin'
-        ? const Color(0xFFF28E2B)
-        : isWalkingBreak
-        ? const Color(0xFF455A64)
-        : entry.type == 'movement'
-        ? const Color(0xFF2E8B57)
-        : entry.type == 'task'
-        ? (entry.task != null && isWorkTask(entry.task!)
-              ? const Color(0xFF124B8A)
-              : const Color(0xFFF28E2B))
-        : isCalendar
-        ? isHomeCalendar
-              ? const Color(0xFFD95F02)
-              : const Color(0xFF124B8A)
-        : const Color(0xFF5B65C5);
+    final color = switch (_plannerFilterCategory(entry)) {
+      _PlannerFilterCategory.workCalendar => PlannerCategoryColors.workCalendar,
+      _PlannerFilterCategory.workTasks => PlannerCategoryColors.workTasks,
+      _PlannerFilterCategory.homeCalendar => PlannerCategoryColors.homeCalendar,
+      _PlannerFilterCategory.homeTasks => PlannerCategoryColors.homeTasks,
+      _PlannerFilterCategory.movement => PlannerCategoryColors.movement,
+      _PlannerFilterCategory.personal => PlannerCategoryColors.personal,
+      _PlannerFilterCategory.breakEntry => PlannerCategoryColors.breakEntry,
+      _PlannerFilterCategory.other => PlannerCategoryColors.other,
+    };
     final timeText = isAllDay
         ? 'All day'
         : entry.isZeroDuration
@@ -1036,174 +1070,237 @@ class DayPlannerSection extends StatelessWidget {
     BuildContext context,
     DateTime date,
   ) async {
-    var title = '';
-    var startTime = const TimeOfDay(hour: 9, minute: 0);
-    var endTime = const TimeOfDay(hour: 10, minute: 0);
-    final result = await showDialog<(String, TimeOfDay, TimeOfDay)>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (dialogContext, setDialogState) => AlertDialog(
-          title: const Text('Add personal block'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Autocomplete<String>(
-                optionsBuilder: (value) {
-                  final query = value.text.trim().toLowerCase();
-                  if (query.isEmpty) {
-                    return personalBlockNameOptions;
-                  }
-                  return personalBlockNameOptions.where(
-                    (option) => option.toLowerCase().contains(query),
-                  );
-                },
-                onSelected: (value) => title = value,
-                fieldViewBuilder:
-                    (context, fieldController, focusNode, onFieldSubmitted) {
-                      return TextField(
-                        controller: fieldController,
-                        focusNode: focusNode,
-                        autofocus: true,
-                        decoration: const InputDecoration(
-                          labelText: 'Name',
-                          hintText: 'Choose or type a personal event',
-                        ),
-                        onSubmitted: (_) => onFieldSubmitted(),
-                        onChanged: (value) => title = value,
-                      );
-                    },
-              ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Start'),
-                trailing: Text(
-                  _formatMinutes(startTime.hour * 60 + startTime.minute),
-                ),
-                onTap: () async {
-                  final picked = await showTimePicker(
-                    context: dialogContext,
-                    initialTime: startTime,
-                  );
-                  if (picked != null) setDialogState(() => startTime = picked);
-                },
-              ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('End'),
-                trailing: Text(
-                  _formatMinutes(endTime.hour * 60 + endTime.minute),
-                ),
-                onTap: () async {
-                  final picked = await showTimePicker(
-                    context: dialogContext,
-                    initialTime: endTime,
-                  );
-                  if (picked != null) setDialogState(() => endTime = picked);
-                },
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () {
-                final trimmedTitle = title.trim();
-                if (trimmedTitle.isEmpty) return;
-                Navigator.of(
-                  dialogContext,
-                ).pop((trimmedTitle, startTime, endTime));
-              },
-              child: const Text('Add'),
-            ),
-          ],
-        ),
-      ),
+    final movementOptions = enabledActivityNames.isNotEmpty
+        ? enabledActivityNames
+        : (wfhAvailable ? wfhActivityOptions : officeActivityOptions);
+    final result = await showAddPlannerBlockDialog(
+      context,
+      tasks: tasks,
+      movementOptions: movementOptions,
     );
     if (result == null || !context.mounted) return;
-    final startMinutes = result.$2.hour * 60 + result.$2.minute;
-    final endMinutes = result.$3.hour * 60 + result.$3.minute;
+    final startMinutes = result.start.hour * 60 + result.start.minute;
+    final endMinutes = result.end.hour * 60 + result.end.minute;
     if (endMinutes <= startMinutes) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('End time must be after start time.')),
       );
       return;
     }
-    onAddPersonalBlock(date, result.$1, startMinutes, endMinutes);
+    onAddPersonalBlock(
+      date,
+      result.title,
+      startMinutes,
+      endMinutes,
+      result.category,
+      result.task?.id,
+    );
+  }
+
+  Future<void> _showAddPersonalBlockDialogLegacy(
+    BuildContext context,
+    DateTime date,
+  ) async {
+    const categories = [
+      'Work task',
+      'Home task',
+      'Personal',
+      'Movement',
+      'Break',
+    ];
+    var selectedCategory = 'Personal';
+    Task? selectedTask;
+    var title = '';
+    String? selectedPreset;
+    final movementOptions = enabledActivityNames.isNotEmpty
+        ? enabledActivityNames
+        : (wfhAvailable ? wfhActivityOptions : officeActivityOptions);
+    const breakOptions = ['Recovery break', 'Lunch'];
+    var startTime = const TimeOfDay(hour: 9, minute: 0);
+    var endTime = const TimeOfDay(hour: 10, minute: 0);
+    final result =
+        await showDialog<
+          ({
+            String category,
+            Task? task,
+            String title,
+            TimeOfDay start,
+            TimeOfDay end,
+          })
+        >(
+          context: context,
+          builder: (dialogContext) => StatefulBuilder(
+            builder: (dialogContext, setDialogState) => AlertDialog(
+              title: const Text('Add personal block'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<String>(
+                    value: selectedCategory,
+                    decoration: const InputDecoration(
+                      labelText: 'Planner category',
+                    ),
+                    items: categories
+                        .map(
+                          (category) => DropdownMenuItem(
+                            value: category,
+                            child: Text(category),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setDialogState(() {
+                        selectedCategory = value;
+                        selectedTask = null;
+                        selectedPreset = null;
+                        title = '';
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  if (selectedCategory == 'Work task')
+                    DropdownButtonFormField<Task>(
+                      value: selectedTask,
+                      decoration: const InputDecoration(labelText: 'Work task'),
+                      items: tasks
+                          .where(
+                            (task) =>
+                                task.done != true &&
+                                (task.category.trim().toLowerCase() == 'work' ||
+                                    task.category.trim().toLowerCase() ==
+                                        'work tasks'),
+                          )
+                          .map(
+                            (task) => DropdownMenuItem(
+                              value: task,
+                              child: Text(task.task),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (task) => setDialogState(() {
+                        selectedTask = task;
+                        title = task?.task ?? '';
+                      }),
+                    )
+                  else if (selectedCategory == 'Movement' ||
+                      selectedCategory == 'Break')
+                    DropdownButtonFormField<String>(
+                      value: selectedPreset,
+                      decoration: InputDecoration(
+                        labelText: selectedCategory == 'Movement'
+                            ? 'Movement'
+                            : 'Break',
+                      ),
+                      items:
+                          (selectedCategory == 'Movement'
+                                  ? movementOptions
+                                  : breakOptions)
+                              .map(
+                                (option) => DropdownMenuItem(
+                                  value: option,
+                                  child: Text(option),
+                                ),
+                              )
+                              .toList(),
+                      onChanged: (value) => setDialogState(() {
+                        selectedPreset = value;
+                        title = value ?? '';
+                      }),
+                    )
+                  else
+                    TextField(
+                      autofocus: true,
+                      decoration: const InputDecoration(labelText: 'Title'),
+                      onChanged: (value) => title = value,
+                    ),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Start'),
+                    trailing: Text(
+                      _formatMinutes(startTime.hour * 60 + startTime.minute),
+                    ),
+                    onTap: () async {
+                      final picked = await showTimePicker(
+                        context: dialogContext,
+                        initialTime: startTime,
+                      );
+                      if (picked != null)
+                        setDialogState(() => startTime = picked);
+                    },
+                  ),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('End'),
+                    trailing: Text(
+                      _formatMinutes(endTime.hour * 60 + endTime.minute),
+                    ),
+                    onTap: () async {
+                      final picked = await showTimePicker(
+                        context: dialogContext,
+                        initialTime: endTime,
+                      );
+                      if (picked != null)
+                        setDialogState(() => endTime = picked);
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final trimmedTitle = title.trim();
+                    if (trimmedTitle.isEmpty ||
+                        (selectedCategory == 'Work task' &&
+                            selectedTask == null)) {
+                      return;
+                    }
+                    Navigator.of(dialogContext).pop((
+                      category: selectedCategory,
+                      task: selectedTask,
+                      title: trimmedTitle,
+                      start: startTime,
+                      end: endTime,
+                    ));
+                  },
+                  child: const Text('Add'),
+                ),
+              ],
+            ),
+          ),
+        );
+    if (result == null || !context.mounted) return;
+    final startMinutes = result.start.hour * 60 + result.start.minute;
+    final endMinutes = result.end.hour * 60 + result.end.minute;
+    if (endMinutes <= startMinutes) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('End time must be after start time.')),
+      );
+      return;
+    }
+    onAddPersonalBlock(
+      date,
+      result.title,
+      startMinutes,
+      endMinutes,
+      result.category,
+      result.task?.id,
+    );
   }
 
   Future<void> _showChangeActivityDialog(
     BuildContext context,
     DayPlannerEntry entry,
   ) async {
-    final availableTasks = tasks.where((task) => task.done != true).toList();
-    final options = <_ChangeActivityOption>[
-      _ChangeActivityOption.preset('Focus Time'),
-      ...availableTasks.map(_ChangeActivityOption.task),
-      ...personalBlockNameOptions.map(_ChangeActivityOption.preset),
-    ];
-    Task? selectedTask = entry.task;
-    var typedTitle = entry.task == null ? entry.title : '';
-
-    final result = await showDialog<({Task? task, String? title})>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text('Change "${entry.title}"'),
-        content: SizedBox(
-          width: 360,
-          child: Autocomplete<_ChangeActivityOption>(
-            initialValue: TextEditingValue(text: entry.title),
-            optionsBuilder: (value) {
-              final query = value.text.trim().toLowerCase();
-              if (query.isEmpty) return options;
-              return options.where(
-                (option) => option.label.toLowerCase().contains(query),
-              );
-            },
-            displayStringForOption: (option) => option.label,
-            onSelected: (option) {
-              selectedTask = option.task;
-              typedTitle = option.task == null ? option.label : '';
-            },
-            fieldViewBuilder:
-                (context, fieldController, focusNode, onFieldSubmitted) {
-                  return TextField(
-                    controller: fieldController,
-                    focusNode: focusNode,
-                    autofocus: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Activity',
-                      hintText: 'Pick a task, choose a preset, or type a name',
-                    ),
-                    onSubmitted: (_) => onFieldSubmitted(),
-                    onChanged: (value) {
-                      selectedTask = null;
-                      typedTitle = value;
-                    },
-                  );
-                },
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final trimmedTitle = typedTitle.trim();
-              if (selectedTask == null && trimmedTitle.isEmpty) return;
-              Navigator.of(dialogContext).pop((
-                task: selectedTask,
-                title: selectedTask == null ? trimmedTitle : null,
-              ));
-            },
-            child: const Text('Change'),
-          ),
-        ],
-      ),
+    final result = await showChangeActivityDialog(
+      context,
+      entry: entry,
+      tasks: tasks,
+      presets: personalBlockNameOptions,
     );
 
     if (result == null) return;
@@ -1254,15 +1351,50 @@ class DayPlannerSection extends StatelessWidget {
     final timelineContentHeight = height * 4;
     final allDayEntries = entries.where((entry) => entry.isAllDay).toList();
 
-    final positionedEntries = assignExpandedTimelineColumns(
-      entries,
-      lanePriority: _lanePriority,
+    // Partition into the 4 fixed lanes, then subdivide each lane
+    // independently into columns for its own concurrent entries.
+    final laneGroupEntries = List.generate(
+      timelineLaneNames.length,
+      (_) => <DayPlannerEntry>[],
     );
-    final laneCount = positionedEntries.isEmpty
-        ? 1
-        : positionedEntries
-              .map((entry) => entry.columnCount)
-              .reduce((a, b) => a > b ? a : b);
+    for (final entry in entries) {
+      if (entry.isAllDay || entry.isZeroDuration) continue;
+      laneGroupEntries[_timelineLaneIndex(entry)].add(entry);
+    }
+    final laneGroupPositioned =
+        <List<({DayPlannerEntry entry, int lane, int columnCount})>>[];
+    final laneGroupColumnCounts = <int>[];
+    for (final group in laneGroupEntries) {
+      final positioned = assignExpandedTimelineColumns(
+        group,
+        lanePriority: _lanePriority,
+      );
+      laneGroupPositioned.add(positioned);
+      laneGroupColumnCounts.add(
+        positioned.isEmpty
+            ? 1
+            : positioned
+                  .map((item) => item.columnCount)
+                  .reduce((a, b) => a > b ? a : b),
+      );
+    }
+    final laneGroupColumnOffsets = <int>[];
+    var cumulativeColumns = 0;
+    for (final count in laneGroupColumnCounts) {
+      laneGroupColumnOffsets.add(cumulativeColumns);
+      cumulativeColumns += count;
+    }
+    final totalColumns = cumulativeColumns;
+    final positionedEntries =
+        <({DayPlannerEntry entry, int lane, int laneGroup})>[
+          for (var group = 0; group < laneGroupPositioned.length; group++)
+            for (final item in laneGroupPositioned[group])
+              (
+                entry: item.entry,
+                lane: laneGroupColumnOffsets[group] + item.lane,
+                laneGroup: group,
+              ),
+        ];
     final zeroDurationEntries = entries
         .where((entry) => !entry.isAllDay && entry.isZeroDuration)
         .toList();
@@ -1275,6 +1407,8 @@ class DayPlannerSection extends StatelessWidget {
     };
     const timeAxisWidth = 48.0;
     const laneGap = 4.0;
+    const laneGroupGap = 14.0;
+    const laneHeaderHeight = 20.0;
     const markerWidth = 120.0;
     const markerGap = 8.0;
     const markerSlotPitch = markerWidth + markerGap;
@@ -1339,8 +1473,9 @@ class DayPlannerSection extends StatelessWidget {
                           .reduce((a, b) => a > b ? a : b);
                 final minimumTimelineWidth =
                     timeAxisWidth +
-                    (laneCount * 180) +
-                    ((laneCount - 1) * laneGap);
+                    (totalColumns * 180) +
+                    ((totalColumns - 1) * laneGap) +
+                    (2 * laneGroupGap);
                 final markerMinimumWidth =
                     timeAxisWidth + (markerSlotCount * markerSlotPitch);
                 final requiredTimelineWidth =
@@ -1351,348 +1486,456 @@ class DayPlannerSection extends StatelessWidget {
                     constraints.maxWidth > requiredTimelineWidth
                     ? constraints.maxWidth
                     : requiredTimelineWidth;
+                final columnWidth =
+                    (timelineWidth -
+                        timeAxisWidth -
+                        ((totalColumns - 1) * laneGap) -
+                        (2 * laneGroupGap)) /
+                    totalColumns;
+                double laneGroupLeft(int group) {
+                  var left =
+                      timeAxisWidth +
+                      laneGroupColumnOffsets[group] * (columnWidth + laneGap) +
+                      group * laneGroupGap;
+                  return left;
+                }
+
+                double laneGroupWidth(int group) {
+                  final count = laneGroupColumnCounts[group];
+                  return count * columnWidth + (count - 1) * laneGap;
+                }
+
                 return SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   primary: false,
                   child: SizedBox(
                     width: timelineWidth,
-                    height: timelineContentHeight,
-                    child: _TimelineVerticalScrollView(
-                      initialScrollOffset: timelineContentHeight / 4,
-                      child: SizedBox(
-                        height: timelineContentHeight,
-                        child: Stack(
-                          children: [
-                            for (var hour = 0; hour <= totalMinutes; hour += 60)
-                              Positioned(
-                                top:
-                                    (hour / totalMinutes) *
-                                    timelineContentHeight,
-                                left: 0,
-                                right: 0,
-                                child: SizedBox(
-                                  height: 18,
-                                  child: Stack(
-                                    children: [
-                                      Positioned(
-                                        top: 0,
-                                        left: timeAxisWidth,
-                                        right: 0,
-                                        child: Divider(
-                                          color: timelineColor,
-                                          height: 1,
-                                        ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SizedBox(
+                          height: laneHeaderHeight,
+                          child: Stack(
+                            children: [
+                              for (
+                                var group = 0;
+                                group < timelineLaneNames.length;
+                                group++
+                              )
+                                Positioned(
+                                  left: laneGroupLeft(group),
+                                  width: laneGroupWidth(group),
+                                  top: 0,
+                                  bottom: 0,
+                                  child: Center(
+                                    child: Text(
+                                      timelineLaneNames[group],
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w800,
+                                        color: Colors.blueGrey.shade700,
                                       ),
-                                      Positioned(
-                                        top: 0,
-                                        left: 0,
-                                        width: timeAxisWidth,
-                                        child: Text(
-                                          _formatTime(
-                                            start.add(Duration(minutes: hour)),
-                                          ),
-                                          style: TextStyle(
-                                            fontSize: 10,
-                                            color: Colors.blueGrey.shade600,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
+                                    ),
                                   ),
                                 ),
-                              ),
-                            for (
-                              var halfHour = 30;
-                              halfHour < totalMinutes;
-                              halfHour += 60
-                            )
-                              Positioned(
-                                top:
-                                    (halfHour / totalMinutes) *
-                                    timelineContentHeight,
-                                left: timeAxisWidth,
-                                right: 0,
-                                height: 1,
-                                child: CustomPaint(
-                                  painter: _DashedTimelineLinePainter(
-                                    color: timelineColor.withAlpha(180),
+                              for (
+                                var group = 1;
+                                group < timelineLaneNames.length;
+                                group++
+                              )
+                                Positioned(
+                                  left:
+                                      (laneGroupLeft(group - 1) +
+                                          laneGroupWidth(group - 1) +
+                                          laneGroupLeft(group)) /
+                                      2,
+                                  top: 0,
+                                  bottom: 0,
+                                  width: 1,
+                                  child: Container(
+                                    color: Colors.blueGrey.shade100,
                                   ),
                                 ),
-                              ),
-                            for (final positioned in positionedEntries)
-                              if (positioned.lane < laneCount)
-                                Builder(
-                                  builder: (context) {
-                                    final visibleStart =
-                                        positioned.entry.start.isBefore(start)
-                                        ? start
-                                        : positioned.entry.start;
-                                    final visibleEnd =
-                                        positioned.entry.end.isAfter(end)
-                                        ? end
-                                        : positioned.entry.end;
-                                    final topMinutes = visibleStart
-                                        .difference(start)
-                                        .inMinutes
-                                        .clamp(0, totalMinutes);
-                                    final durationMinutes = visibleEnd
-                                        .difference(visibleStart)
-                                        .inMinutes
-                                        .clamp(12, totalMinutes);
-                                    final top =
-                                        topMinutes /
-                                        totalMinutes *
-                                        timelineContentHeight;
-                                    final cardHeight =
-                                        durationMinutes /
-                                        totalMinutes *
-                                        timelineContentHeight;
-                                    final eventLaneWidth =
-                                        (timelineWidth -
-                                            timeAxisWidth -
-                                            ((positioned.columnCount - 1) *
-                                                laneGap)) /
-                                        positioned.columnCount;
-                                    final entry = positioned.entry;
-                                    final effectiveCardHeight = cardHeight
-                                        .clamp(1.0, timelineContentHeight);
-                                    final card = _buildCompactTimelineEventCard(
-                                      context,
-                                      entry,
-                                      height: effectiveCardHeight,
-                                    );
-                                    final isDraggable =
-                                        entry.type != 'calendar' &&
-                                        !entry.isLocked;
-                                    final gridMinutes =
-                                        timeGrid == TimeGrid.fifteenMinutes
-                                        ? 15
-                                        : 30;
-                                    final entryStartMinutes = entry.start
-                                        .difference(start)
-                                        .inMinutes;
-                                    final entryEndMinutes =
-                                        entryStartMinutes +
-                                        entry.end
-                                            .difference(entry.start)
-                                            .inMinutes;
-                                    Widget content = card;
-                                    if (isDraggable) {
-                                      content = _DraggableTimelineEntry(
-                                        width: eventLaneWidth,
-                                        totalMinutes: totalMinutes,
-                                        timelineContentHeight:
-                                            timelineContentHeight,
-                                        entryStartMinutes: entryStartMinutes,
-                                        entryDurationMinutes:
-                                            entryEndMinutes - entryStartMinutes,
-                                        gridMinutes: gridMinutes,
-                                        onCommit: (newStartMinutes) {
-                                          onEditPlannerEntryTime(
-                                            entry.id,
-                                            newStartMinutes,
-                                            newStartMinutes +
-                                                (entryEndMinutes -
-                                                    entryStartMinutes),
-                                          );
-                                        },
-                                        child: card,
-                                      );
-                                    }
-                                    if (isDraggable &&
-                                        effectiveCardHeight >= 28) {
-                                      content = Stack(
-                                        children: [
-                                          content,
-                                          Positioned(
-                                            top: 0,
-                                            left: 0,
-                                            right: 0,
-                                            height: 12,
-                                            child: _TimelineResizeHandle(
-                                              totalMinutes: totalMinutes,
-                                              timelineContentHeight:
-                                                  timelineContentHeight,
-                                              gridMinutes: gridMinutes,
-                                              movingMinutes: entryStartMinutes,
-                                              minMinutes: 0,
-                                              maxMinutes:
-                                                  entryEndMinutes - gridMinutes,
-                                              onCommit: (newStartMinutes) {
-                                                onEditPlannerEntryTime(
-                                                  entry.id,
-                                                  newStartMinutes,
-                                                  entryEndMinutes,
-                                                );
-                                              },
+                            ],
+                          ),
+                        ),
+                        Expanded(
+                          child: _TimelineVerticalScrollView(
+                            initialScrollOffset: timelineContentHeight / 4,
+                            child: SizedBox(
+                              height: timelineContentHeight,
+                              child: Stack(
+                                children: [
+                                  for (
+                                    var hour = 0;
+                                    hour <= totalMinutes;
+                                    hour += 60
+                                  )
+                                    Positioned(
+                                      top:
+                                          (hour / totalMinutes) *
+                                          timelineContentHeight,
+                                      left: 0,
+                                      right: 0,
+                                      child: SizedBox(
+                                        height: 18,
+                                        child: Stack(
+                                          children: [
+                                            Positioned(
+                                              top: 0,
+                                              left: timeAxisWidth,
+                                              right: 0,
+                                              child: Divider(
+                                                color: timelineColor,
+                                                height: 1,
+                                              ),
                                             ),
-                                          ),
-                                          Positioned(
-                                            bottom: 0,
-                                            left: 0,
-                                            right: 0,
-                                            height: 12,
-                                            child: _TimelineResizeHandle(
-                                              totalMinutes: totalMinutes,
-                                              timelineContentHeight:
-                                                  timelineContentHeight,
-                                              gridMinutes: gridMinutes,
-                                              movingMinutes: entryEndMinutes,
-                                              minMinutes:
-                                                  entryStartMinutes +
-                                                  gridMinutes,
-                                              maxMinutes: totalMinutes,
-                                              onCommit: (newEndMinutes) {
-                                                onEditPlannerEntryTime(
-                                                  entry.id,
-                                                  entryStartMinutes,
-                                                  newEndMinutes,
-                                                );
-                                              },
-                                            ),
-                                          ),
-                                        ],
-                                      );
-                                    }
-                                    return Positioned(
-                                      top: top,
-                                      left:
-                                          timeAxisWidth +
-                                          positioned.lane *
-                                              (eventLaneWidth + laneGap),
-                                      width: eventLaneWidth,
-                                      height: effectiveCardHeight,
-                                      child: content,
-                                    );
-                                  },
-                                ),
-                            for (
-                              var markerIndex = 0;
-                              markerIndex < zeroDurationEntries.length;
-                              markerIndex++
-                            )
-                              Builder(
-                                builder: (context) {
-                                  final marker =
-                                      zeroDurationEntries[markerIndex];
-                                  final slot =
-                                      zeroDurationSlotMap[marker.id] ?? 0;
-                                  final topMinutes = marker.start
-                                      .difference(start)
-                                      .inMinutes
-                                      .clamp(0, totalMinutes);
-                                  final top =
-                                      topMinutes /
-                                      totalMinutes *
-                                      timelineContentHeight;
-                                  final horizontalOffset =
-                                      slot * markerSlotPitch;
-                                  final x = timeAxisWidth + horizontalOffset;
-                                  return Positioned(
-                                    top: top - 10,
-                                    left: x,
-                                    width: markerWidth,
-                                    height: 26,
-                                    child: Tooltip(
-                                      message: _eventTooltipMessage(
-                                        marker,
-                                        _eventCategoryLabel(marker),
-                                        _formatTime(marker.start),
-                                        marker.subtitle,
-                                        marker.labels,
-                                      ),
-                                      child: InkWell(
-                                        onTap: () {
-                                          if (context.mounted) {
-                                            _showEditEntryTimeDialog(
-                                              context,
-                                              marker,
-                                            );
-                                          }
-                                        },
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 8,
-                                            vertical: 4,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: Colors.blueGrey.shade700,
-                                            borderRadius: BorderRadius.circular(
-                                              12,
-                                            ),
-                                            border: Border.all(
-                                              color: Colors.white,
-                                              width: 1.5,
-                                            ),
-                                          ),
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Container(
-                                                width: 8,
-                                                height: 8,
-                                                decoration: const BoxDecoration(
-                                                  color: Colors.white,
-                                                  shape: BoxShape.circle,
+                                            Positioned(
+                                              top: 0,
+                                              left: 0,
+                                              width: timeAxisWidth,
+                                              child: Text(
+                                                _formatTime(
+                                                  start.add(
+                                                    Duration(minutes: hour),
+                                                  ),
+                                                ),
+                                                style: TextStyle(
+                                                  fontSize: 10,
+                                                  color:
+                                                      Colors.blueGrey.shade600,
+                                                  fontWeight: FontWeight.w600,
                                                 ),
                                               ),
-                                              const SizedBox(width: 6),
-                                              Flexible(
-                                                child: Text(
-                                                  marker.title,
-                                                  maxLines: 1,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 10,
-                                                    fontWeight: FontWeight.w700,
-                                                  ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  for (
+                                    var halfHour = 30;
+                                    halfHour < totalMinutes;
+                                    halfHour += 60
+                                  )
+                                    Positioned(
+                                      top:
+                                          (halfHour / totalMinutes) *
+                                          timelineContentHeight,
+                                      left: timeAxisWidth,
+                                      right: 0,
+                                      height: 1,
+                                      child: CustomPaint(
+                                        painter: _DashedTimelineLinePainter(
+                                          color: timelineColor.withAlpha(180),
+                                        ),
+                                      ),
+                                    ),
+                                  for (
+                                    var group = 1;
+                                    group < timelineLaneNames.length;
+                                    group++
+                                  )
+                                    Positioned(
+                                      left:
+                                          (laneGroupLeft(group - 1) +
+                                              laneGroupWidth(group - 1) +
+                                              laneGroupLeft(group)) /
+                                          2,
+                                      top: 0,
+                                      bottom: 0,
+                                      width: 1,
+                                      child: Container(
+                                        color: Colors.blueGrey.shade100,
+                                      ),
+                                    ),
+                                  for (final positioned in positionedEntries)
+                                    Builder(
+                                      builder: (context) {
+                                        final visibleStart =
+                                            positioned.entry.start.isBefore(
+                                              start,
+                                            )
+                                            ? start
+                                            : positioned.entry.start;
+                                        final visibleEnd =
+                                            positioned.entry.end.isAfter(end)
+                                            ? end
+                                            : positioned.entry.end;
+                                        final topMinutes = visibleStart
+                                            .difference(start)
+                                            .inMinutes
+                                            .clamp(0, totalMinutes);
+                                        final durationMinutes = visibleEnd
+                                            .difference(visibleStart)
+                                            .inMinutes
+                                            .clamp(12, totalMinutes);
+                                        final top =
+                                            topMinutes /
+                                            totalMinutes *
+                                            timelineContentHeight;
+                                        final cardHeight =
+                                            durationMinutes /
+                                            totalMinutes *
+                                            timelineContentHeight;
+                                        final eventLaneWidth = columnWidth;
+                                        final entry = positioned.entry;
+                                        final effectiveCardHeight = cardHeight
+                                            .clamp(1.0, timelineContentHeight);
+                                        final card =
+                                            _buildCompactTimelineEventCard(
+                                              context,
+                                              entry,
+                                              height: effectiveCardHeight,
+                                            );
+                                        final isDraggable =
+                                            entry.type != 'calendar' &&
+                                            !entry.isLocked;
+                                        final gridMinutes =
+                                            timeGrid == TimeGrid.fifteenMinutes
+                                            ? 15
+                                            : 30;
+                                        final entryStartMinutes = entry.start
+                                            .difference(start)
+                                            .inMinutes;
+                                        final entryEndMinutes =
+                                            entryStartMinutes +
+                                            entry.end
+                                                .difference(entry.start)
+                                                .inMinutes;
+                                        Widget content = card;
+                                        if (isDraggable) {
+                                          content = _DraggableTimelineEntry(
+                                            width: eventLaneWidth,
+                                            totalMinutes: totalMinutes,
+                                            timelineContentHeight:
+                                                timelineContentHeight,
+                                            entryStartMinutes:
+                                                entryStartMinutes,
+                                            entryDurationMinutes:
+                                                entryEndMinutes -
+                                                entryStartMinutes,
+                                            gridMinutes: gridMinutes,
+                                            onCommit: (newStartMinutes) {
+                                              onEditPlannerEntryTime(
+                                                entry.id,
+                                                newStartMinutes,
+                                                newStartMinutes +
+                                                    (entryEndMinutes -
+                                                        entryStartMinutes),
+                                              );
+                                            },
+                                            child: card,
+                                          );
+                                        }
+                                        if (isDraggable &&
+                                            effectiveCardHeight >= 28) {
+                                          content = Stack(
+                                            children: [
+                                              content,
+                                              Positioned(
+                                                top: 0,
+                                                left: 0,
+                                                right: 0,
+                                                height: 12,
+                                                child: _TimelineResizeHandle(
+                                                  totalMinutes: totalMinutes,
+                                                  timelineContentHeight:
+                                                      timelineContentHeight,
+                                                  gridMinutes: gridMinutes,
+                                                  movingMinutes:
+                                                      entryStartMinutes,
+                                                  minMinutes: 0,
+                                                  maxMinutes:
+                                                      entryEndMinutes -
+                                                      gridMinutes,
+                                                  onCommit: (newStartMinutes) {
+                                                    onEditPlannerEntryTime(
+                                                      entry.id,
+                                                      newStartMinutes,
+                                                      entryEndMinutes,
+                                                    );
+                                                  },
+                                                ),
+                                              ),
+                                              Positioned(
+                                                bottom: 0,
+                                                left: 0,
+                                                right: 0,
+                                                height: 12,
+                                                child: _TimelineResizeHandle(
+                                                  totalMinutes: totalMinutes,
+                                                  timelineContentHeight:
+                                                      timelineContentHeight,
+                                                  gridMinutes: gridMinutes,
+                                                  movingMinutes:
+                                                      entryEndMinutes,
+                                                  minMinutes:
+                                                      entryStartMinutes +
+                                                      gridMinutes,
+                                                  maxMinutes: totalMinutes,
+                                                  onCommit: (newEndMinutes) {
+                                                    onEditPlannerEntryTime(
+                                                      entry.id,
+                                                      entryStartMinutes,
+                                                      newEndMinutes,
+                                                    );
+                                                  },
                                                 ),
                                               ),
                                             ],
+                                          );
+                                        }
+                                        return Positioned(
+                                          top: top,
+                                          left:
+                                              timeAxisWidth +
+                                              positioned.lane *
+                                                  (eventLaneWidth + laneGap) +
+                                              positioned.laneGroup *
+                                                  laneGroupGap,
+                                          width: eventLaneWidth,
+                                          height: effectiveCardHeight,
+                                          child: content,
+                                        );
+                                      },
+                                    ),
+                                  for (
+                                    var markerIndex = 0;
+                                    markerIndex < zeroDurationEntries.length;
+                                    markerIndex++
+                                  )
+                                    Builder(
+                                      builder: (context) {
+                                        final marker =
+                                            zeroDurationEntries[markerIndex];
+                                        final slot =
+                                            zeroDurationSlotMap[marker.id] ?? 0;
+                                        final topMinutes = marker.start
+                                            .difference(start)
+                                            .inMinutes
+                                            .clamp(0, totalMinutes);
+                                        final top =
+                                            topMinutes /
+                                            totalMinutes *
+                                            timelineContentHeight;
+                                        final horizontalOffset =
+                                            slot * markerSlotPitch;
+                                        final x =
+                                            timeAxisWidth + horizontalOffset;
+                                        return Positioned(
+                                          top: top - 10,
+                                          left: x,
+                                          width: markerWidth,
+                                          height: 26,
+                                          child: Tooltip(
+                                            message: _eventTooltipMessage(
+                                              marker,
+                                              _eventCategoryLabel(marker),
+                                              _formatTime(marker.start),
+                                              marker.subtitle,
+                                              marker.labels,
+                                            ),
+                                            child: InkWell(
+                                              onTap: () {
+                                                if (context.mounted) {
+                                                  _showEditEntryTimeDialog(
+                                                    context,
+                                                    marker,
+                                                  );
+                                                }
+                                              },
+                                              child: Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 8,
+                                                      vertical: 4,
+                                                    ),
+                                                decoration: BoxDecoration(
+                                                  color:
+                                                      Colors.blueGrey.shade700,
+                                                  borderRadius:
+                                                      BorderRadius.circular(12),
+                                                  border: Border.all(
+                                                    color: Colors.white,
+                                                    width: 1.5,
+                                                  ),
+                                                ),
+                                                child: Row(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    Container(
+                                                      width: 8,
+                                                      height: 8,
+                                                      decoration:
+                                                          const BoxDecoration(
+                                                            color: Colors.white,
+                                                            shape:
+                                                                BoxShape.circle,
+                                                          ),
+                                                    ),
+                                                    const SizedBox(width: 6),
+                                                    Flexible(
+                                                      child: Text(
+                                                        marker.title,
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow
+                                                            .ellipsis,
+                                                        style: const TextStyle(
+                                                          color: Colors.white,
+                                                          fontSize: 10,
+                                                          fontWeight:
+                                                              FontWeight.w700,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ),
                                           ),
-                                        ),
+                                        );
+                                      },
+                                    ),
+                                  if (isToday)
+                                    Positioned(
+                                      top:
+                                          ((now.hour * 60 + now.minute) /
+                                              totalMinutes) *
+                                          timelineContentHeight,
+                                      left: 0,
+                                      right: 0,
+                                      height: 4,
+                                      child: Row(
+                                        children: [
+                                          SizedBox(
+                                            width: timeAxisWidth,
+                                            child: Text(
+                                              _formatTime(now),
+                                              style: TextStyle(
+                                                fontSize: 9,
+                                                color: Colors.red.shade700,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            child: Container(
+                                              height: 3,
+                                              color: Colors.red.shade700,
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ),
-                                  );
-                                },
+                                ],
                               ),
-                            if (isToday)
-                              Positioned(
-                                top:
-                                    ((now.hour * 60 + now.minute) /
-                                        totalMinutes) *
-                                    timelineContentHeight,
-                                left: 0,
-                                right: 0,
-                                height: 4,
-                                child: Row(
-                                  children: [
-                                    SizedBox(
-                                      width: timeAxisWidth,
-                                      child: Text(
-                                        _formatTime(now),
-                                        style: TextStyle(
-                                          fontSize: 9,
-                                          color: Colors.red.shade700,
-                                          fontWeight: FontWeight.w800,
-                                        ),
-                                      ),
-                                    ),
-                                    Expanded(
-                                      child: Container(
-                                        height: 3,
-                                        color: Colors.red.shade700,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                          ],
+                            ),
+                          ),
                         ),
-                      ),
+                      ],
                     ),
                   ),
                 );
@@ -1780,35 +2023,40 @@ class DayPlannerSection extends StatelessWidget {
         );
         final dayContext = resolvedPlannerContext.dayContext;
 
-        final freshPlannerResult = DayPlannerService.buildPlan(
-          tasks: filteredTasks,
-          calendarEvents: filteredCalendarEvents,
-          day: selectedPlannerDate,
-          dayContext: dayContext,
-          isHoliday: isHoliday,
-          weeklyTotals: weeklyActivityTotals,
-          gymCompletedToday: gymCompletedToday,
-          daysSinceLastMobility: daysSinceLastMobility,
-          preferredConcurrentEntryIds: preferredConcurrentEntryIds,
-          excludedConcurrentEntryIds: excludedConcurrentEntryIds,
-          nonBlockingCalendarEventIds: nonBlockingCalendarEventIds,
-          includedCalendarEventIds: includedCalendarEventIds,
-          workdayStartMinutes: workdayStartMinutes,
-          workdayEndMinutes: workdayEndMinutes,
-          entryOverrides: plannerEntryOverrides,
-          excludedPlannerEntryIds: removedPlannerEntryIds,
-          planningStart: planningStart,
-          personalBlocks: personalBlocks,
-          executionStates: executionStates,
-          timeGrid: timeGrid,
-          enabledActivityNames: enabledActivityNames,
-        );
+        // Frozen plans are already complete; avoid rebuilding the scheduler
+        // on every widget rebuild unless this view explicitly needs fresh data.
+        final useFrozenPlan =
+            !ignoreFrozenPlan && hasFrozenPlanForDate(selectedPlannerDate);
+        final freshPlannerResult = useFrozenPlan
+            ? null
+            : DayPlannerService.buildPlan(
+                tasks: filteredTasks,
+                calendarEvents: filteredCalendarEvents,
+                day: selectedPlannerDate,
+                dayContext: dayContext,
+                isHoliday: isHoliday,
+                weeklyTotals: weeklyActivityTotals,
+                gymCompletedToday: gymCompletedToday,
+                daysSinceLastMobility: daysSinceLastMobility,
+                preferredConcurrentEntryIds: preferredConcurrentEntryIds,
+                excludedConcurrentEntryIds: excludedConcurrentEntryIds,
+                nonBlockingCalendarEventIds: nonBlockingCalendarEventIds,
+                includedCalendarEventIds: includedCalendarEventIds,
+                workdayStartMinutes: workdayStartMinutes,
+                workdayEndMinutes: workdayEndMinutes,
+                entryOverrides: plannerEntryOverrides,
+                excludedPlannerEntryIds: removedPlannerEntryIds,
+                planningStart: planningStart,
+                personalBlocks: personalBlocks,
+                executionStates: executionStates,
+                timeGrid: timeGrid,
+                enabledActivityNames: enabledActivityNames,
+                currentEnergyState: currentEnergyState,
+              );
 
         // Once a plan exists for a day it stays frozen in place (no
         // reshuffling from unrelated app activity); it only regenerates when
         // the caller explicitly requests a replan (ignoreFrozenPlan).
-        final useFrozenPlan =
-            !ignoreFrozenPlan && hasFrozenPlanForDate(selectedPlannerDate);
         final DayPlannerResult plannerResult;
         if (useFrozenPlan) {
           final dayBoundsStart = DateTime(
@@ -1848,11 +2096,11 @@ class DayPlannerSection extends StatelessWidget {
           plannerResult = DayPlannerResult(
             entries: frozenEntries,
             summary: frozenSummaryForDate(selectedPlannerDate),
-            recommendations: freshPlannerResult.recommendations,
-            rolloverTasks: freshPlannerResult.rolloverTasks,
+            recommendations: const <ActivityRecommendation>[],
+            rolloverTasks: const <Task>[],
           );
         } else {
-          plannerResult = freshPlannerResult;
+          plannerResult = freshPlannerResult!;
           if (onPlanBuilt != null) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               onPlanBuilt?.call(selectedPlannerDate, freshPlannerResult);
@@ -1934,12 +2182,27 @@ class DayPlannerSection extends StatelessWidget {
                   width: double.infinity,
                 ),
                 const SizedBox(height: 8),
+                _buildMenuRecommendationsSection(context, filteredTasks),
+                const SizedBox(height: 8),
                 _buildTimelineFilters(context),
 
                 const SizedBox(height: 12),
               ];
 
-              final timelineContent = visiblePlannerEntries.isEmpty
+              final timelineContent = showWeeklyTimeline
+                  ? LayoutBuilder(
+                      builder: (context, timelineConstraints) {
+                        return _buildWeeklyTimeline(
+                          today: today,
+                          selectedDate: selectedPlannerDate,
+                          selectedEntries: visiblePlannerEntries,
+                          height: timelineConstraints.maxHeight,
+                          startOffset: weeklyTimelineStartOffset,
+                          availableWidth: timelineConstraints.maxWidth,
+                        );
+                      },
+                    )
+                  : visiblePlannerEntries.isEmpty
                   ? Center(
                       child: Text(
                         'Nothing to show with current filters.',
@@ -2004,79 +2267,192 @@ class DayPlannerSection extends StatelessWidget {
   }
 
   Widget _buildTimelineFilters(BuildContext context) {
-    final chips = [
-      _buildPlannerToggleChip(
-        label: 'Work calendar',
-        selected: showWorkCalendarInPlanner,
-        chipColor: const Color(0xFF124B8A),
-        onChanged: onShowWorkCalendarInPlannerChanged ?? (_) {},
-        width: 128,
-      ),
-      _buildPlannerToggleChip(
-        label: 'Work tasks',
-        selected: showWorkTasksInPlanner,
-        chipColor: const Color(0xFF0D3B6E),
-        onChanged: onShowWorkTasksInPlannerChanged ?? (_) {},
-        width: 128,
-      ),
-      _buildPlannerToggleChip(
-        label: 'Home calendar',
-        selected: showHomeCalendarInPlanner,
-        chipColor: const Color(0xFFD95F02),
-        onChanged: onShowHomeCalendarInPlannerChanged ?? (_) {},
-        width: 128,
-      ),
-      _buildPlannerToggleChip(
-        label: 'Home tasks',
-        selected: showHomeTasksInPlanner,
-        chipColor: const Color(0xFFF28E2B),
-        onChanged: onShowHomeTasksInPlannerChanged ?? (_) {},
-        width: 128,
-      ),
-      _buildPlannerToggleChip(
-        label: 'Movement',
-        selected: showMovementInPlanner,
-        chipColor: const Color(0xFF2E8B57),
-        onChanged: onShowMovementInPlannerChanged,
-        width: 128,
-      ),
-      _buildPlannerToggleChip(
-        label: 'Personal',
-        selected: showPersonalInPlanner,
-        chipColor: const Color(0xFFB23A48),
-        onChanged: onShowPersonalInPlannerChanged,
-        width: 128,
-      ),
-      _buildPlannerToggleChip(
-        label: 'Break',
-        selected: showBreakInPlanner,
-        chipColor: const Color(0xFF455A64),
-        onChanged: onShowBreakInPlannerChanged,
-        width: 128,
-      ),
-    ];
+    return PlannerTimelineFilters(
+      showWorkCalendar: showWorkCalendarInPlanner,
+      showWorkTasks: showWorkTasksInPlanner,
+      showHomeCalendar: showHomeCalendarInPlanner,
+      showHomeTasks: showHomeTasksInPlanner,
+      showMovement: showMovementInPlanner,
+      showPersonal: showPersonalInPlanner,
+      showBreak: showBreakInPlanner,
+      onShowWorkCalendarChanged: onShowWorkCalendarInPlannerChanged ?? (_) {},
+      onShowWorkTasksChanged: onShowWorkTasksInPlannerChanged ?? (_) {},
+      onShowHomeCalendarChanged: onShowHomeCalendarInPlannerChanged ?? (_) {},
+      onShowHomeTasksChanged: onShowHomeTasksInPlannerChanged ?? (_) {},
+      onShowMovementChanged: onShowMovementInPlannerChanged,
+      onShowPersonalChanged: onShowPersonalInPlannerChanged,
+      onShowBreakChanged: onShowBreakInPlannerChanged,
+    );
+  }
 
-    // Chips wrap to fit the available width instead of scrolling
-    // horizontally; collapsed by default on narrow/mobile, expanded on
-    // wide/desktop/web.
-    return Material(
-      type: MaterialType.transparency,
+  Widget _buildWeeklyTimeline({
+    required DateTime today,
+    required DateTime selectedDate,
+    required List<DayPlannerEntry> selectedEntries,
+    required double height,
+    required int startOffset,
+    required double availableWidth,
+  }) {
+    final dayHeight = (height - 34).clamp(120.0, 600.0);
+    final timelineContentHeight = dayHeight * 4;
+    final days = List<DateTime>.generate(
+      5,
+      (index) => today.add(Duration(days: startOffset + index)),
+    );
+    final entriesByDay = <DateTime, List<DayPlannerEntry>>{};
+    final allDayEntriesByDay = <DateTime, List<DayPlannerEntry>>{};
+    for (final date in days) {
+      final entries = date == selectedDate
+          ? selectedEntries
+          : frozenEntriesForDate(date);
+      final visibleEntries = entries.where((entry) {
+        if (entry.executionState == ExecutionState.dismissed ||
+            entry.type == 'movement') {
+          return false;
+        }
+        return switch (_plannerFilterCategory(entry)) {
+          _PlannerFilterCategory.workCalendar => showWorkCalendarInPlanner,
+          _PlannerFilterCategory.workTasks => showWorkTasksInPlanner,
+          _PlannerFilterCategory.homeCalendar => showHomeCalendarInPlanner,
+          _PlannerFilterCategory.homeTasks => showHomeTasksInPlanner,
+          _PlannerFilterCategory.personal => showPersonalInPlanner,
+          _PlannerFilterCategory.movement => showMovementInPlanner,
+          _PlannerFilterCategory.breakEntry => showBreakInPlanner,
+          _PlannerFilterCategory.other => true,
+        };
+      }).toList();
+      allDayEntriesByDay[date] = visibleEntries
+          .where((entry) => entry.isAllDay)
+          .toList();
+      entriesByDay[date] = visibleEntries
+          .where((entry) => !entry.isAllDay)
+          .toList();
+    }
+    const allDayHeight = 44.0;
+    const contextHeight = 34.0;
+    const timeAxisWidth = 36.0;
+    final weeklyContentWidth = (availableWidth - 85 - timeAxisWidth).clamp(
+      0.0,
+      2000.0,
+    );
+    final dayWidth = (weeklyContentWidth - (4 * 6)) / 5;
+    final positionedByDay =
+        <
+          DateTime,
+          List<({DayPlannerEntry entry, int lane, int columnCount})>
+        >{};
+    final dayWidths = <DateTime, double>{};
+    for (final date in days) {
+      final positioned = assignExpandedTimelineColumns(
+        entriesByDay[date]!,
+        lanePriority: _lanePriority,
+      );
+      final columnCount = positioned.isEmpty
+          ? 1
+          : positioned
+                .map((item) => item.columnCount)
+                .reduce((a, b) => a > b ? a : b);
+      positionedByDay[date] = positioned;
+      dayWidths[date] = dayWidth;
+    }
+    return WeeklyTimeline(
+      today: today,
+      selectedDate: selectedDate,
+      height: height,
+      startOffset: startOffset,
+      maxStartOffset: (outlookLookAheadDays - 5).clamp(0, 31).toInt(),
+      entriesByDay: entriesByDay,
+      allDayEntriesByDay: allDayEntriesByDay,
+      positionedByDay: positionedByDay,
+      dayWidths: dayWidths,
+      weeklyDayContexts: weeklyDayContexts,
+      weeklyHolidayDates: weeklyHolidayDates,
+      onWeeklyDayContextChanged: onWeeklyDayContextChanged,
+      onWeeklyTimelineStartOffsetChanged: onWeeklyTimelineStartOffsetChanged,
+      eventCardBuilder: _buildCompactTimelineEventCard,
+    );
+  }
+
+  // "Today's Menu picks" — surfaces Menu-Based Planning's top energy-matched
+  // task recommendations here without folding them into the rigid timeline.
+  Widget _buildMenuRecommendationsSection(
+    BuildContext context,
+    List<Task> filteredTasks,
+  ) {
+    final state = currentEnergyState;
+    final eligibleTasks = filteredTasks
+        .where((task) => !task.waitingOnOthers)
+        .toList();
+    final recommendations = state == null
+        ? const <TaskRecommendation>[]
+        : MenuRecommendationService.recommend(eligibleTasks, state, limit: 3);
+
+    return Card(
+      margin: EdgeInsets.zero,
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
         child: ExpansionTile(
-          initiallyExpanded: !isNarrow,
+          initiallyExpanded: false,
           dense: true,
           visualDensity: VisualDensity.compact,
           minTileHeight: 32,
-          tilePadding: EdgeInsets.zero,
-          childrenPadding: const EdgeInsets.only(bottom: 8),
+          tilePadding: const EdgeInsets.symmetric(horizontal: 10),
+          childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
           expandedAlignment: Alignment.centerLeft,
           expandedCrossAxisAlignment: CrossAxisAlignment.start,
-          title: const Text(
-            'Timeline filters',
-            style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700),
+          leading: Text(
+            state?.emoji ?? '🍽',
+            style: const TextStyle(fontSize: 16),
           ),
-          children: [Wrap(spacing: 4, runSpacing: 4, children: chips)],
+          title: Text(
+            "Today's Menu picks",
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+          ),
+          subtitle: Text(
+            state == null
+                ? 'Check in to get picks that match your energy'
+                : 'Feeling: ${state.label}',
+            style: TextStyle(fontSize: 11, color: Colors.grey.shade700),
+          ),
+          children: [
+            if (onChangeEnergyState != null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  onPressed: onChangeEnergyState,
+                  child: Text(
+                    state == null ? 'Check in' : 'Change how you feel',
+                  ),
+                ),
+              ),
+            if (recommendations.isEmpty && state != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Text(
+                  'Nothing on the menu yet — tag tasks with a menu section from the task list.',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+              ),
+            for (final recommendation in recommendations)
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Text(
+                  (recommendation.task.menuCategory ?? MenuCategory.sideDish)
+                      .emoji,
+                  style: const TextStyle(fontSize: 18),
+                ),
+                title: Text(
+                  recommendation.task.task,
+                  style: const TextStyle(fontSize: 13),
+                ),
+                subtitle: Text(
+                  recommendation.reason,
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                ),
+                onTap: () => onOpenTask(recommendation.task),
+              ),
+          ],
         ),
       ),
     );
@@ -2168,17 +2544,6 @@ class DayPlannerSection extends StatelessWidget {
                 chipColor: Colors.purple,
                 onChanged: onHolidayChanged!,
               ),
-            if (onEnabledActivityNamesChanged != null)
-              ActionChip(
-                avatar: const Icon(Icons.directions_walk, size: 16),
-                label: const Text('Choose available activities'),
-                onPressed: () => _showChooseActivitiesDialog(
-                  context,
-                  dayContext.workLocation == WorkLocation.home
-                      ? wfhActivityOptions
-                      : officeActivityOptions,
-                ),
-              ),
           ],
         ),
       ],
@@ -2246,7 +2611,7 @@ class DayPlannerSection extends StatelessWidget {
         child: Theme(
           data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
           child: ExpansionTile(
-            initiallyExpanded: !isNarrow,
+            initiallyExpanded: false,
             dense: true,
             visualDensity: VisualDensity.compact,
             minTileHeight: 32,
@@ -2535,14 +2900,57 @@ class DayPlannerSection extends StatelessWidget {
             const Icon(Icons.view_timeline_outlined, size: 18),
             const SizedBox(width: 6),
             const Text(
-              'Daily Timeline',
+              'Timeline',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
             ),
+            const SizedBox(width: 10),
+            _buildPlannerToggleChip(
+              label: showWeeklyTimeline ? 'Weekly' : 'Daily',
+              selected: showWeeklyTimeline,
+              chipColor: Colors.teal.shade700,
+              onChanged: onShowWeeklyTimelineChanged ?? (_) {},
+            ),
             const Spacer(),
-            ..._buildPlannerActionButtons(context, selectedPlannerDate),
-            const SizedBox(width: 6),
-            ..._buildImportExportMenuButtons(context),
+            if (!isNarrow) ...[
+              ..._buildPlannerActionButtons(context, selectedPlannerDate),
+              const SizedBox(width: 6),
+              ..._buildImportExportMenuButtons(context),
+            ],
           ],
+        ),
+        const SizedBox(height: 12),
+      ],
+      if (isNarrow && !showHeaderTitle) ...[
+        Card(
+          margin: EdgeInsets.zero,
+          child: Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              initiallyExpanded: false,
+              dense: true,
+              visualDensity: VisualDensity.compact,
+              minTileHeight: 32,
+              tilePadding: const EdgeInsets.symmetric(horizontal: 10),
+              childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+              expandedAlignment: Alignment.centerLeft,
+              expandedCrossAxisAlignment: CrossAxisAlignment.start,
+              leading: const Icon(Icons.more_horiz, size: 16),
+              title: const Text(
+                'Timeline actions',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+              ),
+              children: [
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    ..._buildPlannerActionButtons(context, selectedPlannerDate),
+                    ..._buildImportExportMenuButtons(context),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ),
         const SizedBox(height: 12),
       ],
@@ -2641,18 +3049,6 @@ class DayPlannerSection extends StatelessWidget {
       ),
     ];
   }
-}
-
-// A selectable option in the "Change activity" dialog: either an existing
-// task from the task list, or a free-typed/preset custom activity name.
-class _ChangeActivityOption {
-  _ChangeActivityOption.task(this.task) : presetName = null;
-  _ChangeActivityOption.preset(String name) : presetName = name, task = null;
-
-  final Task? task;
-  final String? presetName;
-
-  String get label => task?.task ?? presetName ?? '';
 }
 
 class _DashedTimelineLinePainter extends CustomPainter {

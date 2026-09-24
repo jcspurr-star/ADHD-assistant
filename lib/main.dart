@@ -8,7 +8,9 @@ import 'package:window_manager/window_manager.dart';
 import 'models/note_entry.dart';
 import 'models/task.dart';
 import 'models/activity_recommendation.dart';
+import 'models/menu_planning.dart';
 import 'services/storage_service.dart';
+import 'services/energy_state_service.dart';
 import 'services/gemini_service.dart';
 import 'services/recommendation_service.dart';
 import 'services/one_drive_sync_service.dart';
@@ -19,11 +21,14 @@ import 'services/backup_file_service.dart';
 import 'services/outlook_link_coordinator.dart';
 import 'services/outlook_formatting_service.dart';
 import 'services/work_calendar_auto_import_loader.dart';
+import 'services/silly_mode_service.dart';
 import 'dialogs/step_count_dialog.dart';
 import 'dialogs/edit_task_dialog.dart';
 import 'dialogs/edit_subtask_dialog.dart';
 import 'dialogs/add_subtask_dialog.dart';
 import 'dialogs/task_field_dialogs.dart';
+import 'dialogs/energy_checkin_dialog.dart';
+import 'dialogs/task_menu_attributes_dialog.dart';
 import 'settings_page.dart';
 import 'widgets/backup_recovery_dialog.dart';
 import 'widgets/countdown_view.dart';
@@ -50,6 +55,7 @@ import 'widgets/task_panels_section.dart';
 import 'widgets/task_tab_button.dart';
 import 'widgets/tasks_view_section.dart';
 import 'widgets/work_snapshot_section.dart';
+import 'widgets/todays_menu_page.dart';
 
 const double kPageHorizontalPadding = 16;
 const double kWidePriorityCardWidth = 202;
@@ -176,7 +182,11 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     'Sensory overload',
   ];
   List<String> wfhActivityOptions = ['Stand at desk', 'Walk at desk'];
-  List<String> officeActivityOptions = ['Walking Break', 'Stand at Desk'];
+  List<String> officeActivityOptions = [
+    'Walking Break',
+    'Stand at Desk',
+    'Walk break',
+  ];
   List<String> dailyContextOptions = [
     'Home',
     'WFH',
@@ -217,6 +227,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   final Map<int, GlobalKey> taskCardKeys = {};
 
   List<Task> tasks = [];
+  EnergyState? currentEnergyState;
   List<String> inboxEntries = [];
   List<NoteEntry> noteEntries = [];
   List<ActivityLogEntry> activityLogs = [];
@@ -236,7 +247,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   bool isAppBusy = false;
   bool isStartupLoading = true;
   bool groupTasksByPriority = false;
-  bool taskListCardView = true;
   bool taskArchiveViewEnabled = false;
   int workSnapshotWeekOffset = 0;
   int? selectedTaskPaneIndex;
@@ -254,15 +264,19 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   // A lightweight refresh after importing calendar data: rebuild once so newly
   // visible events show up without triggering a true replan of the day's tasks.
   bool plannerRefreshOnlyPending = false;
+  bool showWeeklyTimeline = false;
+  int weeklyTimelineStartOffset = 0;
+  bool voiceCaptureRequested = false;
   bool mobileDashboardPreviewExpanded = false;
-  bool mobileTimelineExpanded = true;
+  bool mobileTimelineExpanded = false;
   int plannerWorkdayStartMinutes = 9 * 60;
   int plannerWorkdayEndMinutes = 17 * 60;
   TimeGrid plannerTimeGrid = TimeGrid.thirtyMinutes;
   bool prioritizeWorkOnWeekdays = true;
   bool gymAvailable = false;
-  bool wfhAvailable = false;
+  bool wfhAvailable = true;
   bool eveningAvailable = false;
+  bool sillyModeEnabled = false;
   bool showWorkCalendarInPlanner = true;
   bool showWorkTasksInPlanner = true;
   bool showHomeCalendarInPlanner = true;
@@ -302,7 +316,40 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     upcomingOutlookEventsFuture = _loadUpcomingOutlookEvents();
     unawaited(_refreshFirebaseSyncStatus());
     unawaited(_maybeCompleteOutlookAuthFromCurrentUrl());
+    unawaited(_listenForWidgetActions());
     unawaited(_runStartupLoad());
+  }
+
+  Future<void> _listenForWidgetActions() async {
+    // The native widget-action channel is only implemented on Android.
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    const channel = MethodChannel('adhd_assistant/widget_actions');
+    channel.setMethodCallHandler((call) async {
+      if (call.method == 'widgetAction' && call.arguments == 'voice_capture') {
+        _handleVoiceCaptureWidgetAction();
+      }
+    });
+    try {
+      final action = await channel.invokeMethod<String>(
+        'getInitialWidgetAction',
+      );
+      if (action == 'voice_capture') _handleVoiceCaptureWidgetAction();
+    } on MissingPluginException {
+      // The channel is unavailable on platforms without the Android widget.
+    } on PlatformException {
+      // The channel is unavailable on platforms without the Android widget.
+    }
+  }
+
+  void _handleVoiceCaptureWidgetAction() {
+    if (!mounted) return;
+    setState(() {
+      selectedMainSectionIndex = 0;
+      voiceCaptureRequested = true;
+    });
+    Future<void>.delayed(const Duration(seconds: 2), () {
+      if (mounted) setState(() => voiceCaptureRequested = false);
+    });
   }
 
   Future<void> _runStartupLoad() async {
@@ -312,6 +359,90 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       if (mounted) setState(() => isStartupLoading = false);
     }
     unawaited(_loadImportedOutlookSummary());
+    unawaited(_loadEnergyStateAndMaybeCheckIn());
+  }
+
+  Future<void> _loadEnergyStateAndMaybeCheckIn() async {
+    final state = await EnergyStateService.loadEnergyState();
+    if (mounted) {
+      setState(() => currentEnergyState = state);
+    }
+    final needsCheckIn = await EnergyStateService.needsCheckInToday();
+    if (needsCheckIn && mounted) {
+      await openEnergyCheckIn();
+    }
+  }
+
+  Future<void> openEnergyCheckIn() async {
+    final selected = await showEnergyCheckInDialog(
+      context,
+      currentState: currentEnergyState,
+    );
+    if (selected == null) return;
+    await EnergyStateService.saveEnergyState(selected);
+    if (!mounted) return;
+    setState(() => currentEnergyState = selected);
+  }
+
+  Future<void> toggleTaskById(Task task) async {
+    final index = tasks.indexWhere((t) => t.id == task.id);
+    if (index == -1) return;
+    await toggleTask(index, !task.done);
+  }
+
+  Future<void> categorizeTaskForMenu(Task task) async {
+    final result = await showTaskMenuAttributesDialog(
+      context,
+      taskTitle: task.task,
+      initialCategory: task.menuCategory,
+      initialEnergy: task.energyRequired,
+      initialFocus: task.focusRequired,
+      initialRestorative: task.restorative,
+    );
+    if (result == null) return;
+
+    setState(() {
+      task.menuCategory = result.category;
+      task.energyRequired = result.energyRequired;
+      task.focusRequired = result.focusRequired;
+      task.restorative = result.restorative;
+    });
+    await saveTasks();
+  }
+
+  void reorderMenuCategoryTasks(
+    MenuCategory category,
+    int oldIndex,
+    int newIndex,
+  ) {
+    setState(() {
+      final categoryTasks = tasks
+          .where((t) => (t.menuCategory ?? MenuCategory.sideDish) == category)
+          .toList();
+      final adjustedNewIndex = oldIndex < newIndex ? newIndex - 1 : newIndex;
+      final moved = categoryTasks.removeAt(oldIndex);
+      categoryTasks.insert(adjustedNewIndex, moved);
+
+      final categoryIndices = <int>[
+        for (var i = 0; i < tasks.length; i++)
+          if ((tasks[i].menuCategory ?? MenuCategory.sideDish) == category) i,
+      ];
+      for (var i = 0; i < categoryIndices.length; i++) {
+        tasks[categoryIndices[i]] = categoryTasks[i];
+      }
+    });
+    unawaited(saveTasks());
+  }
+
+  Widget buildTodaysMenuView() {
+    return TodaysMenuPage(
+      tasks: tasks,
+      energyState: currentEnergyState,
+      onChangeEnergyState: () => unawaited(openEnergyCheckIn()),
+      onToggleTask: (task) => unawaited(toggleTaskById(task)),
+      onCategorizeTask: (task) => unawaited(categorizeTaskForMenu(task)),
+      onReorderCategory: reorderMenuCategoryTasks,
+    );
   }
 
   Future<void> _loadImportedOutlookSummary() async {
@@ -390,6 +521,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       final loadedWfhAvailable = await StorageService.loadWfhAvailable();
       final loadedEveningAvailable =
           await StorageService.loadEveningAvailable();
+      final loadedSillyModeEnabled =
+          await StorageService.loadSillyModeEnabled();
       final loadedPlannerWorkdayStartMinutes =
           await StorageService.loadPlannerWorkdayStartMinutes();
       final loadedPlannerWorkdayEndMinutes =
@@ -432,12 +565,21 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         loadedOfficeActivityOptions,
         officeActivityOptions,
       );
+      final officeActivityOptionsNeedMigration = !resolvedOfficeActivityOptions
+          .contains('Walk break');
+      if (officeActivityOptionsNeedMigration) {
+        resolvedOfficeActivityOptions.add('Walk break');
+        await StorageService.saveOfficeActivityOptions(
+          resolvedOfficeActivityOptions,
+        );
+      }
       final resolvedOutlookLookAheadDays = loadedOutlookLookAheadDays ?? 1;
       final resolvedPrioritizeWorkOnWeekdays =
           loadedPrioritizeWorkOnWeekdays ?? true;
       final resolvedGymAvailable = loadedGymAvailable ?? false;
-      final resolvedWfhAvailable = loadedWfhAvailable ?? false;
+      final resolvedWfhAvailable = loadedWfhAvailable ?? true;
       final resolvedEveningAvailable = loadedEveningAvailable ?? false;
+      final resolvedSillyModeEnabled = loadedSillyModeEnabled ?? false;
       final resolvedPlannerWorkdayStartMinutes =
           loadedPlannerWorkdayStartMinutes ?? 9 * 60;
       final resolvedPlannerWorkdayEndMinutes =
@@ -468,6 +610,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         gymAvailable = resolvedGymAvailable;
         wfhAvailable = resolvedWfhAvailable;
         eveningAvailable = resolvedEveningAvailable;
+        sillyModeEnabled = resolvedSillyModeEnabled;
+        SillyModeService.enabled = resolvedSillyModeEnabled;
         plannerWorkdayStartMinutes = resolvedPlannerWorkdayStartMinutes;
         plannerWorkdayEndMinutes = resolvedPlannerWorkdayEndMinutes;
         plannerTimeGrid = TimeGrid.thirtyMinutes;
@@ -1175,6 +1319,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       onAddInboxEntry: addInboxEntry,
       onConvertInboxEntryToNote: convertInboxEntryToNote,
       onRemoveInboxEntry: removeInboxEntry,
+      autoStartVoiceCapture: voiceCaptureRequested,
     );
   }
 
@@ -1378,45 +1523,47 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           ),
           content: SizedBox(
             width: 520,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextFormField(
-                  initialValue: existing?.title ?? '',
-                  autofocus: true,
-                  maxLines: 1,
-                  onChanged: (value) {
-                    draftTitle = value;
-                  },
-                  decoration: const InputDecoration(
-                    labelText: 'Title',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                if (isRecipe) ...[
-                  buildFormattedField(
-                    label: 'Ingredients',
-                    controller: ingredientsController,
-                    focusNode: ingredientsFocusNode,
-                    hintText: 'List each ingredient...',
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextFormField(
+                    initialValue: existing?.title ?? '',
+                    autofocus: true,
+                    maxLines: 1,
+                    onChanged: (value) {
+                      draftTitle = value;
+                    },
+                    decoration: const InputDecoration(
+                      labelText: 'Title',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
                   ),
                   const SizedBox(height: 10),
-                  buildFormattedField(
-                    label: 'Instructions',
-                    controller: instructionsController,
-                    focusNode: instructionsFocusNode,
-                    hintText: 'Write the cooking steps...',
-                  ),
-                ] else
-                  buildFormattedField(
-                    label: 'Note',
-                    controller: contentController,
-                    focusNode: contentFocusNode,
-                    hintText: 'Write your note...',
-                  ),
-              ],
+                  if (isRecipe) ...[
+                    buildFormattedField(
+                      label: 'Ingredients',
+                      controller: ingredientsController,
+                      focusNode: ingredientsFocusNode,
+                      hintText: 'List each ingredient...',
+                    ),
+                    const SizedBox(height: 10),
+                    buildFormattedField(
+                      label: 'Instructions',
+                      controller: instructionsController,
+                      focusNode: instructionsFocusNode,
+                      hintText: 'Write the cooking steps...',
+                    ),
+                  ] else
+                    buildFormattedField(
+                      label: 'Note',
+                      controller: contentController,
+                      focusNode: contentFocusNode,
+                      hintText: 'Write your note...',
+                    ),
+                ],
+              ),
             ),
           ),
           actions: [
@@ -2081,7 +2228,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     final settings = dailyCheckinsByDate[getDateKey(date)];
     return (
       gymAvailable: settings?['plannerGymAvailable'] as bool? ?? false,
-      wfhAvailable: settings?['plannerWfhAvailable'] as bool? ?? false,
+      wfhAvailable: settings?['plannerWfhAvailable'] as bool? ?? true,
       eveningAvailable: settings?['plannerEveningAvailable'] as bool? ?? false,
       isHoliday: settings?['plannerIsHoliday'] as bool? ?? false,
       workdayStartMinutes:
@@ -2089,6 +2236,36 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       workdayEndMinutes:
           (settings?['plannerWorkdayEndMinutes'] as num?)?.toInt() ?? 17 * 60,
     );
+  }
+
+  Map<DateTime, DayContext> weeklyPlannerContexts(DateTime start) {
+    final firstDay = DateTime(start.year, start.month, start.day);
+    return {
+      for (var index = 0; index < 5; index++)
+        firstDay.add(Duration(days: index)): (() {
+          final context = plannerContextForDate(
+            firstDay.add(Duration(days: index)),
+          );
+          return DayContext(
+            gymMorning: context.gymAvailable,
+            workLocation: context.wfhAvailable
+                ? WorkLocation.home
+                : WorkLocation.office,
+            eveningAvailable: context.eveningAvailable,
+          );
+        })(),
+    };
+  }
+
+  Set<DateTime> weeklyPlannerHolidayDates(DateTime start) {
+    final firstDay = DateTime(start.year, start.month, start.day);
+    return {
+      for (var index = 0; index < 5; index++)
+        if (plannerContextForDate(
+          firstDay.add(Duration(days: index)),
+        ).isHoliday)
+          firstDay.add(Duration(days: index)),
+    };
   }
 
   Future<void> updatePlannerContext(
@@ -2167,7 +2344,6 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       dailyCheckinsByDate[dateKey] = current;
     });
     await saveDailyCheckinsByDate();
-    await _performReplanForDate(date);
   }
 
   Future<void> setPreferredConcurrentEntryIds(
@@ -2238,6 +2414,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         final title = decoded['title']?.toString().trim();
         final startMinutes = (decoded['startMinutes'] as num?)?.toInt();
         final endMinutes = (decoded['endMinutes'] as num?)?.toInt();
+        final category = decoded['category']?.toString() ?? 'Personal';
+        final taskId = decoded['taskId']?.toString();
         if (id == null ||
             title == null ||
             title.isEmpty ||
@@ -2251,6 +2429,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             title: title,
             startMinutes: startMinutes,
             endMinutes: endMinutes,
+            category: category,
+            taskId: taskId,
           ),
         );
       } catch (_) {
@@ -2265,6 +2445,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     String title,
     int startMinutes,
     int endMinutes,
+    String category,
+    String? taskId,
   ) async {
     final dateKey = getDateKey(date);
     final current = Map<String, dynamic>.from(
@@ -2277,6 +2459,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         title: title,
         startMinutes: startMinutes,
         endMinutes: endMinutes,
+        category: category,
+        taskId: taskId,
       ),
     );
     current['personalPlannerBlocks'] = blocks
@@ -2286,6 +2470,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             'title': block.title,
             'startMinutes': block.startMinutes,
             'endMinutes': block.endMinutes,
+            'category': block.category,
+            'taskId': block.taskId,
           }),
         )
         .toList();
@@ -2294,6 +2480,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       dailyCheckinsByDate[dateKey] = current;
     });
     await saveDailyCheckinsByDate();
+    await _performReplanForDate(date);
   }
 
   Future<void> removePersonalBlock(DateTime date, String blockId) async {
@@ -2311,6 +2498,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             'title': block.title,
             'startMinutes': block.startMinutes,
             'endMinutes': block.endMinutes,
+            'category': block.category,
+            'taskId': block.taskId,
           }),
         )
         .toList();
@@ -2527,6 +2716,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         day,
         isWfh: plannerContext.wfhAvailable,
       ),
+      currentEnergyState: currentEnergyState,
     );
     final pastEntries = isToday
         ? plannerFrozenEntriesForDate(day)
@@ -2725,7 +2915,9 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       unawaited(
         _savePlannerFrozenPlan(date, [...past, ...future], result.summary),
       );
-      setState(() => plannerReplanPending = false);
+      setState(() {
+        plannerReplanPending = false;
+      });
       return;
     }
     if (plannerRefreshOnlyPending) {
@@ -3028,7 +3220,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
       'dopamineCrashSymptomsAdditional': <String>[],
       'contextTags': <String>[],
       'plannerGymAvailable': false,
-      'plannerWfhAvailable': false,
+      'plannerWfhAvailable': true,
       'plannerEveningAvailable': false,
       'plannerWorkdayStartMinutes': 9 * 60,
       'plannerWorkdayEndMinutes': 17 * 60,
@@ -4112,6 +4304,14 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     await StorageService.saveGymAvailable(enabled);
   }
 
+  Future<void> setSillyModeEnabled(bool enabled) async {
+    setState(() {
+      sillyModeEnabled = enabled;
+      SillyModeService.enabled = enabled;
+    });
+    await StorageService.saveSillyModeEnabled(enabled);
+  }
+
   Future<void> logHomeEventAsGym(DayPlannerEntry event) async {
     final entry = ActivityTrackingService.createManualEntry(
       pillar: ActivityPillar.gym,
@@ -4312,6 +4512,15 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     });
 
     await saveTasks();
+
+    if (newDoneValue && SillyModeService.appliesTo(tasks[index]) && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(SillyModeService.randomCelebrationLine()),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   Future<void> toggleSubtask(
@@ -4395,6 +4604,13 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   Future<void> toggleWaitingOnOthers(int index) async {
     setState(() {
       tasks[index].waitingOnOthers = !tasks[index].waitingOnOthers;
+    });
+    await saveTasks();
+  }
+
+  Future<void> toggleSillyModeExempt(int index) async {
+    setState(() {
+      tasks[index].sillyModeExempt = !tasks[index].sillyModeExempt;
     });
     await saveTasks();
   }
@@ -4483,19 +4699,15 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
   }
 
   String getPriorityLabel(String priority) {
-    switch (priority) {
-      case "high":
-        return "High";
-
-      case "medium":
-        return "Medium";
-
-      case "low":
-        return "Low";
-
-      default:
-        return "Medium";
-    }
+    final label = switch (priority) {
+      "high" => "High",
+      "medium" => "Medium",
+      "low" => "Low",
+      _ => "Medium",
+    };
+    return sillyModeEnabled
+        ? SillyModeService.priorityLabel(priority, label)
+        : label;
   }
 
   // Recommendation and sorting logic moved to RecommendationService.
@@ -4550,6 +4762,18 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
         tasks[index].doDate = value;
       },
     );
+  }
+
+  Future<void> startTaskToday(int index) async {
+    final today = DateTime.now();
+    final isoDate =
+        '${today.year.toString().padLeft(4, '0')}-'
+        '${today.month.toString().padLeft(2, '0')}-'
+        '${today.day.toString().padLeft(2, '0')}';
+    setState(() {
+      tasks[index].doDate = isoDate;
+    });
+    await saveTasks();
   }
 
   Future<void> setTaskEffort(int index, int? selected) async {
@@ -4637,6 +4861,66 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
     final year = date.year.toString().substring(2);
 
     return '$day-$month-$year';
+  }
+
+  static const _ddMmmYyMonths = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+
+  String _formatDateDDMmmYY(DateTime date) {
+    final day = date.day.toString().padLeft(2, '0');
+    final month = _ddMmmYyMonths[date.month - 1];
+    final year = date.year.toString().substring(2);
+    return '$day-$month-$year';
+  }
+
+  // Task list's Due date box: only ever "" (shown as "No date"), "Overdue",
+  // or the due day in dd-mmm-yy format.
+  String formatDueDateStrict(String? dueDate) {
+    if (dueDate == null || dueDate.trim().isEmpty) {
+      return "";
+    }
+    final date = DateTime.tryParse(dueDate);
+    if (date == null) {
+      return "";
+    }
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final targetDate = DateTime(date.year, date.month, date.day);
+    if (targetDate.isBefore(today)) {
+      return "Overdue";
+    }
+    return _formatDateDDMmmYY(date);
+  }
+
+  // Task list's Start date box: only ever "" (shown as "Not selected"),
+  // "Started", or the start day in dd-mmm-yy format.
+  String formatStartDate(String? doDate) {
+    if (doDate == null || doDate.trim().isEmpty) {
+      return "";
+    }
+    final date = DateTime.tryParse(doDate);
+    if (date == null) {
+      return "";
+    }
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final targetDate = DateTime(date.year, date.month, date.day);
+    if (!targetDate.isAfter(today)) {
+      return "Started";
+    }
+    return _formatDateDDMmmYY(date);
   }
 
   String formatEffortLabel(int? minutes) {
@@ -4907,6 +5191,25 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             showWorkTasksInPlanner: showWorkTasksInPlanner,
             showHomeCalendarInPlanner: showHomeCalendarInPlanner,
             showHomeTasksInPlanner: showHomeTasksInPlanner,
+            showWeeklyTimeline: showWeeklyTimeline,
+            weeklyTimelineStartOffset: weeklyTimelineStartOffset,
+            weeklyDayContexts: weeklyPlannerContexts(
+              DateTime.now().add(Duration(days: weeklyTimelineStartOffset)),
+            ),
+            weeklyHolidayDates: weeklyPlannerHolidayDates(
+              DateTime.now().add(Duration(days: weeklyTimelineStartOffset)),
+            ),
+            onWeeklyDayContextChanged: (date, setting, value) {
+              unawaited(
+                updatePlannerContext(
+                  date,
+                  gymAvailable: setting == 'gym' ? value : null,
+                  wfhAvailable: setting == 'wfh' ? value : null,
+                  eveningAvailable: setting == 'evening' ? value : null,
+                  isHoliday: setting == 'holiday' ? value : null,
+                ),
+              );
+            },
             showMovementInPlanner: showMovementInPlanner,
             showBreakInPlanner: showBreakInPlanner,
             showPersonalInPlanner: showPersonalInPlanner,
@@ -4923,6 +5226,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
             onEnabledActivityNamesChanged: (names) {
               unawaited(setEnabledActivityNames(plannerDate, names));
             },
+            currentEnergyState: currentEnergyState,
+            onChangeEnergyState: () => unawaited(openEnergyCheckIn()),
             weeklyActivityTotals: weeklyActivityTotals,
             dailyActivityTotals: ActivityTrackingService.calculateDailyTotals(
               activityLogs,
@@ -4978,6 +5283,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                 setState(() => showHomeCalendarInPlanner = next),
             onShowHomeTasksInPlannerChanged: (next) =>
                 setState(() => showHomeTasksInPlanner = next),
+            onShowWeeklyTimelineChanged: (next) =>
+                setState(() => showWeeklyTimeline = next),
+            onWeeklyTimelineStartOffsetChanged: (next) =>
+                setState(() => weeklyTimelineStartOffset = next),
             onShowMovementInPlannerChanged: (next) =>
                 setState(() => showMovementInPlanner = next),
             onShowBreakInPlannerChanged: (next) =>
@@ -5049,8 +5358,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                 ),
               );
             },
-            onAddPersonalBlock: (date, title, start, end) {
-              unawaited(addPersonalBlock(date, title, start, end));
+            onAddPersonalBlock: (date, title, start, end, category, taskId) {
+              unawaited(
+                addPersonalBlock(date, title, start, end, category, taskId),
+              );
             },
             onExecutePlannerEntry: (entry, state) {
               final date = DateTime.now().add(Duration(days: plannerDayOffset));
@@ -5182,18 +5493,16 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               groupTasksByPriority = value;
             });
           },
-          cardViewEnabled: taskListCardView,
-          onCardViewChanged: (value) {
-            setState(() {
-              taskListCardView = value;
-            });
-          },
           archiveViewEnabled: taskArchiveViewEnabled,
           onArchiveViewChanged: (value) {
             setState(() {
               taskArchiveViewEnabled = value;
               selectedTaskPaneIndex = null;
             });
+          },
+          sillyModeEnabled: sillyModeEnabled,
+          onSillyModeChanged: (value) {
+            unawaited(setSillyModeEnabled(value));
           },
           onSelectTaskSortMode: (mode) {
             setState(() {
@@ -5219,7 +5528,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               visibleTaskIndices: visibleTaskIndices,
               selectedTaskCategory: selectedTaskCategory,
               groupTasksByPriority: groupTasksByPriority,
-              cardViewEnabled: taskListCardView,
+              cardViewEnabled: true,
               archiveViewEnabled: taskArchiveViewEnabled,
               selectedTaskSortModeIsManual:
                   selectedTaskSortMode == TaskListSortMode.manual,
@@ -5228,7 +5537,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               getPriorityColor: getPriorityColor,
               getPriorityLabel: getPriorityLabel,
               categories: categories,
-              formatDueDate: formatDueDate,
+              formatDueDate: formatDueDateStrict,
+              formatStartDate: formatStartDate,
               buildTaskPanels: buildTaskPanels,
               onToggleTask: (taskIndex, value) {
                 toggleTask(taskIndex, value);
@@ -5253,6 +5563,9 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               onSetPlanDate: (taskIndex) async {
                 await setDoDate(taskIndex);
               },
+              onStartTaskToday: (taskIndex) {
+                unawaited(startTaskToday(taskIndex));
+              },
               onSetTaskEffort: (taskIndex, minutes) async {
                 await setTaskEffort(taskIndex, minutes);
               },
@@ -5271,6 +5584,9 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               onDeleteTask: (taskIndex) {
                 showDeleteConfirmation(taskIndex);
               },
+              onCategorizeForMenu: (taskIndex) {
+                unawaited(categorizeTaskForMenu(tasks[taskIndex]));
+              },
               onToggleAbsolutePriority: (taskIndex) {
                 toggleAbsolutePriority(taskIndex);
               },
@@ -5279,6 +5595,9 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               },
               onToggleWaitingOnOthers: (taskIndex) {
                 toggleWaitingOnOthers(taskIndex);
+              },
+              onToggleSillyModeExempt: (taskIndex) {
+                toggleSillyModeExempt(taskIndex);
               },
               onReorderVisibleTasks:
                   (oldIndex, newIndex, currentVisibleTaskIndices) async {
@@ -5702,6 +6021,25 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           showWorkTasksInPlanner: showWorkTasksInPlanner,
           showHomeCalendarInPlanner: showHomeCalendarInPlanner,
           showHomeTasksInPlanner: showHomeTasksInPlanner,
+          showWeeklyTimeline: showWeeklyTimeline,
+          weeklyTimelineStartOffset: weeklyTimelineStartOffset,
+          weeklyDayContexts: weeklyPlannerContexts(
+            DateTime.now().add(Duration(days: weeklyTimelineStartOffset)),
+          ),
+          weeklyHolidayDates: weeklyPlannerHolidayDates(
+            DateTime.now().add(Duration(days: weeklyTimelineStartOffset)),
+          ),
+          onWeeklyDayContextChanged: (date, setting, value) {
+            unawaited(
+              updatePlannerContext(
+                date,
+                gymAvailable: setting == 'gym' ? value : null,
+                wfhAvailable: setting == 'wfh' ? value : null,
+                eveningAvailable: setting == 'evening' ? value : null,
+                isHoliday: setting == 'holiday' ? value : null,
+              ),
+            );
+          },
           showMovementInPlanner: showMovementInPlanner,
           showBreakInPlanner: showBreakInPlanner,
           showPersonalInPlanner: showPersonalInPlanner,
@@ -5723,6 +6061,8 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               ),
             );
           },
+          currentEnergyState: currentEnergyState,
+          onChangeEnergyState: () => unawaited(openEnergyCheckIn()),
           weeklyActivityTotals: weeklyActivityTotals,
           dailyActivityTotals: ActivityTrackingService.calculateDailyTotals(
             activityLogs,
@@ -5776,6 +6116,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
               setState(() => showHomeCalendarInPlanner = value),
           onShowHomeTasksInPlannerChanged: (value) =>
               setState(() => showHomeTasksInPlanner = value),
+          onShowWeeklyTimelineChanged: (value) =>
+              setState(() => showWeeklyTimeline = value),
+          onWeeklyTimelineStartOffsetChanged: (value) =>
+              setState(() => weeklyTimelineStartOffset = value),
           onShowMovementInPlannerChanged: (value) =>
               setState(() => showMovementInPlanner = value),
           onShowBreakInPlannerChanged: (value) =>
@@ -5791,8 +6135,10 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
           ),
           onHolidayChanged: (value) =>
               unawaited(updatePlannerContext(plannerDate, isHoliday: value)),
-          onAddPersonalBlock: (date, title, start, end) {
-            unawaited(addPersonalBlock(date, title, start, end));
+          onAddPersonalBlock: (date, title, start, end, category, taskId) {
+            unawaited(
+              addPersonalBlock(date, title, start, end, category, taskId),
+            );
           },
           onCompleteRecommendation: (value) =>
               unawaited(completeActivityRecommendation(value)),
@@ -6027,6 +6373,7 @@ class _ADHDHomePageState extends State<ADHDHomePage> {
                       buildInsightsView: buildInsightsView,
                       buildNotesView: buildNotesView,
                       buildWorkSnapshotView: buildWorkSnapshotView,
+                      buildTodaysMenuView: buildTodaysMenuView,
                     ),
                   ),
                 ],

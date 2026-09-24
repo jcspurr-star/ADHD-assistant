@@ -1,5 +1,7 @@
 import '../models/activity_recommendation.dart';
+import '../models/menu_planning.dart';
 import '../models/task.dart';
+import 'menu_recommendation_service.dart';
 import 'movement_recommendation_service.dart';
 import 'one_drive_sync_service.dart';
 import 'planner_break_policy.dart';
@@ -51,12 +53,23 @@ class DayPlannerEntry {
         (json['relatedTaskIds'] as List?)?.map((e) => e.toString()).toList() ??
         const <String>[];
     final type = json['type']?.toString() ?? '';
-    final task =
+    final resolvedTask =
         resolveTask != null &&
             relatedTaskIds.isNotEmpty &&
             (type == 'task' || type == 'admin')
         ? resolveTask(relatedTaskIds.first)
         : null;
+    final task =
+        resolvedTask ??
+        (type == 'task' && json['id']?.toString().startsWith('commute-') == true
+            ? Task(
+                id: json['id']?.toString(),
+                task: json['title']?.toString() ?? 'Commute',
+                category: 'Work',
+                effortMinutes: 60,
+                nextSessionEffortMinutes: 60,
+              )
+            : null);
     return DayPlannerEntry(
       id: json['id']?.toString() ?? '',
       title: json['title']?.toString() ?? '',
@@ -164,12 +177,16 @@ class PersonalPlannerBlock {
     required this.title,
     required this.startMinutes,
     required this.endMinutes,
+    this.category = 'Personal',
+    this.taskId,
   });
 
   final String id;
   final String title;
   final int startMinutes;
   final int endMinutes;
+  final String category;
+  final String? taskId;
 }
 
 class _DailyCapacity {
@@ -275,6 +292,11 @@ class DayPlannerService {
       return false;
     }
     if (task.waitingOnOthers) {
+      return false;
+    }
+    // Tasks missing priority/date/effort metadata sit in the task list's
+    // "holding area" and are never auto-scheduled until completed.
+    if (!task.hasCompletePlanningMetadata) {
       return false;
     }
 
@@ -388,6 +410,10 @@ class DayPlannerService {
     // WFH/office movement names, an explicit empty list disables movement
     // for the day entirely.
     List<String>? enabledActivityNames,
+    // Menu-Based Planning: when set, nudges which eligible tasks get picked
+    // first toward ones matching the user's current capacity, on top of the
+    // existing priority/due-date scoring — never a hard include/exclude.
+    EnergyState? currentEnergyState,
   }) {
     final isWeekend =
         day.weekday == DateTime.saturday || day.weekday == DateTime.sunday;
@@ -418,14 +444,47 @@ class DayPlannerService {
       final start = _dateAtMinutes(day, block.startMinutes);
       final end = _dateAtMinutes(day, block.endMinutes);
       if (!end.isAfter(start)) continue;
+      final selectedTask = block.taskId == null
+          ? null
+          : tasks.cast<Task?>().firstWhere(
+              (task) => task?.id == block.taskId,
+              orElse: () => null,
+            );
+      final isWorkTaskBlock =
+          block.category == 'Work task' && selectedTask != null;
+      final type = isWorkTaskBlock
+          ? 'task'
+          : switch (block.category) {
+              'Home task' => 'task',
+              'Movement' => 'movement',
+              'Break' => 'break',
+              _ => 'personal',
+            };
+      final task = isWorkTaskBlock
+          ? selectedTask
+          : type == 'task'
+          ? Task(
+              id: block.id,
+              task: block.title,
+              category: 'Home',
+              effortMinutes: end.difference(start).inMinutes,
+              nextSessionEffortMinutes: end.difference(start).inMinutes,
+            )
+          : null;
       entries.add(
         DayPlannerEntry(
           id: block.id,
           title: block.title,
-          type: 'personal',
+          type: type,
           start: start,
           end: end,
-          subtitle: 'Personal block',
+          subtitle: isWorkTaskBlock
+              ? _taskSubtitle(selectedTask!)
+              : '${block.category} block',
+          task: task,
+          relatedTaskIds: isWorkTaskBlock
+              ? <String>[selectedTask!.id]
+              : const <String>[],
           isLocked: true,
           category: PlannerEventCategory.fixed,
         ),
@@ -559,7 +618,7 @@ class DayPlannerService {
     final movementEntries = <DayPlannerEntry>[];
 
     final isOfficeDay = dayContext?.workLocation == WorkLocation.office;
-    final prioritizedTasks = _prioritizeTasks(tasks, day);
+    final prioritizedTasks = _prioritizeTasks(tasks, day, currentEnergyState);
     final actionableTasks = prioritizedTasks.map((item) => item.task).toList();
 
     if (isOfficeDay) {
@@ -692,7 +751,7 @@ class DayPlannerService {
     // Still gaps left? Pull forward backlog tasks that aren't due yet rather
     // than leaving the day looking empty until their due date arrives.
     final futureSessions = _createTaskSessions(
-      _prioritizeFutureTasks(tasks, day),
+      _prioritizeFutureTasks(tasks, day, currentEnergyState),
       pulledForward: true,
     );
     for (final session in futureSessions) {
@@ -887,13 +946,17 @@ class DayPlannerService {
 
   static List<_PrioritizedTask> _prioritizeTasks(
     List<Task> tasks,
-    DateTime day,
-  ) {
+    DateTime day, [
+    EnergyState? currentEnergyState,
+  ]) {
     final targetDay = DateTime(day.year, day.month, day.day);
     final scored = tasks.where((task) => _isTaskEligibleForDay(task, day)).map((
       task,
     ) {
-      return _PrioritizedTask(task: task, score: _taskScore(task, targetDay));
+      return _PrioritizedTask(
+        task: task,
+        score: _taskScore(task, targetDay, currentEnergyState),
+      );
     }).toList();
     scored.sort((a, b) {
       final absolutePriorityCompare = (b.task.absolutePriority ? 1 : 0)
@@ -915,21 +978,23 @@ class DayPlannerService {
   /// reserve to fill spare capacity so days don't sit empty while backlog waits.
   static List<_PrioritizedTask> _prioritizeFutureTasks(
     List<Task> tasks,
-    DateTime day,
-  ) {
+    DateTime day, [
+    EnergyState? currentEnergyState,
+  ]) {
     final targetDay = DateTime(day.year, day.month, day.day);
     final scored = tasks
         .where(
           (task) =>
               task.done != true &&
               !task.waitingOnOthers &&
+              task.hasCompletePlanningMetadata &&
               !_isTaskEligibleForDay(task, day) &&
               !_isBlockedAsOverdue(task, targetDay),
         )
         .map((task) {
           return _PrioritizedTask(
             task: task,
-            score: _taskScore(task, targetDay),
+            score: _taskScore(task, targetDay, currentEnergyState),
           );
         })
         .toList();
@@ -949,7 +1014,11 @@ class DayPlannerService {
     return scored;
   }
 
-  static double _taskScore(Task task, DateTime targetDay) {
+  static double _taskScore(
+    Task task,
+    DateTime targetDay, [
+    EnergyState? currentEnergyState,
+  ]) {
     if (task.absolutePriority) return double.infinity;
     final dueDate = _dateOnly(_parseTaskDate(task.dueDate));
     final planningDate = _dateOnly(
@@ -972,11 +1041,18 @@ class DayPlannerService {
     final urgencyScore = isDueForPlanning ? 30 : 0;
     final rolloverScore = isRolledOver ? 15 : 0;
     final contextPenalty = _hasCategory(task) ? -5 : 0;
+    // Scaled down relative to due-date/priority scoring so it nudges which
+    // eligible task gets picked first rather than overriding urgency.
+    final energyMatchScore = currentEnergyState == null
+        ? 0
+        : MenuRecommendationService.energyMatchScore(task, currentEnergyState) *
+              0.3;
     return (priorityScore +
             overdueScore +
             urgencyScore +
             rolloverScore +
-            contextPenalty)
+            contextPenalty +
+            energyMatchScore)
         .toDouble();
   }
 
@@ -1107,7 +1183,7 @@ class DayPlannerService {
       task: Task(
         id: 'switch-off-${day.year}-${day.month}-${day.day}',
         task: 'Switch off',
-        category: 'Work',
+        category: 'Home',
         effortMinutes: 15,
         nextSessionEffortMinutes: 15,
       ),
@@ -1430,6 +1506,9 @@ class DayPlannerService {
     final mode = dayContext.workLocation == WorkLocation.home
         ? 'home'
         : 'office';
+    final movementDayEnd = mode == 'office'
+        ? dayEnd.subtract(const Duration(hours: 1))
+        : dayEnd;
     final standingBlockMinutes = (targets.standingMinutes.minMinutes / 2)
         .round()
         .clamp(15, 60);
@@ -1505,7 +1584,7 @@ class DayPlannerService {
               preferredConcurrentEntryIds,
               excludedConcurrentEntryIds,
               dayStart,
-              dayEnd,
+              movementDayEnd,
               target: movementTarget,
             )
           : null;
@@ -1539,7 +1618,7 @@ class DayPlannerService {
         duration,
         movementTarget,
         dayStart,
-        dayEnd,
+        movementDayEnd,
         minimumGap: const Duration(hours: 1),
         separateFromTypes: const {'movement', 'break'},
         minimumGapByType: mode == 'office'
@@ -2126,6 +2205,10 @@ class DayPlannerService {
             identical(entry, other) ||
             other.isAllDay ||
             other.isConcurrent ||
+            // Non-blocking (informational) entries, e.g. a plain Home
+            // calendar event, shouldn't retroactively wipe out a focus
+            // block that was legitimately built to overlap them.
+            !_occupiesPlanningTime(other) ||
             !entry.start.isBefore(other.end) ||
             !entry.end.isAfter(other.start),
       );
@@ -2477,10 +2560,19 @@ class DayPlannerService {
       } else if (customTitle != null && customTitle.trim().isNotEmpty) {
         final trimmedTitle = customTitle.trim();
         final isFocusTime = trimmedTitle.toLowerCase() == 'focus time';
+        final isWalkBreak = trimmedTitle.toLowerCase() == 'walk break';
         updated = updated.copyWith(
           title: isFocusTime ? 'Focus Time' : trimmedTitle,
-          subtitle: isFocusTime ? 'Filled planning gap' : 'Personal block',
-          type: isFocusTime ? 'focus' : 'personal',
+          subtitle: isFocusTime
+              ? 'Filled planning gap'
+              : isWalkBreak
+              ? 'Office movement'
+              : 'Personal block',
+          type: isFocusTime
+              ? 'focus'
+              : isWalkBreak
+              ? 'movement'
+              : 'personal',
           clearTask: true,
           relatedTaskIds: const <String>[],
         );

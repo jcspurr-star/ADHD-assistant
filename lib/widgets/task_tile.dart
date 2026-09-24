@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/task.dart';
+import '../services/silly_mode_service.dart';
 
 class TaskTile extends StatelessWidget {
   final Task task;
@@ -15,14 +16,17 @@ class TaskTile extends StatelessWidget {
   final VoidCallback? onOpen;
   final VoidCallback onDueDate;
   final VoidCallback onPlanDate;
+  final VoidCallback onStartToday;
   final ValueChanged<int?> onTotalEffortChanged;
   final ValueChanged<int?> onNextSessionEffortChanged;
   final ValueChanged<String?> onCategoryChanged;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final VoidCallback onCategorizeForMenu;
   final VoidCallback onToggleAbsolutePriority;
   final VoidCallback onToggleExcludeWhenOverdue;
   final VoidCallback onToggleWaitingOnOthers;
+  final VoidCallback onToggleSillyModeExempt;
   final String dueDateText;
   final String planDateText;
   final int? nextSessionEffortMinutes;
@@ -36,12 +40,15 @@ class TaskTile extends StatelessWidget {
     30,
     45,
     60,
-    90,
     120,
     180,
     240,
     360,
     480,
+    600,
+    720,
+    840,
+    960,
   ];
   static const List<int> _nextSessionEffortOptions = [
     5,
@@ -49,7 +56,6 @@ class TaskTile extends StatelessWidget {
     30,
     45,
     60,
-    90,
     120,
     180,
     240,
@@ -68,14 +74,17 @@ class TaskTile extends StatelessWidget {
     this.onOpen,
     required this.onDueDate,
     required this.onPlanDate,
+    required this.onStartToday,
     required this.onTotalEffortChanged,
     required this.onNextSessionEffortChanged,
     required this.onCategoryChanged,
     required this.onEdit,
     required this.onDelete,
+    required this.onCategorizeForMenu,
     required this.onToggleAbsolutePriority,
     required this.onToggleExcludeWhenOverdue,
     required this.onToggleWaitingOnOthers,
+    required this.onToggleSillyModeExempt,
     required this.progress,
     required this.dueDateText,
     required this.planDateText,
@@ -182,12 +191,24 @@ class TaskTile extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        buildMetaLabel('Plan date'),
-        GestureDetector(
-          onTap: onPlanDate,
+        buildMetaLabel('Start date'),
+        PopupMenuButton<String>(
+          tooltip: 'Start date options',
+          padding: EdgeInsets.zero,
+          onSelected: (value) {
+            if (value == 'today') {
+              onStartToday();
+            } else if (value == 'choose') {
+              onPlanDate();
+            }
+          },
+          itemBuilder: (context) => const [
+            PopupMenuItem(value: 'today', child: Text('Start today')),
+            PopupMenuItem(value: 'choose', child: Text('Choose date...')),
+          ],
           child: Tooltip(
             message:
-                'Plan date: when this task should start surfacing for action.',
+                'Start date: when this task should start surfacing for action. Tap for options, including "Start today".',
             child: Container(
               height: 32,
               width: showLabel ? _metaWidthWithLabel : _metaWidthCompact,
@@ -209,7 +230,7 @@ class TaskTile extends StatelessWidget {
                   const SizedBox(width: 2),
                   Expanded(
                     child: buildOverflowScrollableText(
-                      planDateText.isEmpty ? 'No plan' : planDateText,
+                      planDateText.isEmpty ? 'Not selected' : planDateText,
                       style: TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.w700,
@@ -624,6 +645,27 @@ class TaskTile extends StatelessWidget {
           visualDensity: VisualDensity.compact,
           onPressed: onToggleWaitingOnOthers,
         ),
+        if (SillyModeService.enabled)
+          IconButton(
+            icon: Icon(
+              task.sillyModeExempt
+                  ? Icons.sentiment_neutral
+                  : Icons.sentiment_very_satisfied,
+              size: iconSize,
+              color: task.sillyModeExempt ? Colors.grey.shade600 : null,
+            ),
+            tooltip: task.sillyModeExempt
+                ? 'Serious task: silly mode jokes are skipped (tap to allow)'
+                : 'Allow silly mode jokes for this task (tap to keep it serious)',
+            visualDensity: VisualDensity.compact,
+            onPressed: onToggleSillyModeExempt,
+          ),
+        IconButton(
+          icon: Icon(Icons.tune, size: iconSize),
+          tooltip: "Add to Today's Menu",
+          visualDensity: VisualDensity.compact,
+          onPressed: onCategorizeForMenu,
+        ),
         IconButton(
           icon: Icon(Icons.edit, size: iconSize),
           tooltip: 'Edit task',
@@ -684,28 +726,33 @@ class TaskTile extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
-                child: InkWell(
-                  onTap: onOpen,
-                  borderRadius: BorderRadius.circular(8),
-                  child: Container(
-                    height: titleBoxHeight,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade50,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.grey.shade300),
-                    ),
-                    child: Text(
-                      task.task,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
+                child: Tooltip(
+                  message: SillyModeService.appliesTo(task)
+                      ? SillyModeService.altTitle(task)
+                      : task.task,
+                  child: InkWell(
+                    onTap: onOpen,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      height: titleBoxHeight,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.grey.shade300),
+                      ),
+                      child: Text(
+                        task.task,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   ),
                 ),

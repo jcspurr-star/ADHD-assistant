@@ -11,6 +11,7 @@ class MainContentView extends StatelessWidget {
     required this.buildInsightsView,
     required this.buildNotesView,
     required this.buildWorkSnapshotView,
+    required this.buildTodaysMenuView,
   });
 
   final int selectedMainSectionIndex;
@@ -25,6 +26,7 @@ class MainContentView extends StatelessWidget {
   final Widget Function() buildInsightsView;
   final Widget Function() buildNotesView;
   final Widget Function() buildWorkSnapshotView;
+  final Widget Function() buildTodaysMenuView;
 
   @override
   Widget build(BuildContext context) {
@@ -41,6 +43,8 @@ class MainContentView extends StatelessWidget {
         return buildNotesView();
       case 5:
         return buildWorkSnapshotView();
+      case 6:
+        return buildTodaysMenuView();
       default:
         return buildHomeDashboard();
     }

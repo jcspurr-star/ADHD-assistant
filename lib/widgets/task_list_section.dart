@@ -19,6 +19,7 @@ class TaskListSection extends StatelessWidget {
     required this.getPriorityLabel,
     required this.categories,
     required this.formatDueDate,
+    required this.formatStartDate,
     required this.buildTaskPanels,
     required this.onToggleTask,
     required this.onToggleExpanded,
@@ -26,14 +27,17 @@ class TaskListSection extends StatelessWidget {
     required this.onPriorityChanged,
     required this.onSetDueDate,
     required this.onSetPlanDate,
+    required this.onStartTaskToday,
     required this.onSetTaskEffort,
     required this.onSetNextSessionEffort,
     required this.onCategoryChanged,
     required this.onEditTask,
     required this.onDeleteTask,
+    required this.onCategorizeForMenu,
     required this.onToggleAbsolutePriority,
     required this.onToggleExcludeWhenOverdue,
     required this.onToggleWaitingOnOthers,
+    required this.onToggleSillyModeExempt,
     required this.onReorderVisibleTasks,
   });
 
@@ -50,6 +54,7 @@ class TaskListSection extends StatelessWidget {
   final String Function(String priority) getPriorityLabel;
   final List<String> categories;
   final String Function(String? raw) formatDueDate;
+  final String Function(String? raw) formatStartDate;
   final Widget Function(int taskIndex) buildTaskPanels;
   final void Function(int taskIndex, bool? value) onToggleTask;
   final void Function(int taskIndex) onToggleExpanded;
@@ -57,15 +62,18 @@ class TaskListSection extends StatelessWidget {
   final void Function(int taskIndex, String value) onPriorityChanged;
   final Future<void> Function(int taskIndex) onSetDueDate;
   final Future<void> Function(int taskIndex) onSetPlanDate;
+  final void Function(int taskIndex) onStartTaskToday;
   final Future<void> Function(int taskIndex, int? minutes) onSetTaskEffort;
   final Future<void> Function(int taskIndex, int? minutes)
   onSetNextSessionEffort;
   final void Function(int taskIndex, String value) onCategoryChanged;
   final void Function(int taskIndex) onEditTask;
   final void Function(int taskIndex) onDeleteTask;
+  final void Function(int taskIndex) onCategorizeForMenu;
   final void Function(int taskIndex) onToggleAbsolutePriority;
   final void Function(int taskIndex) onToggleExcludeWhenOverdue;
   final void Function(int taskIndex) onToggleWaitingOnOthers;
+  final void Function(int taskIndex) onToggleSillyModeExempt;
   final Future<void> Function(
     int oldIndex,
     int newIndex,
@@ -89,6 +97,7 @@ class TaskListSection extends StatelessWidget {
       getPriorityLabel: getPriorityLabel,
       categories: categories,
       formatDueDate: formatDueDate,
+      formatStartDate: formatStartDate,
       buildTaskPanels: buildTaskPanels,
       onToggleTask: onToggleTask,
       onToggleExpanded: onToggleExpanded,
@@ -96,14 +105,17 @@ class TaskListSection extends StatelessWidget {
       onPriorityChanged: onPriorityChanged,
       onSetDueDate: onSetDueDate,
       onSetPlanDate: onSetPlanDate,
+      onStartTaskToday: onStartTaskToday,
       onSetTaskEffort: onSetTaskEffort,
       onSetNextSessionEffort: onSetNextSessionEffort,
       onCategoryChanged: onCategoryChanged,
       onEditTask: onEditTask,
       onDeleteTask: onDeleteTask,
+      onCategorizeForMenu: onCategorizeForMenu,
       onToggleAbsolutePriority: onToggleAbsolutePriority,
       onToggleExcludeWhenOverdue: onToggleExcludeWhenOverdue,
       onToggleWaitingOnOthers: onToggleWaitingOnOthers,
+      onToggleSillyModeExempt: onToggleSillyModeExempt,
       onReorderVisibleTasks: onReorderVisibleTasks,
     );
   }
